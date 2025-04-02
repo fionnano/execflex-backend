@@ -28,3 +28,14 @@
     "summary": "Fintech CTO with experience in regulatory and enterprise-scale systems."
   }
 ]
+[
+  {
+    "type": "client",
+    "name": "Anna",
+    "role": "CTO",
+    "industry": "AI",
+    "culture": "fast-paced",
+    "summary": "Anna is a dynamic CTO with a strong background in AI and scaling teams in fast-paced environments.",
+    "email": "anna@example.com"
+  }
+]
