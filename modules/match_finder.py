@@ -4,7 +4,7 @@ import json
 import os
 
 def find_best_match(match_type, role, industry, culture):
-    file_path = os.path.join(os.path.dirname(__file__), "../data/matches.json")
+    file_path = os.path.join(os.path.dirname(__file__), "..", "data", "matches.json")
 
     try:
         with open(file_path, "r") as f:
@@ -18,9 +18,9 @@ def find_best_match(match_type, role, industry, culture):
                 match.get("culture", "").lower() == culture.lower()
             ):
                 return {
-                    "name": match.get("name"),
-                    "summary": match.get("summary"),
-                    "email": match.get("email")
+                    "name": match.get("name", "Unnamed"),
+                    "summary": match.get("summary", "No summary provided."),
+                    "email": match.get("email", "noemail@example.com")
                 }
 
         return None
