@@ -1,0 +1,30 @@
+[
+  {
+    "name": "Mike Smith",
+    "role": "CTO",
+    "industry": "Fintech",
+    "culture": "Startup Culture",
+    "summary": "Experienced CTO in fintech with a strong record in startup scaling and product leadership."
+  },
+  {
+    "name": "Emma Johnson",
+    "role": "COO",
+    "industry": "Healthtech",
+    "culture": "Collaborative",
+    "summary": "Operations leader with a background in growth-stage healthtech companies."
+  },
+  {
+    "name": "Liam Chen",
+    "role": "CMO",
+    "industry": "SaaS",
+    "culture": "Remote-first",
+    "summary": "CMO with expertise in demand generation and scaling remote teams."
+  },
+  {
+    "name": "Sophia Duarte",
+    "role": "CTO",
+    "industry": "Fintech",
+    "culture": "Corporate",
+    "summary": "Fintech CTO with experience in regulatory and enterprise-scale systems."
+  }
+]
