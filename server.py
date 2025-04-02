@@ -11,6 +11,10 @@ from match_finder import find_best_match
 from email_sender import send_intro_email
 from feedback_handler import save_feedback
 
+@app.route("/", methods=["GET"])
+def health_check():
+    return "✅ Backend is live!", 200
+
 app = Flask(__name__)
 
 @app.route("/match", methods=["POST"])
@@ -56,4 +60,5 @@ def feedback():
     return jsonify({"status": "saved"})
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
+
