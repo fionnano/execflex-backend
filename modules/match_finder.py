@@ -1,43 +1,29 @@
 # modules/match_finder.py
 
+import json
 import os
-from supabase import create_client
-from dotenv import load_dotenv
-
-# Load environment variables from .env
-load_dotenv()
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def find_best_match(match_type, role, industry, culture):
-    table = "executive_profiles" if match_type == "client" else "hiring_requirements"
+    file_path = os.path.join(os.path.dirname(__file__), "../data/matches.json")
 
     try:
-        response = (
-            supabase.table(table)
-            .select("*")
-            .ilike("role", f"%{role}%")
-            .ilike("industry", f"%{industry}%")
-            .ilike("culture", f"%{culture}%")
-            .limit(1)
-            .execute()
-        )
+        with open(file_path, "r", encoding="utf-8") as f:
+            matches = json.load(f)
 
-        data = response.data
+        for match in matches:
+            if (
+                match.get("role", "").lower() == role.lower()
+                and match.get("industry", "").lower() == industry.lower()
+                and match.get("culture", "").lower() == culture.lower()
+            ):
+                return {
+                    "name": match.get("name", "Unnamed"),
+                    "summary": match.get("summary", "No summary provided."),
+                    "email": match.get("email", "noemail@example.com")
+                }
 
-        if data and len(data) > 0:
-            match = data[0]
-            return {
-                "name": match.get("name", "Unnamed"),
-                "summary": match.get("summary", "No summary provided."),
-                "email": match.get("email", "noemail@example.com"),
-                "id": match.get("id")
-            }
-        else:
-            return None
+        return None
 
     except Exception as e:
-        print("❌ Error in find_best_match:", e)
+        print("❌ Error reading matches.json:", e)
         return None
