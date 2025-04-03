@@ -19,6 +19,15 @@ EMAIL_PASSWORD = os.getenv("EMAIL_PASS")
 
 def send_intro_email(client_name, match_name, recipient_email):
     try:
+        print("📨 Preparing to send email...")
+        print(f"→ From: {EMAIL_ADDRESS}")
+        print(f"→ To: {recipient_email}")
+        print(f"→ SMTP: smtp.gmail.com:465")
+
+        if not all([EMAIL_ADDRESS, EMAIL_PASSWORD, SUPABASE_URL, SUPABASE_KEY]):
+            print("❌ Missing environment settings.")
+            return False
+
         # Compose email
         msg = EmailMessage()
         msg["Subject"] = f"ExecFlex Intro: {client_name} ↔ {match_name}"
@@ -36,15 +45,18 @@ def send_intro_email(client_name, match_name, recipient_email):
             smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
             smtp.send_message(msg)
 
-        print("✅ Email sent successfully")
+        print("✅ Email sent successfully!")
 
-        # Save match record to Supabase
-        supabase.table("executive_matches").insert({
+        # Save match to Supabase
+        print("💾 Saving match to Supabase...")
+        response = supabase.table("executive_matches").insert({
             "user_name": client_name,
             "match_name": match_name,
             "intro_sent": True,
             "recipient_email": recipient_email
         }).execute()
+
+        print("✅ Match saved:", response)
 
         return True
 
