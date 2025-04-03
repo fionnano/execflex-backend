@@ -45,8 +45,9 @@ def match():
             "match": None
         })
 
-@app.route("/send_intro", methods=["POST"])
+@app.route('/send_intro', methods=['POST'])
 def send_intro():
+    print("🚀 /send_intro route was hit")
     data = request.json
     client_name = data["client_name"]
     match_name = data["match_name"]
