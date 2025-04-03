@@ -45,16 +45,28 @@ def match():
             "match": None
         })
 
-@app.route('/send_intro', methods=['POST'])
+@app.route("/send_intro", methods=["POST"])
 def send_intro():
-    print("🚀 /send_intro route was hit")
-    data = request.json
-    client_name = data["client_name"]
-    match_name = data["match_name"]
-    recipient_email = data["email"]
+    try:
+        print("🚀 /send_intro route was hit")
+        data = request.get_json()
+        print("📦 Incoming data:", data)
 
-    success = send_intro_email(client_name, match_name, recipient_email)
-    return jsonify({"status": "sent" if success else "error"})
+        client_name = data.get("client_name")
+        match_name = "Matched Exec"  # Placeholder for testing
+        email = data.get("email")
+
+        print(f"🧪 Sending intro: {client_name} ↔ {match_name} to {email}")
+
+        success = send_intro_email(client_name, match_name, email)
+
+        return jsonify({"status": "success" if success else "fail"}), 200 if success else 500
+
+    except Exception as e:
+        print("❌ EXCEPTION in /send_intro route:", str(e))
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/feedback", methods=["POST"])
 def feedback():
