@@ -1,37 +1,45 @@
 # modules/email_sender.py
 
 import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from email.message import EmailMessage
+import os
+from dotenv import load_dotenv
 
-# You can move these to env variables for security later
-SENDER_EMAIL = "your-email@gmail.com"
-SENDER_PASSWORD = "your-app-password"  # Use an app password if using Gmail
+load_dotenv()
 
-def send_intro_email(client_name, candidate_name, recipient_email):
-    subject = f"Intro: {client_name} <> {candidate_name}"
-    body = (
-        f"Hi {client_name},\n\n"
-        f"I’d like to introduce you to {candidate_name}, who may be a strong fit for your role.\n"
-        f"Let me know if you'd like to continue the conversation.\n\n"
-        f"Best,\nAi-dan at ExecFlex"
-    )
+EMAIL_HOST = os.getenv("EMAIL_HOST")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", 587))
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
 
-    msg = MIMEMultipart()
-    msg['From'] = SENDER_EMAIL
-    msg['To'] = recipient_email
-    msg['Subject'] = subject
+def send_intro_email(client_name, match_name, recipient_email):
+    if not all([EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASS]):
+        print("❌ Missing email environment settings.")
+        return False
 
-    msg.attach(MIMEText(body, 'plain'))
+    msg = EmailMessage()
+    msg["Subject"] = f"ExecFlex Introduction: {client_name} ↔ {match_name}"
+    msg["From"] = EMAIL_USER
+    msg["To"] = recipient_email
+
+    msg.set_content(f"""
+Hi {recipient_email},
+
+We’re delighted to introduce you to {match_name} on behalf of {client_name} via ExecFlex.
+
+Please feel free to connect directly to explore the opportunity further.
+
+Best regards,  
+ExecFlex Team
+""")
 
     try:
-        server = smtplib.SMTP("smtp.gmail.com", 587)
-        server.starttls()
-        server.login(SENDER_EMAIL, SENDER_PASSWORD)
-        server.sendmail(SENDER_EMAIL, recipient_email, msg.as_string())
-        server.quit()
-        print("✅ Email sent successfully.")
-        return True
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.send_message(msg)
+            print("✅ Intro email sent!")
+            return True
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
         return False
