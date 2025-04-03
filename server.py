@@ -53,7 +53,7 @@ def send_intro():
         print("📦 Incoming data:", data)
 
         client_name = data.get("client_name")
-        match_name = "Matched Exec"  # Placeholder for testing
+        match_name = data.get("match_name")  # ✅ FIXED: Now actually uses incoming data
         email = data.get("email")
 
         print(f"🧪 Sending intro: {client_name} ↔ {match_name} to {email}")
