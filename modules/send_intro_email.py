@@ -30,7 +30,7 @@ def send_intro_email(client_name, match_name, recipient_email):
 
         # Compose email
         msg = EmailMessage()
-        msg["Subject"] = f"ExecFlex Intro: {client_name} ↔ {match_name}"
+        msg["Subject"] = f"ExecFlex Match Intro: {client_name} ↔ {match_name}"
         msg["From"] = EMAIL_ADDRESS
         msg["To"] = recipient_email
         msg.set_content(
