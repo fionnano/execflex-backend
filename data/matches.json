@@ -3,28 +3,44 @@
     "name": "Mike Smith",
     "role": "CTO",
     "industry": "Fintech",
-    "culture": "Startup Culture",
+    "expertise": "Technology",
+    "availability": "Full Time",
+    "experience": 10,
+    "salary": 5000,
+    "location": "Dublin",
     "summary": "Experienced CTO in fintech with a strong record in startup scaling and product leadership."
   },
   {
     "name": "Emma Johnson",
     "role": "COO",
     "industry": "Healthtech",
-    "culture": "Collaborative",
+    "expertise": "Operations",
+    "availability": "Part Time",
+    "experience": 8,
+    "salary": 3000,
+    "location": "Cork",
     "summary": "Operations leader with a background in growth-stage healthtech companies."
   },
   {
     "name": "Liam Chen",
     "role": "CMO",
     "industry": "SaaS",
-    "culture": "Remote-first",
+    "expertise": "Marketing",
+    "availability": "Full Time",
+    "experience": 5,
+    "salary": 2000,
+    "location": "Limerick",
     "summary": "CMO with expertise in demand generation and scaling remote teams."
   },
   {
     "name": "Sophia Duarte",
     "role": "CTO",
     "industry": "Fintech",
-    "culture": "Corporate",
+    "expertise": "Technology",
+    "availability": "Full Time",
+    "experience": 12,
+    "salary": 25000,
+    "location": "Galway",
     "summary": "Fintech CTO with experience in regulatory and enterprise-scale systems."
   },
   {
@@ -32,8 +48,28 @@
     "name": "Anna",
     "role": "CTO",
     "industry": "AI",
-    "culture": "fast-paced",
+    "expertise": "AI",
+    "availability": "Full Time",
+    "experience": 5,
+    "salary": 4000,
+    "location": "Dublin",
     "summary": "Anna is a dynamic CTO with a strong background in AI and scaling teams in fast-paced environments.",
-    "email": "anna@example.com"
+    "email": "anna@example.com",
+    "contact_name": "Anna Example",
+    "contact_email": "anna@example.com",
+    "role_description": "Looking for a CTO to lead AI-driven teams in a fast-paced startup environment.",
+    "commitment": "Full Time",
+    "budget_range": "€4000"
+  },
+  {
+    "name": "John Doe",
+    "role": "Strategy Consultant",
+    "industry": "Technology",
+    "expertise": "Strategy",
+    "availability": "fractional",
+    "experience": 5,
+    "salary": 4500,
+    "location": "Dublin",
+    "summary": "Experienced in strategy and full-time roles."
   }
 ]

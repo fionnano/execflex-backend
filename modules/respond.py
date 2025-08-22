@@ -1,10 +1,9 @@
 # modules/respond.py
 
+import openai
 import os
-from openai import OpenAI
 
-OPENAI_API_KEY = "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"
-client = OpenAI(api_key=OPENAI_API_KEY)
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def generate_response(user_input, known_facts):
     system_prompt = (
@@ -22,7 +21,7 @@ def generate_response(user_input, known_facts):
         f"- Culture: {known_facts.get('culture') or 'Unknown'}"
     )
 
-    response = client.chat.completions.create(
+    response = openai.ChatCompletion.create(
         model="gpt-4",
         messages=[
             {"role": "system", "content": system_prompt},
@@ -32,4 +31,4 @@ def generate_response(user_input, known_facts):
         max_tokens=300
     )
 
-    return response.choices[0].message.content
+    return response.choices[0].message["content"]

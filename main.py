@@ -5,113 +5,85 @@ from modules.listen import listen
 from modules.respond import generate_response
 from modules.speak import speak
 from modules.match_finder import find_best_match
-from modules.email_sender import send_intro_email
+from modules.email_sender import send_intro_email, log_match_history
 from modules.feedback_handler import save_feedback
 import os
 
 def run_intro():
-    intro_text = (
+    speak(
         "Hi, I’m Ai-dan, your advisor at ExecFlex. "
         "We connect ambitious companies to the leaders who turn vision into uncapped growth—and vice versa. "
-        "To start, can you tell me your name and whether you're looking to hire or be hired?"
+        "Let’s find your perfect match. Just tell me in one go—are you hiring or looking, and what type of role or leader are you focused on?"
     )
-    speak(intro_text)
 
 def main():
-    print("🟢 ExecFlex Voice Agent (Ai-dan) is running. Speak now...")
+    print("🟢 ExecFlex Voice Agent (Ai-dan) is running...")
     run_intro()
 
-    state = {
-        "name": "there",
-        "type": None,       # "client" or "candidate"
-        "role": None,
-        "industry": None,
-        "culture": None,
-        "match": None,
-        "match_suggested": False
-    }
+    try:
+        print("Listening...")
+        user_input = listen()
 
-    while True:
-        try:
-            print("Listening...")
-            user_input = listen()
-            if not user_input:
-                print("No speech detected.")
-                continue
+        print(f"You said: {user_input}")
 
-            print(f"You said: {user_input}")
+        # Basic natural language parsing
+        name = "there"
+        role = "Director"
+        industry = "Technology"
+        match_type = "candidate" if "hire" in user_input.lower() else "client"
 
-            # Extract name
-            if "my name is" in user_input.lower():
-                state["name"] = user_input.split("my name is")[-1].strip().split(" ")[0].capitalize()
+        if "cto" in user_input.lower():
+            role = "CTO"
+        elif "cfo" in user_input.lower():
+            role = "CFO"
+        elif "ceo" in user_input.lower():
+            role = "CEO"
 
-            # Determine type
-            if "hire" in user_input.lower():
-                state["type"] = "client"
-            elif "looking for a role" in user_input.lower() or "looking to work" in user_input.lower():
-                state["type"] = "candidate"
+        if "fintech" in user_input.lower():
+            industry = "Fintech"
+        elif "insurance" in user_input.lower():
+            industry = "Insurance"
 
-            if "cto" in user_input.lower():
-                state["role"] = "CTO"
-            if "fintech" in user_input.lower():
-                state["industry"] = "Fintech"
-            if any(word in user_input.lower() for word in ["culture", "collaborative", "fast-paced", "team"]):
-                state["culture"] = "Startup Culture"
+        matches = find_best_match(
+            industry=industry,
+            expertise=role,
+            availability="part_time",
+            min_experience=5,
+            max_salary=200000,
+            location="London"
+        )
 
-            # What info is missing?
-            missing = []
-            if not state["type"]:
-                missing.append("whether you're hiring or looking for a role")
-            if not state["role"]:
-                missing.append("the role you're focused on")
-            if not state["industry"]:
-                missing.append("the industry")
-            if not state["culture"]:
-                missing.append("your company or team culture")
+        if matches:
+            match = matches[0]
+            speak(
+                f"Thanks. Based on what you told me, I’d recommend {match['title']} at {match['company_info']['name']} in {match['location']}. "
+                f"{match['description'][:200]}... Would you like an email introduction?"
+            )
 
-            if not missing and not state["match_suggested"]:
-                match = find_best_match(
-                    match_type=state["type"],
-                    role=state["role"],
-                    industry=state["industry"],
-                    culture=state["culture"]
-                )
-                state["match"] = match
-                state["match_suggested"] = True
+            confirmation = listen()
+            if confirmation and "yes" in confirmation.lower():
+                recipient_email = "recipient@example.com"  # Replace with real one later
+                speak("Great! Sending the intro now.")
+                send_intro_email(name, match['title'], recipient_email)
 
-                if match:
-                    speak(
-                        f"Thanks, {state['name']}. Based on what you’ve told me, I’d recommend {match['name']}. "
-                        f"{match['summary']}. Would you like an email introduction?"
-                    )
-                    confirmation = listen()
-                    if confirmation and "yes" in confirmation.lower():
-                        recipient_email = "recipient@example.com"  # Replace with your test address
-                        speak("Great! I’ll send that intro now.")
-                        send_intro_email(state["name"], match["name"], recipient_email)
+                # ✅ Log match history to Supabase
+                try:
+                    log_match_history(name, match['title'], match['company_info']['name'])
+                except Exception as e:
+                    print(f"❌ Could not log match history: {e}")
 
-                        # Ask for feedback
-                        speak("Just before we wrap up, how do you feel about this match?")
-                        feedback = listen()
-                        if feedback:
-                            save_feedback(state["name"], match["name"], feedback)
+                speak("Before we finish—how do you feel about this match?")
+                feedback = listen()
+                if feedback:
+                    save_feedback(name, match['title'], feedback)
+                speak("Thanks! You're all set.")
+            else:
+                speak("No problem! You can always ask me for more profiles later.")
+        else:
+            speak("Thanks for sharing. I don’t have a perfect match just now, but I’ll follow up soon.")
 
-                        speak("Thanks! You're all set for now.")
-                        break
-                    else:
-                        speak("No problem! Let me know if you'd like to explore other profiles.")
-                        break
-                else:
-                    speak("Thanks for sharing everything. I don’t have a perfect match yet, but I’ll follow up soon.")
-                    break
-
-            elif missing:
-                speak(f"Could you tell me more about {missing[0]}?")
-                continue
-
-        except KeyboardInterrupt:
-            print("\n🛑 Stopping Ai-dan. Goodbye!")
-            break
+    except KeyboardInterrupt:
+        print("\n🛑 Stopping Ai-dan. Goodbye!")
 
 if __name__ == "__main__":
     main()

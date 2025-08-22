@@ -1,17 +1,26 @@
-import speech_recognition as sr
+import os
+import tempfile
+import sounddevice as sd
+import numpy as np
+import wave
+from faster_whisper import WhisperModel
+
+# Load the faster-whisper model (can also try "medium", "large-v2")
+model = WhisperModel("base", device="cpu", compute_type="int8")
+
+def record_audio(filename, duration=3, fs=44100):
+    print("🎙️ Listening...")
+    audio = sd.rec(int(duration * fs), samplerate=fs, channels=1, dtype='int16')
+    sd.wait()
+    with wave.open(filename, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(fs)
+        wf.writeframes(audio.tobytes())
 
 def listen():
-    r = sr.Recognizer()
-    with sr.Microphone() as source:
-        r.pause_threshold = 1.0
-        r.energy_threshold = 300
-        print("Listening...")
-        audio = r.listen(source, timeout=None)
-
-    try:
-        text = r.recognize_google(audio)
-        return text
-    except sr.UnknownValueError:
-        return ""
-    except sr.RequestError as e:
-        return f"Speech Recognition error: {e}"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmpfile:
+        record_audio(tmpfile.name)
+        print("🔍 Transcribing...")
+        segments, _ = model.transcribe(tmpfile.name)
+        return " ".join([segment.text for segment in segments])
