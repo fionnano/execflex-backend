@@ -431,9 +431,8 @@ def health():
 # -------------------------------
 # Debug: list routes at startup
 # -------------------------------
-@app.before_first_request
-def _debug_list_routes():
-    print("DEBUG Registered routes:")
+with app.app_context():
+    print("DEBUG Registered routes at startup:")
     for rule in app.url_map.iter_rules():
         print(" -", rule)
 
