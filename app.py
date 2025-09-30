@@ -293,7 +293,7 @@ def call_candidate():
         call = twilio_client.calls.create(
             to=phone,
             from_=TWILIO_PHONE,
-            url=url_for("voice_intro", _external=True)
+            url=url_for("voice_intro", _external=True)  # NOTE: your route is /voice/intro
         )
         print("DEBUG Call SID:", call.sid)
         return jsonify({"status": "calling", "sid": call.sid})
