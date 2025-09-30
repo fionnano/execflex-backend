@@ -1,18 +1,29 @@
 # app.py
 #
-# ExecFlex Voice Agent (Ai-dan) using Flask + Twilio + ElevenLabs
-# With tuned ElevenLabs voice settings for natural, conversational sound.
+# ExecFlex Voice Agent (Ai-dan) using Flask + Twilio + ElevenLabs + GPT rephrase
+# FULL version with:
+# - Render-compatible port binding
+# - /call_candidate route (POST + OPTIONS) with JSON responses
+# - Route listing + extra debug logs
+# - TTS caching
+# - Structured conversation flow
+# - Email intro + Supabase logging (via modules/email_sender)
+# - Best-match finder (via modules/match_finder)
 
 import os
 import uuid
 import requests
 from pathlib import Path
+
 from dotenv import load_dotenv
 load_dotenv()
+
 from flask import Flask, request, jsonify, Response, url_for
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
+
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Gather
+
 from modules.match_finder import find_best_match
 from modules.email_sender import send_intro_email
 
@@ -21,7 +32,7 @@ from modules.email_sender import send_intro_email
 # -------------------------------
 try:
     from openai import OpenAI
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY".lower()) or os.getenv("openai_api_key")
     gpt_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
     print("DEBUG OPENAI_API_KEY loaded:", (OPENAI_API_KEY[:7] + "…") if OPENAI_API_KEY else None)
 except Exception as _e:
@@ -62,7 +73,7 @@ def gpt_rephrase(context: str, fallback: str) -> str:
         return fallback
 
 # -------------------------------
-# Load .env
+# Load .env (explicit path log)
 # -------------------------------
 env_path = Path(__file__).resolve().parent / ".env"
 print("DEBUG Loading .env from:", env_path)
@@ -79,14 +90,17 @@ CORS(app, origins="*")
 # -------------------------------
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_PHONE       = os.getenv("TWILIO_PHONE_NUMBER")
+TWILIO_PHONE       = os.getenv("TWILIO_PHONE_NUMBER") or os.getenv("TWILIO_PHONE")
 twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+print("DEBUG TWILIO_ACCOUNT_SID loaded:", (TWILIO_ACCOUNT_SID[:6] + "…") if TWILIO_ACCOUNT_SID else None)
+print("DEBUG TWILIO_PHONE_NUMBER loaded:", TWILIO_PHONE)
 
 # -------------------------------
 # ElevenLabs
 # -------------------------------
-ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")
-ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID")
+ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY") or os.getenv("ELEVENLABS_API_KEY")
+ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID") or os.getenv("ELEVENLABS_VOICE_ID")
 
 print("DEBUG ELEVEN_API_KEY loaded:", ELEVEN_API_KEY[:6] if ELEVEN_API_KEY else None)
 print("DEBUG ELEVEN_VOICE_ID loaded:", ELEVEN_VOICE_ID)
@@ -122,7 +136,7 @@ def tts_generate(text: str) -> str:
     # data["voice_style"] = "Conversational"
 
     print("DEBUG Generating TTS:", text[:80])
-    r = requests.post(url, headers=headers, json=data)
+    r = requests.post(url, headers=headers, json=data, timeout=60)
     r.raise_for_status()
 
     with open(filepath, "wb") as f:
@@ -224,7 +238,7 @@ def _say_and_gather(resp: VoiceResponse, prompt: str, next_step: str, call_sid: 
     state = _init_session(call_sid)
     retries = state["_retries"].get(next_step, 0)
 
-    # NEW: Naturalize the prompt with GPT first (safe fallback)
+    # Naturalize the prompt with GPT first (safe fallback)
     context = (
         f"Step: {next_step}\n"
         f"State keys: user_type={state.get('user_type')}, name={state.get('name')}, "
@@ -234,7 +248,7 @@ def _say_and_gather(resp: VoiceResponse, prompt: str, next_step: str, call_sid: 
     natural_prompt = gpt_rephrase(context, prompt)
 
     tts_path = tts_generate(natural_prompt)
-    full_url = request.url_root[:-1] + tts_path
+    full_url = request.url_root[:-1] + tts_path  # absolute URL for Twilio to fetch
 
     gather = Gather(
         input="speech",
@@ -262,11 +276,13 @@ def _say_and_gather(resp: VoiceResponse, prompt: str, next_step: str, call_sid: 
 # Outbound call trigger
 # -------------------------------
 @app.route("/call_candidate", methods=["POST", "OPTIONS"])
+@cross_origin()
 def call_candidate():
     if request.method == "OPTIONS":
+        # Preflight OK
         return jsonify({"status": "ok"}), 200
 
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     phone = data.get("phone")
     print("DEBUG Incoming phone:", phone)
 
@@ -405,9 +421,26 @@ def voice_capture():
 # -------------------------------
 @app.route("/health", methods=["GET"])
 def health():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "env": os.getenv("ENV", "dev"),
+        "openai": bool(OPENAI_API_KEY),
+        "tts_cache_items": len(TTS_CACHE)
+    }
 
+# -------------------------------
+# Debug: list routes at startup
+# -------------------------------
+@app.before_first_request
+def _debug_list_routes():
+    print("DEBUG Registered routes:")
+    for rule in app.url_map.iter_rules():
+        print(" -", rule)
+
+# -------------------------------
+# Entrypoint (Render port binding)
+# -------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    print(f"DEBUG Booting Flask on port={port}")
     app.run(host="0.0.0.0", port=port, debug=True)
-
