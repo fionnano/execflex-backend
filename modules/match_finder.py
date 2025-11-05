@@ -7,10 +7,11 @@ try:
 except Exception:
     create_client = None
 
+
 # ---------- helpers ----------
 def _get_supabase():
     url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_KEY")
+    key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
     if not (url and key and create_client):
         return None
     try:
@@ -19,14 +20,15 @@ def _get_supabase():
         print("⚠️ Supabase init failed in match_finder:", e)
         return None
 
+
 def _digits_int(x):
-    """Pull digits from strings like '€8k-€12k/m' -> 812, etc. Returns int or 0."""
     if x is None:
         return 0
     if isinstance(x, (int, float)):
         return int(x)
     nums = [int("".join(re.findall(r"\d+", part))) for part in re.findall(r"\d[\d,\.]*", str(x))]
     return max(nums) if nums else 0
+
 
 def _to_set(v):
     if v is None:
@@ -35,55 +37,55 @@ def _to_set(v):
         return {str(x).strip().lower() for x in v if x is not None}
     return {str(v).strip().lower()}
 
+
 def _norm_candidate(raw: dict) -> dict:
-    """Normalize a candidate from many possible schemas."""
-    name = raw.get("name") or raw.get("full_name") or raw.get("candidate_name") or "Unknown Exec"
-    role = raw.get("role") or raw.get("title") or raw.get("headline") or ""
-    industries = (
-        raw.get("industry") if isinstance(raw.get("industry"), list) else
-        raw.get("industries") if raw.get("industries") is not None else
-        raw.get("sectors") or []
+    # --- name
+    name = (
+        raw.get("name")
+        or raw.get("full_name")
+        or raw.get("candidate_name")
+        or ""
     )
-    expertise = raw.get("expertise") or raw.get("skills") or raw.get("tags") or []
+    if not name:
+        first = raw.get("first_name") or raw.get("given_name") or raw.get("candidate_first_name")
+        last  = raw.get("last_name")  or raw.get("family_name") or raw.get("candidate_last_name")
+        name = " ".join([p for p in [first, last] if p]).strip() or "Unknown Exec"
+
+    role = raw.get("role") or raw.get("title") or raw.get("headline") or ""
+
+    industries_val = raw.get("industry") or raw.get("industries") or raw.get("sectors") or []
+    industries = _to_set(industries_val)
+
+    expertise_val = raw.get("expertise") or raw.get("skills") or raw.get("tags") or []
+    expertise = _to_set(expertise_val)
+
     availability = raw.get("availability") or raw.get("commitment") or ""
-    location = raw.get("location") or raw.get("city") or raw.get("region") or "Remote"
+    location = raw.get("location") or raw.get("city") or raw.get("region") or raw.get("country") or "Remote"
     summary = raw.get("summary") or raw.get("bio") or raw.get("about") or f"{name} — {role}"
     highlights = raw.get("highlights") or raw.get("achievements") or []
 
-    exp = (
-        raw.get("experience_years")
-        or raw.get("years_experience")
-        or raw.get("exp_years")
-        or raw.get("experience")
-        or 0
-    )
+    exp = raw.get("experience_years") or raw.get("years_experience") or raw.get("experience") or 0
     exp = _digits_int(exp)
 
-    comp = (
-        raw.get("salary_expectation")
-        or raw.get("day_rate")
-        or raw.get("daily_rate_usd")
-        or raw.get("rate")
-        or raw.get("compensation")
-        or raw.get("budget")
-        or 0
-    )
+    comp = raw.get("salary_expectation") or raw.get("day_rate") or raw.get("rate") or 0
     comp = _digits_int(comp)
 
     return {
-        "id": raw.get("id") or raw.get("uuid") or raw.get("candidate_id") or name.lower().replace(" ", "-"),
+        "id": raw.get("id") or name.lower().replace(" ", "-"),
         "name": name,
         "role": role,
-        "industries": _to_set(industries),
-        "expertise": _to_set(expertise),
+        "industries": industries,
+        "expertise": expertise,
         "availability": str(availability).lower(),
         "location": str(location),
         "experience_years": exp,
-        "comp_expectation": comp,  # generic numeric (soft cap)
+        "comp_expectation": comp,
         "summary": summary,
         "highlights": highlights if isinstance(highlights, list) else [str(highlights)],
         "_raw": raw,
+        "email": raw.get("email") or "candidate@example.com",  # fallback
     }
+
 
 def _score(cand: dict, industry: str, expertise: str, availability: str, location: str, max_salary: int) -> int:
     score = 0
@@ -100,8 +102,9 @@ def _score(cand: dict, industry: str, expertise: str, availability: str, locatio
     if location and (location.lower() in cand["location"].lower() or "remote" in cand["location"].lower()):
         score += 1
     if max_salary and cand["comp_expectation"] and cand["comp_expectation"] > max_salary:
-        score -= 2  # soft penalty so we still return a suggestion
+        score -= 2
     return score
+
 
 def _load_local_json():
     path = pathlib.Path(__file__).resolve().parents[1] / "matches.json"
@@ -110,19 +113,8 @@ def _load_local_json():
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:
             print("⚠️ Failed to read local matches.json:", e)
-    return [{
-        "id": "cand-001",
-        "name": "Alex Byrne",
-        "role": "Fractional CRO",
-        "industry": ["saas", "fintech"],
-        "culture": ["hands-on", "data-led"],
-        "summary": "18+ years scaling B2B SaaS revenue from Series A to C.",
-        "highlights": ["Built SDR->AE engine", "RevOps discipline", "EMEA expansion"],
-        "location": "Dublin, IE",
-        "experience_years": 12,
-        "day_rate": "1200",
-        "availability": "2-3 days/week"
-    }]
+    return []
+
 
 def _fetch_candidates_from_supabase():
     sb = _get_supabase()
@@ -139,6 +131,7 @@ def _fetch_candidates_from_supabase():
             continue
     return [], None
 
+
 def _log_search_event(params: dict, results_count: int, fallback_used: bool):
     sb = _get_supabase()
     if not sb:
@@ -153,8 +146,9 @@ def _log_search_event(params: dict, results_count: int, fallback_used: bool):
     except Exception as e:
         print("ℹ️ search_events insert skipped:", e)
 
+
 def find_best_match(industry: str, expertise: str, availability: str, min_experience: int, max_salary: int, location: str):
-    # 1) load candidates (Supabase first, then local fallback)
+    # 1) load candidates
     rows, table_used = _fetch_candidates_from_supabase()
     source = f"Supabase:{table_used}" if table_used else "local:matches.json"
     if not rows:
@@ -164,21 +158,20 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
     cands = [_norm_candidate(r) for r in rows]
     print(f"Pulled {len(cands)} candidates from {source}")
 
-    # 3) hard filter (experience only)
+    # 3) filter
     filtered = []
     for c in cands:
         if min_experience and c["experience_years"] and c["experience_years"] < int(min_experience):
             continue
         filtered.append(c)
 
-    # 4) score and sort
+    # 4) score + sort
     for c in filtered:
         c["_score"] = _score(c, industry, expertise, availability, location, int(max_salary) if max_salary else 0)
     filtered.sort(key=lambda x: x.get("_score", 0), reverse=True)
 
     fallback_used = False
     if not filtered:
-        # if everything filtered out, loosen constraints and still return a suggestion
         fallback_used = True
         for c in cands:
             c["_score"] = _score(c, industry, expertise, availability, location, int(max_salary) if max_salary else 0)
@@ -187,7 +180,6 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
 
     print(f"🎯 Returning {len(filtered)} filtered matches (fallback={'yes' if fallback_used else 'no'})")
 
-    # 5) optional: log the search
     _log_search_event(
         {
             "industry": industry,
@@ -201,16 +193,5 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
         fallback_used=fallback_used,
     )
 
-    # 6) return the single best match to the API
-    best = filtered[0] if filtered else None
-    if best:
-        return {
-            "id": best["id"],
-            "name": best["name"],
-            "role": best["role"],
-            "industry": sorted(list(best["industries"])) if best["industries"] else [],
-            "summary": best["summary"],
-            "highlights": best["highlights"],
-            "location": best["location"],
-        }
-    return None
+    # 5) return top 5 matches (list)
+    return filtered[:5]

@@ -437,9 +437,11 @@ with app.app_context():
         print(" -", rule)
 
 # -------------------------------
-# Entrypoint (Render port binding)
+# Healthcheck
 # -------------------------------
+@app.route("/health", methods=["GET"])
+def health():
+    return {"ok": True}
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    print(f"DEBUG Booting Flask on port={port}")
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)

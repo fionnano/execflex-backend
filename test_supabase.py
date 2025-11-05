@@ -8,6 +8,9 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+print("DEBUG URL:", SUPABASE_URL)
+print("DEBUG KEY starts with:", SUPABASE_KEY[:10] if SUPABASE_KEY else None)
+
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Fetch records from your board_opportunities table
