@@ -436,12 +436,5 @@ with app.app_context():
     for rule in app.url_map.iter_rules():
         print(" -", rule)
 
-# -------------------------------
-# Healthcheck
-# -------------------------------
-@app.route("/health", methods=["GET"])
-def health():
-    return {"ok": True}
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
