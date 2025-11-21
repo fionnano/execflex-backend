@@ -11,10 +11,22 @@ from datetime import datetime
 # Load .env
 load_dotenv()
 
-# Supabase setup
+# Supabase setup - lazy initialization
+# Try SUPABASE_SERVICE_KEY first (preferred for server-side), fall back to SUPABASE_KEY
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
+supabase = None
+
+def _get_supabase_client():
+    """Get or create Supabase client lazily."""
+    global supabase
+    if supabase is None and SUPABASE_URL and SUPABASE_KEY:
+        try:
+            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        except Exception as e:
+            print(f"⚠️ Supabase client creation failed: {e}")
+            supabase = None
+    return supabase
 
 # Email setup
 EMAIL_ADDRESS = os.getenv("EMAIL_USER")
@@ -54,8 +66,13 @@ def log_intro(user_type: str,
               status: str = "sent",
               notes: str | None = None):
     """Log into Supabase intros table."""
+    client = _get_supabase_client()
+    if not client:
+        print("⚠️ Supabase not configured; skipping intro log.")
+        return
+    
     try:
-        supabase.table("intros").insert({
+        client.table("intros").insert({
             "user_type": user_type,
             "requester_name": requester_name,
             "requester_email": requester_email,
