@@ -1,0 +1,939 @@
+openapi: 3.0.3
+info:
+  title: ExecFlex API
+  description: |
+    ExecFlex API - Combined API Server for executive matching and voice interactions.
+    
+    This API handles both web-based operations (role posting, matching, introductions) 
+    and voice/telephony features powered by Ai-dan, an AI voice agent.
+    
+    ## Features
+    - Executive candidate matching
+    - Role posting and management
+    - Email introductions
+    - Voice calls via Twilio (Ai-dan)
+    - User feedback collection
+    
+    ## Authentication
+    Currently, the API does not require authentication for MVP. Future versions may require API keys or OAuth tokens.
+  version: 1.0.0
+  contact:
+    name: ExecFlex API Support
+    url: https://execflex.com
+
+servers:
+  - url: https://execflex-backend-1.onrender.com
+    description: Production server (Render)
+  - url: http://localhost:5001
+    description: Local development server
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Matching
+    description: Executive candidate matching
+  - name: Roles
+    description: Role posting and management
+  - name: Introductions
+    description: Email introductions between clients and candidates
+  - name: Feedback
+    description: User feedback collection
+  - name: Voice
+    description: Voice/telephony features (Ai-dan)
+
+paths:
+  /:
+    get:
+      tags:
+        - Health
+      summary: Root health check
+      description: Simple health check endpoint that returns a status message
+      operationId: rootHealth
+      responses:
+        '200':
+          description: Backend is live
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "✅ Backend is live!"
+
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Detailed health check
+      description: Returns detailed health status including service configurations
+      operationId: health
+      responses:
+        '200':
+          description: Health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  env:
+                    type: string
+                    description: Environment (dev/prod)
+                    example: prod
+                  supabase_connected:
+                    type: boolean
+                    example: true
+                  twilio_configured:
+                    type: boolean
+                    example: true
+                  elevenlabs_configured:
+                    type: boolean
+                    example: true
+                  openai_configured:
+                    type: boolean
+                    example: true
+                  tts_cache_items:
+                    type: integer
+                    description: Number of cached TTS audio files
+                    example: 10
+              example:
+                ok: true
+                env: prod
+                supabase_connected: true
+                twilio_configured: true
+                elevenlabs_configured: true
+                openai_configured: true
+                tts_cache_items: 10
+
+  /matches:
+    get:
+      tags:
+        - Matching
+      summary: Deprecated - Get matches
+      description: |
+        This endpoint is deprecated. Use POST /match instead.
+      operationId: matches
+      deprecated: true
+      responses:
+        '410':
+          description: Endpoint deprecated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                ok: false
+                error: "This endpoint is deprecated. Use POST /match instead."
+
+  /matches/{match_id}:
+    get:
+      tags:
+        - Matching
+      summary: Get match by ID
+      description: Retrieve a specific candidate/match by their ID from Supabase
+      operationId: getMatchById
+      parameters:
+        - name: match_id
+          in: path
+          required: true
+          description: The ID of the candidate/match to retrieve
+          schema:
+            type: string
+          example: "cand-001"
+      responses:
+        '200':
+          description: Match found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  match:
+                    type: object
+                    description: Candidate/match details
+        '404':
+          description: Match not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /match:
+    post:
+      tags:
+        - Matching
+      summary: Find best candidate match
+      description: |
+        Finds the best matching executive candidate based on role requirements.
+        Uses a scoring algorithm considering industry, expertise, availability, location, and salary.
+      operationId: findMatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MatchRequest'
+            example:
+              industry: "Fintech"
+              expertise: "CFO"
+              availability: "fractional"
+              min_experience: 10
+              max_salary: 150000
+              location: "Ireland"
+      responses:
+        '200':
+          description: Match found or not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  message:
+                    type: string
+                  match:
+                    type: object
+                    nullable: true
+                    description: Match details or null if no match
+              examples:
+                match_found:
+                  value:
+                    ok: true
+                    message: "We recommend John Smith: Experienced CFO with 15 years in Fintech"
+                    match:
+                      name: "John Smith"
+                      role: "CFO"
+                      summary: "Experienced CFO with 15 years in Fintech"
+                      location: "Ireland"
+                      industries: ["Fintech", "SaaS"]
+                no_match:
+                  value:
+                    ok: true
+                    message: "No match found yet. We'll follow up with suggestions soon."
+                    match: null
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /post-role:
+    post:
+      tags:
+        - Roles
+      summary: Post a new executive role
+      description: Submit a new executive role posting to the platform
+      operationId: postRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RolePostingRequest'
+            example:
+              role_title: "Chief Financial Officer"
+              company_name: "Acme Corp"
+              industry: "Fintech"
+              role_description: "Leading financial strategy for Series B startup"
+              experience_level: "Senior"
+              commitment: "fractional"
+              role_type: "CFO"
+              is_remote: true
+              location: "Ireland"
+              budget_range: "€100k-€150k"
+              contact_name: "Jane Doe"
+              contact_email: "jane@acme.com"
+              phone: "+353123456789"
+      responses:
+        '201':
+          description: Role posted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  message:
+                    type: string
+              example:
+                ok: true
+                message: "Role posted successfully!"
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /view-roles:
+    get:
+      tags:
+        - Roles
+      summary: List all role postings
+      description: Retrieve all role postings from the database, ordered by creation date (newest first)
+      operationId: viewRoles
+      responses:
+        '200':
+          description: List of role postings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  roles:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RolePosting'
+              example:
+                ok: true
+                roles:
+                  - role_title: "Chief Financial Officer"
+                    company_name: "Acme Corp"
+                    industry: "Fintech"
+                    created_at: "2024-01-15T10:30:00Z"
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /request-intro:
+    post:
+      tags:
+        - Introductions
+      summary: Request an introduction (recommended)
+      description: |
+        Stores an introduction request in Supabase. This is the recommended endpoint for requesting introductions.
+        The introduction can be sent via email after the request is logged.
+      operationId: requestIntro
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IntroRequest'
+            example:
+              user_type: "client"
+              requester_name: "Jane Doe"
+              requester_email: "jane@acme.com"
+              requester_company: "Acme Corp"
+              match_id: "cand-001"
+              notes: "Series B GTM help needed"
+      responses:
+        '200':
+          description: Introduction request created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  intro_id:
+                    type: string
+                    description: ID of the created intro request
+                  intro:
+                    $ref: '#/components/schemas/IntroRecord'
+              example:
+                ok: true
+                intro_id: "intro-123"
+                intro:
+                  user_type: "client"
+                  requester_name: "Jane Doe"
+                  requester_email: "jane@acme.com"
+                  status: "pending"
+                  created_at: "2024-01-15T10:30:00Z"
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /send_intro:
+    post:
+      tags:
+        - Introductions
+      summary: Send introduction email (legacy)
+      description: |
+        Legacy endpoint for sending introduction emails. 
+        **Note:** This endpoint is deprecated. Use /request-intro instead.
+      operationId: sendIntro
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - client_name
+                - match_name
+                - email
+              properties:
+                client_name:
+                  type: string
+                match_name:
+                  type: string
+                email:
+                  type: string
+                  description: Client email address
+                client_email:
+                  type: string
+                  description: Alternative to email field
+                candidate_email:
+                  type: string
+                match_id:
+                  type: string
+                user_type:
+                  type: string
+                  enum: [client, candidate]
+            example:
+              client_name: "Jane Doe"
+              match_name: "John Smith"
+              email: "jane@acme.com"
+              candidate_email: "john@example.com"
+              user_type: "client"
+      responses:
+        '200':
+          description: Email sent successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: string
+                    enum: [success, fail]
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error or email send failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /feedback:
+    post:
+      tags:
+        - Feedback
+      summary: Submit feedback
+      description: Submit user feedback to be stored in Supabase
+      operationId: submitFeedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - user_name
+                - match_name
+                - feedback_text
+              properties:
+                user:
+                  type: string
+                  description: Alternative to user_name
+                user_name:
+                  type: string
+                match:
+                  type: string
+                  description: Alternative to match_name
+                match_name:
+                  type: string
+                feedback:
+                  type: string
+                  description: Alternative to feedback_text
+                feedback_text:
+                  type: string
+            example:
+              user_name: "Jane Doe"
+              match_name: "John Smith"
+              feedback_text: "Great match! Very responsive."
+      responses:
+        '200':
+          description: Feedback saved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: string
+                    example: "saved"
+        '400':
+          description: Missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /call_candidate:
+    post:
+      tags:
+        - Voice
+      summary: Initiate outbound Twilio call
+      description: |
+        Initiates an outbound phone call via Twilio to a candidate or client.
+        The call will be handled by Ai-dan, the AI voice agent.
+      operationId: callCandidate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - phone
+              properties:
+                phone:
+                  type: string
+                  description: Phone number in E.164 format (e.g., +1234567890)
+                  example: "+353123456789"
+      responses:
+        '200':
+          description: Call initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: string
+                    example: "calling"
+                  sid:
+                    type: string
+                    description: Twilio Call SID
+                    example: "CA1234567890abcdef"
+        '400':
+          description: Phone number required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Twilio not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    options:
+      tags:
+        - Voice
+      summary: CORS preflight for call_candidate
+      operationId: callCandidateOptions
+      responses:
+        '200':
+          description: Preflight OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+
+  /voice/intro:
+    post:
+      tags:
+        - Voice
+      summary: Twilio webhook - Call start
+      description: |
+        Webhook endpoint called by Twilio when a voice call starts.
+        This initiates the IVR flow with Ai-dan.
+        **Note:** This is a webhook endpoint, typically called by Twilio, not directly by API clients.
+      operationId: voiceIntro
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                CallSid:
+                  type: string
+                  description: Twilio Call SID
+      responses:
+        '200':
+          description: TwiML response for call handling
+          content:
+            application/xml:
+              schema:
+                type: string
+                description: TwiML XML
+        '503':
+          description: Voice features not available
+    get:
+      tags:
+        - Voice
+      summary: Twilio webhook - Call start (GET)
+      description: Alternative GET handler for Twilio webhook
+      operationId: voiceIntroGet
+      responses:
+        '200':
+          description: TwiML response
+          content:
+            application/xml:
+              schema:
+                type: string
+        '503':
+          description: Voice features not available
+
+  /voice/capture:
+    post:
+      tags:
+        - Voice
+      summary: Twilio webhook - Speech capture
+      description: |
+        Webhook endpoint called by Twilio after gathering speech input during a call.
+        Handles the conversation flow and state management for Ai-dan.
+        **Note:** This is a webhook endpoint, typically called by Twilio, not directly by API clients.
+      operationId: voiceCapture
+      parameters:
+        - name: step
+          in: query
+          description: Current conversation step
+          schema:
+            type: string
+            enum: [user_type, name, role, industry, location, availability, confirm_intro, email]
+          example: "name"
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                CallSid:
+                  type: string
+                  description: Twilio Call SID
+                SpeechResult:
+                  type: string
+                  description: Recognized speech text
+                Confidence:
+                  type: string
+                  description: Speech recognition confidence score
+      responses:
+        '200':
+          description: TwiML response for next step or call termination
+          content:
+            application/xml:
+              schema:
+                type: string
+                description: TwiML XML
+        '503':
+          description: Voice features not available
+    get:
+      tags:
+        - Voice
+      summary: Twilio webhook - Speech capture (GET)
+      description: Alternative GET handler for Twilio webhook
+      operationId: voiceCaptureGet
+      parameters:
+        - name: step
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: TwiML response
+          content:
+            application/xml:
+              schema:
+                type: string
+        '503':
+          description: Voice features not available
+
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      required:
+        - ok
+        - error
+      properties:
+        ok:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Error message
+          example: "Missing required fields: email, name"
+
+    MatchRequest:
+      type: object
+      required:
+        - industry
+        - expertise
+        - availability
+        - min_experience
+        - max_salary
+        - location
+      properties:
+        industry:
+          type: string
+          description: Industry focus (e.g., Fintech, SaaS, Insurance)
+          example: "Fintech"
+        expertise:
+          type: string
+          description: Desired role/expertise (e.g., CFO, CEO, CTO)
+          example: "CFO"
+        availability:
+          type: string
+          description: Availability type (fractional or full_time)
+          enum: [fractional, full_time]
+          example: "fractional"
+        min_experience:
+          type: integer
+          description: Minimum years of experience required
+          minimum: 0
+          example: 10
+        max_salary:
+          type: integer
+          description: Maximum salary budget
+          minimum: 0
+          example: 150000
+        location:
+          type: string
+          description: Location preference (e.g., Ireland, UK, Remote)
+          example: "Ireland"
+
+    RolePostingRequest:
+      type: object
+      required:
+        - role_title
+        - industry
+        - role_description
+        - experience_level
+        - commitment
+        - role_type
+      properties:
+        role_title:
+          type: string
+          example: "Chief Financial Officer"
+        company_name:
+          type: string
+          nullable: true
+          example: "Acme Corp"
+        industry:
+          type: string
+          example: "Fintech"
+        role_description:
+          type: string
+          example: "Leading financial strategy for Series B startup"
+        experience_level:
+          type: string
+          example: "Senior"
+        commitment:
+          type: string
+          description: Commitment type (fractional or full_time)
+          enum: [fractional, full_time]
+          example: "fractional"
+        role_type:
+          type: string
+          description: Role type (CFO, CEO, CTO, etc.)
+          example: "CFO"
+        is_remote:
+          type: boolean
+          default: false
+          example: true
+        location:
+          type: string
+          nullable: true
+          example: "Ireland"
+        budget_range:
+          type: string
+          nullable: true
+          example: "€100k-€150k"
+        contact_name:
+          type: string
+          nullable: true
+          example: "Jane Doe"
+        contact_email:
+          type: string
+          nullable: true
+          example: "jane@acme.com"
+        phone:
+          type: string
+          nullable: true
+          example: "+353123456789"
+        linkedin:
+          type: string
+          nullable: true
+          example: "https://linkedin.com/company/acme"
+        website:
+          type: string
+          nullable: true
+          example: "https://acme.com"
+        company_mission:
+          type: string
+          nullable: true
+          example: "Building the future of fintech"
+
+    RolePosting:
+      type: object
+      properties:
+        id:
+          type: string
+        role_title:
+          type: string
+        company_name:
+          type: string
+          nullable: true
+        industry:
+          type: string
+        role_description:
+          type: string
+        experience_level:
+          type: string
+        commitment_type:
+          type: string
+        role_type:
+          type: string
+        is_remote:
+          type: boolean
+        location:
+          type: string
+          nullable: true
+        compensation:
+          type: string
+          nullable: true
+        contact_name:
+          type: string
+          nullable: true
+        contact_email:
+          type: string
+          nullable: true
+        phone:
+          type: string
+          nullable: true
+        linkedin:
+          type: string
+          nullable: true
+        website:
+          type: string
+          nullable: true
+        company_mission:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    IntroRequest:
+      type: object
+      required:
+        - user_type
+        - requester_name
+        - requester_email
+        - match_id
+      properties:
+        user_type:
+          type: string
+          enum: [client, candidate]
+          description: Type of user making the request
+          example: "client"
+        requester_name:
+          type: string
+          example: "Jane Doe"
+        requester_email:
+          type: string
+          format: email
+          example: "jane@acme.com"
+        requester_company:
+          type: string
+          nullable: true
+          example: "Acme Corp"
+        match_id:
+          type: string
+          description: ID of the candidate/match
+          example: "cand-001"
+        notes:
+          type: string
+          nullable: true
+          description: Additional notes about the introduction
+          example: "Series B GTM help needed"
+
+    IntroRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        user_type:
+          type: string
+          enum: [client, candidate]
+        requester_name:
+          type: string
+        requester_email:
+          type: string
+        requester_company:
+          type: string
+          nullable: true
+        match_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, sent, failed]
+          default: pending
+        notes:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
