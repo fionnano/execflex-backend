@@ -1,5 +1,6 @@
 # modules/match_finder.py
-import os, re
+import os
+import re
 
 try:
     from supabase import create_client  # type: ignore
@@ -137,17 +138,21 @@ def _fetch_candidates_from_supabase():
 
 
 def find_best_match(industry: str, expertise: str, availability: str, min_experience: int, max_salary: int, location: str):
-    # 1) load candidates
-    rows, table_used = _fetch_candidates_from_supabase()
-    source = f"Supabase:executive_profiles" if table_used else "local:matches.json"
+    """
+    Find best matching candidates from Supabase.
+    Raises error if Supabase is unavailable or query fails.
+    """
+    # 1) load candidates from Supabase
+    rows = _fetch_candidates_from_supabase()
     if not rows:
-        rows = _load_local_json()
+        print("⚠️ No candidates found in Supabase executive_profiles table")
+        return []
 
     # 2) normalize
     cands = [_norm_candidate(r) for r in rows]
-    print(f"Pulled {len(cands)} candidates from {source}")
+    print(f"Pulled {len(cands)} candidates from Supabase:executive_profiles")
 
-    # 3) filter
+    # 3) filter by minimum experience
     filtered = []
     for c in cands:
         if min_experience and c["experience_years"] and c["experience_years"] < int(min_experience):
@@ -159,15 +164,15 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
         c["_score"] = _score(c, industry, expertise, availability, location, int(max_salary) if max_salary else 0)
     filtered.sort(key=lambda x: x.get("_score", 0), reverse=True)
 
-    fallback_used = False
+    # If no filtered results, return top scored from all candidates
     if not filtered:
-        fallback_used = True
+        print("⚠️ No candidates matched experience filter, using all candidates")
         for c in cands:
             c["_score"] = _score(c, industry, expertise, availability, location, int(max_salary) if max_salary else 0)
         cands.sort(key=lambda x: x.get("_score", 0), reverse=True)
         filtered = cands[:5]
 
-    print(f"🎯 Returning {len(filtered)} filtered matches (fallback={'yes' if fallback_used else 'no'})")
+    print(f"🎯 Returning {len(filtered)} matches")
 
-    # 5) return top 5 matches (list)
+    # 5) return top 5 matches
     return filtered[:5]
