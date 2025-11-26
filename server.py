@@ -1,21 +1,18 @@
 import os
-import json
 from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 # Your existing modules
-from modules.role_details import RoleDetails
 from modules.match_finder import find_best_match
 from modules.email_sender import send_intro_email
 
-# Supabase (optional but supported)
+# Supabase (required)
 try:
     from supabase import create_client, Client  # type: ignore
-except Exception:
-    create_client = None
-    Client = None
+except ImportError as e:
+    raise ImportError("Supabase client is required. Install: pip install supabase") from e
 
 # -------------------- ENV & INIT --------------------
 load_dotenv()
@@ -31,24 +28,22 @@ print(f"Email User={EMAIL_ADDRESS}")
 print(f"Supabase URL present? {bool(SUPABASE_URL)}")
 print("--------------------------------------------------")
 
+# Validate Supabase configuration
+if not SUPABASE_URL:
+    raise ValueError("SUPABASE_URL environment variable is required")
+if not SUPABASE_KEY:
+    raise ValueError("SUPABASE_SERVICE_KEY environment variable is required")
+
 app = Flask(__name__)
 # MVP: allow all; lock down to your Lovable domain later
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# Create Supabase client if possible
-supabase = None
-if SUPABASE_URL and SUPABASE_KEY and create_client:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        print("✅ Supabase client initialised.")
-    except Exception as e:
-        print("❌ Supabase init failed:", e)
-        supabase = None
-else:
-    print("ℹ️ Supabase not configured (this is fine for local/demo).")
-
-# Path to local demo candidates
-MATCHES_PATH = os.path.join(os.path.dirname(__file__), "matches.json")
+# Create Supabase client (required)
+try:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("✅ Supabase client initialised.")
+except Exception as e:
+    raise RuntimeError(f"Failed to initialize Supabase client: {e}") from e
 
 
 # -------------------- UTILITIES --------------------
@@ -68,41 +63,8 @@ def bad(message, status=400, **extra):
     return jsonify(data), status
 
 
-def load_matches_json():
-    if not os.path.exists(MATCHES_PATH):
-        sample = [
-            {
-                "id": "cand-001",
-                "name": "Alex Byrne",
-                "role": "Fractional CRO",
-                "industry": ["saas", "fintech"],
-                "culture": ["hands-on", "data-led"],
-                "summary": "18+ years scaling B2B SaaS revenue from Series A to C.",
-                "highlights": ["Built SDR->AE engine", "RevOps discipline", "EMEA expansion"],
-                "location": "Dublin, IE",
-            }
-        ]
-        with open(MATCHES_PATH, "w", encoding="utf-8") as f:
-            json.dump(sample, f, indent=2)
-        return sample
-
-    try:
-        with open(MATCHES_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print("❌ Failed to read matches.json:", e)
-        return []
 
 
-def score_candidate(m, role=None, industry=None, culture=None):
-    s = 0
-    if role and role.lower() in (m.get("role", "").lower()):
-        s += 3
-    if industry and industry.lower() in [i.lower() for i in m.get("industry", [])]:
-        s += 2
-    if culture and culture.lower() in [c.lower() for c in m.get("culture", [])]:
-        s += 1
-    return s
 
 
 # -------------------- ROUTES --------------------
@@ -121,26 +83,26 @@ def health():
 
 @app.route("/matches", methods=["GET"])
 def matches():
-    role = request.args.get("role")
-    industry = request.args.get("industry")
-    culture = request.args.get("culture")
-
-    items = load_matches_json()
-    for m in items:
-        m["_score"] = score_candidate(m, role, industry, culture)
-    items.sort(key=lambda x: x.get("_score", 0), reverse=True)
-    results = [{k: v for k, v in m.items() if not k.startswith("_")} for m in items if m.get("_score", 0) > 0]
-    if not results:
-        results = [{k: v for k, v in m.items() if not k.startswith("_")} for m in items[:5]]
-    return ok({"matches": results})
+    """
+    Get matches using the match_finder module (Supabase required).
+    This endpoint is deprecated - use /match POST instead.
+    """
+    return bad("This endpoint is deprecated. Use POST /match instead.", 410)
 
 
 @app.route("/matches/<match_id>", methods=["GET"])
 def match_by_id(match_id):
-    for m in load_matches_json():
-        if m.get("id") == match_id:
-            return ok({"match": m})
-    return bad("Match not found", 404)
+    """
+    Get a specific candidate by ID from Supabase.
+    """
+    try:
+        response = supabase.table("executive_profiles").select("*").eq("id", match_id).execute()
+        if response.data and len(response.data) > 0:
+            return ok({"match": response.data[0]})
+        return bad("Match not found", 404)
+    except Exception as e:
+        print(f"❌ Error fetching match {match_id}:", e)
+        return bad(f"Failed to fetch match: {str(e)}", 500)
 
 
 @app.route("/match", methods=["POST"])
@@ -233,22 +195,28 @@ def request_intro():
             "created_at": created,
         }
 
-        intro_id = None
-        if supabase:
-            try:
-                res = supabase.table("intros").insert(record).execute()
-                if getattr(res, "data", None):
-                    intro_id = res.data[0].get("id")
-            except Exception as e:
-                print("⚠️ Supabase insert failed (intros). Continuing.", e)
+        # Store intro request in Supabase
+        try:
+            res = supabase.table("intros").insert(record).execute()
+            intro_id = res.data[0].get("id") if getattr(res, "data", None) else None
+        except Exception as e:
+            print(f"❌ Supabase insert failed (intros): {e}")
+            return bad(f"Failed to store intro request: {str(e)}", 500)
 
         # Optional confirmation email to the requester
-        try:
-            cand = next((m for m in load_matches_json() if m.get("id") == data["match_id"]), None)
-            cand_name = cand["name"] if cand else data["match_id"]
-            send_intro_email(data["requester_name"], cand_name, data["requester_email"])
-        except Exception as e:
-            print("⚠️ send_intro_email failed (non-fatal):", e)
+        # TODO: turn on confirmation email
+        # try:
+        #     # Fetch candidate name from Supabase
+        #     cand_response = supabase.table("executive_profiles").select("first_name, last_name").eq("id", data["match_id"]).execute()
+        #     cand_name = data["match_id"]  # default if not found
+        #     if cand_response.data and len(cand_response.data) > 0:
+        #         cand = cand_response.data[0]
+        #         first = cand.get("first_name", "")
+        #         last = cand.get("last_name", "")
+        #         cand_name = " ".join([p for p in [first, last] if p]).strip() or cand_name
+        #     send_intro_email(data["requester_name"], cand_name, data["requester_email"])
+        # except Exception as e:
+        #     print(f"⚠️ send_intro_email failed (non-fatal): {e}")
 
         payload = {"intro_id": intro_id, "intro": record}
         return ok(payload)
@@ -261,56 +229,32 @@ def request_intro():
 @app.route("/feedback", methods=["POST"])
 def feedback():
     """
-    Inserts feedback into Supabase. First tries your existing schema:
+    Inserts feedback into Supabase using schema:
       user_name / match_name / feedback_text
-    Falls back to a simpler schema if needed: user / match / feedback
     """
     try:
         data = request.get_json(force=True, silent=True) or {}
-        user = data.get("user")
-        match = data.get("match")
-        fb = data.get("feedback")
+        user = data.get("user") or data.get("user_name")
+        match = data.get("match") or data.get("match_name")
+        fb = data.get("feedback") or data.get("feedback_text")
 
         if not all([user, match, fb]):
-            return bad("Missing required fields: user, match, feedback")
+            return bad("Missing required fields: user/user_name, match/match_name, feedback/feedback_text")
 
-        created = datetime.utcnow().isoformat() + "Z"
+        record = {
+            "user_name": user,
+            "match_name": match,
+            "feedback_text": fb,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+        }
 
-        if supabase:
-            # 1) Try your existing column names (seen in your screenshot)
-            try:
-                rec1 = {
-                    "user_name": user,
-                    "match_name": match,
-                    "feedback_text": fb,
-                    "created_at": created,
-                }
-                supabase.table("feedback").insert(rec1).execute()
-                print("✅ Feedback saved (user_name/match_name/feedback_text).")
-            except Exception as e1:
-                print("⚠️ Insert to feedback (user_name/match_name/feedback_text) failed:", e1)
-                # 2) Fallback to simple column names if the first insert fails
-                try:
-                    rec2 = {
-                        "user": user,
-                        "match": match,
-                        "feedback": fb,
-                        "created_at": created,
-                    }
-                    supabase.table("feedback").insert(rec2).execute()
-                    print("✅ Feedback saved (user/match/feedback).")
-                except Exception as e2:
-                    print("❌ Both feedback insert attempts failed:", e2)
-                    return bad("Could not save feedback.", 500)
-
-        else:
-            print("ℹ️ Supabase not configured; feedback accepted (not stored).")
-
+        supabase.table("feedback").insert(record).execute()
+        print("✅ Feedback saved to Supabase.")
         return ok({"status": "saved"})
 
     except Exception as e:
-        print("❌ /feedback error:", e)
-        return bad(str(e), 500)
+        print(f"❌ /feedback error: {e}")
+        return bad(f"Failed to save feedback: {str(e)}", 500)
 
 
 @app.route("/post-role", methods=["POST"])
@@ -319,63 +263,49 @@ def post_role():
         data = request.get_json(force=True, silent=True) or {}
         print("🚀 /post-role payload:", data)
 
+        # Only require truly essential fields
         required_fields = [
-            "role_title", "company_name", "industry", "role_description",
-            "experience_level", "commitment", "location", "budget_range",
-            "role_type", "contact_name", "contact_email"
+            "role_title", "industry", "role_description",
+            "experience_level", "commitment", "role_type"
         ]
-        missing = [f for f in required_fields if f not in data]
+        missing = [f for f in required_fields if f not in data or not data.get(f)]
         if missing:
             return bad(f"Missing required fields: {', '.join(missing)}")
 
-        # Local fallback write (keep simple audit)
-        role_details = RoleDetails(
-            role_title=data["role_title"],
-            company_name=data["company_name"],
-            industry=data["industry"],
-            role_description=data["role_description"],
-            experience_level=data["experience_level"],
-            commitment=data["commitment"],
-            location=data["location"],
-            budget_range=data["budget_range"],
-            role_type=data["role_type"],
-            contact_name=data["contact_name"],
-            contact_email=data["contact_email"],
-        )
+        # Helper to clean optional fields (convert "Not Specified"/"Not Provided" to None)
+        def clean_optional(value):
+            if not value or value in ["Not Specified", "Not Provided", ""]:
+                return None
+            return value
 
+        # Prepare Supabase payload with all fields
+        supabase_payload = {
+            "role_title": data["role_title"],
+            "company_name": clean_optional(data.get("company_name")),
+            "industry": data["industry"],
+            "role_description": data["role_description"],
+            "experience_level": data["experience_level"],
+            "commitment_type": data["commitment"],
+            "is_remote": data.get("is_remote", False),
+            "location": clean_optional(data.get("location")),
+            "compensation": clean_optional(data.get("budget_range")),
+            "role_type": data["role_type"],
+            "contact_name": clean_optional(data.get("contact_name")),
+            "contact_email": clean_optional(data.get("contact_email")),
+            "phone": clean_optional(data.get("phone")),
+            "linkedin": clean_optional(data.get("linkedin")),
+            "website": clean_optional(data.get("website")),
+            "company_mission": clean_optional(data.get("company_mission")),
+            "created_at": datetime.utcnow().isoformat() + "Z",
+        }
+
+        # Save to Supabase
         try:
-            items = load_matches_json()
-            items.append(role_details.to_dict())
-            with open(MATCHES_PATH, "w", encoding="utf-8") as f:
-                json.dump(items, f, indent=2)
+            supabase.table("role_postings").insert(supabase_payload).execute()
+            print("✅ Saved to Supabase (role_postings).")
         except Exception as e:
-            print("⚠️ Local save failed (matches.json). Continuing.", e)
-
-        if supabase:
-            try:
-                supabase_payload = {
-                    "role_title": data["role_title"],
-                    "company_name": data["company_name"],
-                    "industry": data["industry"],
-                    "role_description": data["role_description"],
-                    "experience_level": data["experience_level"],
-                    "commitment_type": data["commitment"],
-                    "is_remote": data.get("is_remote", False),
-                    "location": data["location"],
-                    "compensation": data["budget_range"],
-                    "role_type": data["role_type"],
-                    "contact_name": data["contact_name"],
-                    "contact_email": data["contact_email"],
-                    "phone": data.get("phone"),
-                    "linkedin": data.get("linkedin"),
-                    "website": data.get("website"),
-                    "company_mission": data.get("company_mission"),
-                    "created_at": datetime.utcnow().isoformat() + "Z",
-                }
-                supabase.table("role_postings").insert(supabase_payload).execute()
-                print("✅ Saved to Supabase (role_postings).")
-            except Exception as e:
-                print("⚠️ Supabase insert failed (role_postings). Continuing.", e)
+            print(f"❌ Supabase insert failed (role_postings): {e}")
+            return bad(f"Failed to save role posting: {str(e)}", 500)
 
         return ok({"message": "Role posted successfully!"}, status=201)
 
@@ -386,22 +316,16 @@ def post_role():
 
 @app.route("/view-roles", methods=["GET"])
 def view_roles():
+    """
+    Retrieve all role postings from Supabase.
+    """
     try:
-        if supabase:
-            try:
-                response = supabase.table("role_postings").select("*").order("created_at", desc=True).execute()
-                roles = response.data or []
-                return ok({"roles": roles})
-            except Exception as e:
-                print("⚠️ Supabase select failed (role_postings). Falling back to local.", e)
-
-        items = load_matches_json()
-        roles = [i for i in items if "role_title" in i and "company_name" in i]
+        response = supabase.table("role_postings").select("*").order("created_at", desc=True).execute()
+        roles = response.data or []
         return ok({"roles": roles})
-
     except Exception as e:
-        print("❌ /view-roles error:", e)
-        return bad(str(e), 500)
+        print(f"❌ /view-roles error: {e}")
+        return bad(f"Failed to fetch role postings: {str(e)}", 500)
 
 
 if __name__ == "__main__":
