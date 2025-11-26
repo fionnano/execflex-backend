@@ -1,6 +1,5 @@
 # modules/match_finder.py
-import os, re, json, pathlib
-from datetime import datetime
+import os, re
 
 try:
     from supabase import create_client  # type: ignore
@@ -10,15 +9,20 @@ except Exception:
 
 # ---------- helpers ----------
 def _get_supabase():
+    """Get Supabase client. Raises error if Supabase is not configured."""
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
-    if not (url and key and create_client):
-        return None
+    
+    if not url or not key:
+        raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set")
+    
+    if not create_client:
+        raise ImportError("Supabase client could not be imported. Install: pip install supabase")
+    
     try:
         return create_client(url, key)
     except Exception as e:
-        print("⚠️ Supabase init failed in match_finder:", e)
-        return None
+        raise RuntimeError(f"Failed to initialize Supabase client: {e}") from e
 
 
 def _digits_int(x):
@@ -39,36 +43,51 @@ def _to_set(v):
 
 
 def _norm_candidate(raw: dict) -> dict:
-    # --- name
-    name = (
-        raw.get("name")
-        or raw.get("full_name")
-        or raw.get("candidate_name")
-        or ""
-    )
-    if not name:
-        first = raw.get("first_name") or raw.get("given_name") or raw.get("candidate_first_name")
-        last  = raw.get("last_name")  or raw.get("family_name") or raw.get("candidate_last_name")
-        name = " ".join([p for p in [first, last] if p]).strip() or "Unknown Exec"
+    """
+    Normalize candidate data from executive_profiles table.
+    Handles executive_profiles schema fields directly.
+    """
+    # --- name (executive_profiles has first_name, last_name)
+    first = raw.get("first_name") or ""
+    last = raw.get("last_name") or ""
+    name = " ".join([p for p in [first, last] if p]).strip() or "Unknown Exec"
 
-    role = raw.get("role") or raw.get("title") or raw.get("headline") or ""
+    # --- role (executive_profiles has headline)
+    role = raw.get("headline") or ""
 
-    industries_val = raw.get("industry") or raw.get("industries") or raw.get("sectors") or []
+    # --- industries (executive_profiles has industries array)
+    industries_val = raw.get("industries") or []
     industries = _to_set(industries_val)
 
-    expertise_val = raw.get("expertise") or raw.get("skills") or raw.get("tags") or []
+    # --- expertise (executive_profiles has expertise array)
+    expertise_val = raw.get("expertise") or raw.get("skills") or []
     expertise = _to_set(expertise_val)
 
-    availability = raw.get("availability") or raw.get("commitment") or ""
-    location = raw.get("location") or raw.get("city") or raw.get("region") or raw.get("country") or "Remote"
-    summary = raw.get("summary") or raw.get("bio") or raw.get("about") or f"{name} — {role}"
-    highlights = raw.get("highlights") or raw.get("achievements") or []
+    # --- availability (executive_profiles has availability_type)
+    availability = raw.get("availability_type") or ""
 
-    exp = raw.get("experience_years") or raw.get("years_experience") or raw.get("experience") or 0
+    # --- location (executive_profiles has location)
+    location = raw.get("location") or "Remote"
+
+    # --- summary (executive_profiles has bio)
+    summary = raw.get("bio") or f"{name} — {role}"
+
+    # --- highlights (executive_profiles has achievements array)
+    highlights = raw.get("achievements") or []
+
+    # --- experience (executive_profiles has years_of_experience)
+    exp = raw.get("years_of_experience") or 0
     exp = _digits_int(exp)
 
-    comp = raw.get("salary_expectation") or raw.get("day_rate") or raw.get("rate") or 0
-    comp = _digits_int(comp)
+    # --- compensation (executive_profiles has rate_range JSON)
+    comp = 0
+    rate_range = raw.get("rate_range")
+    if rate_range:
+        if isinstance(rate_range, dict):
+            # Try to extract numeric value from rate_range JSON
+            comp = _digits_int(rate_range.get("min")) or _digits_int(rate_range.get("max")) or _digits_int(rate_range.get("amount"))
+        else:
+            comp = _digits_int(rate_range)
 
     return {
         "id": raw.get("id") or name.lower().replace(" ", "-"),
@@ -106,51 +125,21 @@ def _score(cand: dict, industry: str, expertise: str, availability: str, locatio
     return score
 
 
-def _load_local_json():
-    path = pathlib.Path(__file__).resolve().parents[1] / "matches.json"
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception as e:
-            print("⚠️ Failed to read local matches.json:", e)
-    return []
-
-
 def _fetch_candidates_from_supabase():
+    """Fetch candidates from executive_profiles table. Raises error if Supabase is unavailable."""
     sb = _get_supabase()
-    if not sb:
-        return [], None
-    tables = ["executive_profiles", "candidates", "matches", "profiles"]
-    for t in tables:
-        try:
-            res = sb.table(t).select("*").execute()
-            data = res.data or []
-            if data:
-                return data, t
-        except Exception:
-            continue
-    return [], None
-
-
-def _log_search_event(params: dict, results_count: int, fallback_used: bool):
-    sb = _get_supabase()
-    if not sb:
-        return
     try:
-        sb.table("search_events").insert({
-            "created_at": datetime.utcnow().isoformat() + "Z",
-            **params,
-            "results_count": results_count,
-            "fallback_used": fallback_used,
-        }).execute()
+        res = sb.table("executive_profiles").select("*").execute()
+        data = res.data or []
+        return data
     except Exception as e:
-        print("ℹ️ search_events insert skipped:", e)
+        raise RuntimeError(f"Failed to fetch candidates from Supabase: {e}") from e
 
 
 def find_best_match(industry: str, expertise: str, availability: str, min_experience: int, max_salary: int, location: str):
     # 1) load candidates
     rows, table_used = _fetch_candidates_from_supabase()
-    source = f"Supabase:{table_used}" if table_used else "local:matches.json"
+    source = f"Supabase:executive_profiles" if table_used else "local:matches.json"
     if not rows:
         rows = _load_local_json()
 
@@ -179,19 +168,6 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
         filtered = cands[:5]
 
     print(f"🎯 Returning {len(filtered)} filtered matches (fallback={'yes' if fallback_used else 'no'})")
-
-    _log_search_event(
-        {
-            "industry": industry,
-            "expertise": expertise,
-            "availability": availability,
-            "min_experience": int(min_experience) if min_experience else 0,
-            "max_salary": int(max_salary) if max_salary else 0,
-            "location": location,
-        },
-        results_count=len(filtered),
-        fallback_used=fallback_used,
-    )
 
     # 5) return top 5 matches (list)
     return filtered[:5]
