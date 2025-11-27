@@ -140,20 +140,27 @@ paths:
                   message:
                     type: string
                   match:
-                    type: object
+                    $ref: '#/components/schemas/Match'
                     nullable: true
-                    description: Match details or null if no match
+                    description: Match details (best candidate) or null if no match
               examples:
                 match_found:
                   value:
                     ok: true
                     message: "We recommend John Smith: Experienced CFO with 15 years in Fintech"
                     match:
+                      id: "cand-001"
                       name: "John Smith"
                       role: "CFO"
                       summary: "Experienced CFO with 15 years in Fintech"
                       location: "Ireland"
                       industries: ["Fintech", "SaaS"]
+                      expertise: ["CFO", "Finance"]
+                      availability: "fractional"
+                      experience_years: 15
+                      comp_expectation: 120000
+                      highlights: ["Led Series B fundraising", "Built finance team from scratch"]
+                      email: "john@example.com"
                 no_match:
                   value:
                     ok: true
@@ -640,6 +647,67 @@ paths:
 
 components:
   schemas:
+    Match:
+      type: object
+      description: Executive candidate match result
+      properties:
+        id:
+          type: string
+          description: Candidate ID
+          example: "cand-001"
+        name:
+          type: string
+          description: Full name of candidate
+          example: "John Smith"
+        role:
+          type: string
+          description: Role/title
+          example: "CFO"
+        summary:
+          type: string
+          description: Brief summary/bio
+          example: "Experienced CFO with 15 years in Fintech"
+        location:
+          type: string
+          description: Location preference
+          example: "Ireland"
+        industries:
+          type: array
+          items:
+            type: string
+          description: List of industries
+          example: ["Fintech", "SaaS"]
+        expertise:
+          type: array
+          items:
+            type: string
+          description: List of expertise areas
+          example: ["CFO", "Finance"]
+        availability:
+          type: string
+          description: Availability type
+          enum: [fractional, full_time]
+          example: "fractional"
+        experience_years:
+          type: integer
+          description: Years of experience
+          example: 15
+        comp_expectation:
+          type: integer
+          description: Compensation expectation
+          example: 120000
+        highlights:
+          type: array
+          items:
+            type: string
+          description: Key achievements/highlights
+          example: ["Led Series B fundraising", "Built finance team from scratch"]
+        email:
+          type: string
+          format: email
+          description: Contact email
+          example: "john@example.com"
+
     ErrorResponse:
       type: object
       required:
