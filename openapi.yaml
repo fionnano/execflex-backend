@@ -88,6 +88,11 @@ paths:
                     $ref: '#/components/schemas/Match'
                     nullable: true
                     description: Match details (best candidate) or null if no match
+                  matches:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Match'
+                    description: List of all matches (up to 5), sorted by score
               examples:
                 match_found:
                   value:
@@ -111,6 +116,7 @@ paths:
                     ok: true
                     message: "No match found yet. We'll follow up with suggestions soon."
                     match: null
+                    matches: []
         '400':
           description: Invalid request
           content:
@@ -366,6 +372,92 @@ paths:
                 type: string
         '503':
           description: Voice features not available
+
+  /call_scheduling:
+    post:
+      tags:
+        - Voice
+      summary: Initiate scheduling call
+      description: |
+        Initiates an outbound Twilio call for scheduling a meeting with an executive.
+        The call will be handled by Ai-dan for scheduling assistance.
+      operationId: callScheduling
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - phone
+              properties:
+                phone:
+                  type: string
+                  description: Phone number in E.164 format (e.g., +1234567890)
+                  example: "+353123456789"
+                executiveId:
+                  type: string
+                  description: ID of the executive to schedule with (optional)
+                  example: "exec-123"
+                executiveName:
+                  type: string
+                  description: Name of the executive (optional, will be fetched if not provided)
+                  example: "John Smith"
+                executiveExpertise:
+                  type: string
+                  description: Expertise of the executive (optional)
+                  example: "CFO, Fintech"
+      responses:
+        '200':
+          description: Call initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  status:
+                    type: string
+                    example: "calling"
+                  sid:
+                    type: string
+                    description: Twilio Call SID
+                    example: "CA1234567890abcdef"
+        '400':
+          description: Phone number or executive ID required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Twilio not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    options:
+      tags:
+        - Voice
+      summary: CORS preflight for call_scheduling
+      operationId: callSchedulingOptions
+      responses:
+        '200':
+          description: Preflight OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
 
   /voice/capture:
     post:

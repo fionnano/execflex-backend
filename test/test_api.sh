@@ -196,17 +196,32 @@ run_test "Request Introduction - Missing Fields (400)" "POST" "/request-intro" \
         "user_type": "client"
     }' "400"
 
-# Test 8: Call Candidate - Valid request (may fail if Twilio not configured)
+# Test 8: Call Scheduling - Valid request (may fail if Twilio not configured)
+run_test "Call Scheduling - Valid Request" "POST" "/call_scheduling" \
+    '{
+        "phone": "+353123456789",
+        "executiveId": "test-exec-001",
+        "executiveName": "Test Executive",
+        "executiveExpertise": "CFO"
+    }' "200" "true"  # Skip on error since Twilio may not be configured
+
+# Test 9: Call Scheduling - Missing phone (should return 400)
+run_test "Call Scheduling - Missing Phone (400)" "POST" "/call_scheduling" \
+    '{
+        "executiveId": "test-exec-001"
+    }' "400"
+
+# Test 10: Call Candidate - Valid request (may fail if Twilio not configured)
 run_test "Call Candidate - Valid Request" "POST" "/call_candidate" \
     '{
         "phone": "+353123456789"
     }' "200" "true"  # Skip on error since Twilio may not be configured
 
-# Test 9: Call Candidate - Missing phone (should return 400)
+# Test 11: Call Candidate - Missing phone (should return 400)
 run_test "Call Candidate - Missing Phone (400)" "POST" "/call_candidate" \
     '{}' "400"
 
-# Test 10: CORS Preflight for call_candidate
+# Test 12: CORS Preflight for call_candidate
 run_test "CORS Preflight - call_candidate" "OPTIONS" "/call_candidate" "" "200"
 
 # Summary

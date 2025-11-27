@@ -85,7 +85,7 @@ You can view the OpenAPI spec using tools like:
 
 **IMPORTANT**: Follow this principle when adding new endpoints:
 
-### ✅ Create Backend Endpoints For:
+### ✅ Create Backend Endpoints For Hidden things:
 1. **Secret Credentials / API Keys**
    - Email sending (Gmail SMTP credentials)
    - Twilio voice calls (Twilio auth tokens)
