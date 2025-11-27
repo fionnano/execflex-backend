@@ -37,9 +37,9 @@ backend/
 # Install dependencies
 pip install -r requirements.txt
 
-# Set environment variables (see .env.example)
-export SUPABASE_URL=...
-export SUPABASE_SERVICE_KEY=...
+# Copy environment variables template and update with your values
+cp .env.example .env
+# Edit .env with your actual values (see .env.example for details)
 
 # Run server
 python server.py
@@ -47,22 +47,22 @@ python server.py
 
 ## Configuration
 
-Required environment variables are defined in `config/app_config.py`.
+### Local Development
 
-### Required
-- `SUPABASE_URL` - Supabase project URL
-- `SUPABASE_SERVICE_KEY` - Supabase service role key
-- `EMAIL_USER` - Gmail address for sending emails
-- `EMAIL_PASS` - Gmail password/app password
-- `PORT` - Server port (default: 5001)
+1. Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
 
-### Optional (Voice Features)
-- `TWILIO_ACCOUNT_SID` - Twilio account SID
-- `TWILIO_AUTH_TOKEN` - Twilio auth token
-- `TWILIO_PHONE_NUMBER` - Twilio phone number
-- `ELEVEN_API_KEY` - ElevenLabs API key for TTS
-- `ELEVEN_VOICE_ID` - ElevenLabs voice ID
-- `OPENAI_API_KEY` - OpenAI API key for conversation rephrasing
+2. Edit `.env` and fill in your actual values. See `.env.example` for all available environment variables and their descriptions.
+
+**Note:** `.env` is gitignored - never commit it to the repository.
+
+### Environment Variables
+
+All environment variables are documented in `.env.example`. For Render deployment, see `RENDER_ENV_VARS.md` for a complete checklist.
+
+Environment variable loading is handled in `config/app_config.py`.
 
 ## API Endpoints
 
@@ -72,8 +72,6 @@ Required environment variables are defined in `config/app_config.py`.
 
 ### Matching
 - `POST /match` - Find best candidate match
-- `GET /matches/<id>` - Get match by ID
-- `GET /matches` - Deprecated
 
 ### Roles
 - `POST /post-role` - Submit role posting
