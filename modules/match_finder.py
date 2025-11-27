@@ -181,5 +181,18 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
 
     print(f"🎯 Returning {len(filtered)} matches")
 
-    # 5) return top 5 matches
+    # 5) Convert sets to lists for JSON serialization and clean up response
+    for match in filtered:
+        # Convert industries and expertise sets to lists
+        if isinstance(match.get("industries"), set):
+            match["industries"] = sorted(list(match["industries"]))
+        if isinstance(match.get("expertise"), set):
+            match["expertise"] = sorted(list(match["expertise"]))
+        # Remove internal fields that shouldn't be in the response
+        match.pop("_raw", None)
+        # Rename _score to score for public API
+        if "_score" in match:
+            match["score"] = match.pop("_score")
+    
+    # 6) return top 5 matches
     return filtered[:5]
