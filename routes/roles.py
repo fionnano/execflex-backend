@@ -51,29 +51,27 @@ def post_role():
             "created_at": datetime.utcnow().isoformat() + "Z",
         }
 
-        # Save to Supabase
+        # Save to Supabase and return the created record
         try:
-            supabase_client.table("role_postings").insert(supabase_payload).execute()
+            response = supabase_client.table("role_postings").insert(supabase_payload).execute()
             print("✅ Saved to Supabase (role_postings).")
+            
+            # Supabase insert returns the created record(s) in response.data
+            created_record = response.data[0] if response.data and len(response.data) > 0 else None
+            
+            if created_record:
+                return ok({
+                    "message": "Role posted successfully!",
+                    "role": created_record
+                }, status=201)
+            else:
+                # Fallback if response doesn't include the record
+                return ok({"message": "Role posted successfully!"}, status=201)
         except Exception as e:
             print(f"❌ Supabase insert failed (role_postings): {e}")
             return bad(f"Failed to save role posting: {str(e)}", 500)
 
-        return ok({"message": "Role posted successfully!"}, status=201)
-
     except Exception as e:
         print("❌ /post-role error:", e)
         return bad(str(e), 500)
-
-
-@roles_bp.route("/view-roles", methods=["GET"])
-def view_roles():
-    """Retrieve all role postings from Supabase."""
-    try:
-        response = supabase_client.table("role_postings").select("*").order("created_at", desc=True).execute()
-        roles = response.data or []
-        return ok({"roles": roles})
-    except Exception as e:
-        print(f"❌ /view-roles error: {e}")
-        return bad(f"Failed to fetch role postings: {str(e)}", 500)
 
