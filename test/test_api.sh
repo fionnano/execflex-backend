@@ -96,11 +96,11 @@ run_test() {
         if [ "$skip_on_error" = "true" ]; then
             echo -e "  ${YELLOW}⊘ SKIP${NC} (Connection failed - skipping on error)"
             ((SKIPPED++))
-            TEST_RESULTS+=("SKIP: ${test_name} (Connection failed)")
+            TEST_RESULTS+=("SKIP: ${method} ${endpoint} - ${test_name} (Connection failed)")
         else
             echo -e "  ${RED}✗ FAIL${NC} (Connection failed)"
             ((FAILED++))
-            TEST_RESULTS+=("FAIL: ${test_name} (Connection failed)")
+            TEST_RESULTS+=("FAIL: ${method} ${endpoint} - ${test_name} (Connection failed)")
             echo -e "  ${RED}Error: ${body}${NC}"
         fi
         echo ""
@@ -111,7 +111,7 @@ run_test() {
     if [ "$http_code" -eq "$expected_status" ]; then
         echo -e "  ${GREEN}✓ PASS${NC} (HTTP ${http_code})"
         ((PASSED++))
-        TEST_RESULTS+=("PASS: ${test_name}")
+        TEST_RESULTS+=("PASS: ${method} ${endpoint} - ${test_name}")
         
         # Pretty print JSON response if possible
         if command -v jq &> /dev/null && echo "$body" | jq . &> /dev/null; then
@@ -124,11 +124,11 @@ run_test() {
         if [ "$skip_on_error" = "true" ]; then
             echo -e "  ${YELLOW}⊘ SKIP${NC} (HTTP ${http_code} - expected ${expected_status}, but skipping on error)"
             ((SKIPPED++))
-            TEST_RESULTS+=("SKIP: ${test_name} (HTTP ${http_code})")
+            TEST_RESULTS+=("SKIP: ${method} ${endpoint} - ${test_name} (HTTP ${http_code})")
         else
             echo -e "  ${RED}✗ FAIL${NC} (HTTP ${http_code}, expected ${expected_status})"
             ((FAILED++))
-            TEST_RESULTS+=("FAIL: ${test_name} (HTTP ${http_code})")
+            TEST_RESULTS+=("FAIL: ${method} ${endpoint} - ${test_name} (HTTP ${http_code})")
             echo -e "  ${RED}Response: ${body}${NC}"
         fi
     fi
@@ -259,22 +259,33 @@ echo -e "${RED}Failed:  ${FAILED}${NC}"
 echo -e "${YELLOW}Skipped: ${SKIPPED}${NC}"
 echo ""
 
+# Always show detailed endpoint results
+echo -e "${BLUE}========================================${NC}"
+echo -e "${BLUE}Endpoint Test Results${NC}"
+echo -e "${BLUE}========================================${NC}"
+if [ ${#TEST_RESULTS[@]} -eq 0 ]; then
+    echo -e "${YELLOW}No test results recorded${NC}"
+else
+    for result in "${TEST_RESULTS[@]}"; do
+        if [[ $result == PASS:* ]]; then
+            echo -e "  ${GREEN}✓${NC} ${result#PASS: }"
+        elif [[ $result == SKIP:* ]]; then
+            echo -e "  ${YELLOW}⊘${NC} ${result#SKIP: }"
+        else
+            echo -e "  ${RED}✗${NC} ${result#FAIL: }"
+        fi
+    done
+fi
+echo ""
+
 if [ $FAILED -eq 0 ]; then
     echo -e "${GREEN}✓ All critical tests passed!${NC}"
+    if [ $SKIPPED -gt 0 ]; then
+        echo -e "${YELLOW}⚠ Note: ${SKIPPED} test(s) were skipped (likely optional features not configured)${NC}"
+    fi
     exit 0
 else
     echo -e "${RED}✗ Some tests failed. Review the output above.${NC}"
-    echo ""
-    echo "Detailed Results:"
-    for result in "${TEST_RESULTS[@]}"; do
-        if [[ $result == PASS:* ]]; then
-            echo -e "  ${GREEN}${result}${NC}"
-        elif [[ $result == SKIP:* ]]; then
-            echo -e "  ${YELLOW}${result}${NC}"
-        else
-            echo -e "  ${RED}${result}${NC}"
-        fi
-    done
     exit 1
 fi
 
