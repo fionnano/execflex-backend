@@ -7,7 +7,7 @@ from flask_cors import cross_origin
 from routes import voice_bp
 from utils.response_helpers import ok, bad
 from config.clients import twilio_client, VoiceResponse
-from config.app_config import TWILIO_PHONE
+from config.app_config import TWILIO_PHONE_NUMBER
 from services.voice_session_service import init_session
 from services.voice_conversation_service import say_and_gather, handle_conversation_step
 
@@ -37,7 +37,7 @@ def call_candidate():
         from flask import url_for
         call = twilio_client.calls.create(
             to=phone,
-            from_=TWILIO_PHONE,
+            from_=TWILIO_PHONE_NUMBER,
             url=url_for('voice.voice_intro', _external=True)
         )
         print("DEBUG Call SID:", call.sid)

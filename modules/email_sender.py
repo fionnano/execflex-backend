@@ -33,16 +33,8 @@ EMAIL_ADDRESS = os.getenv("EMAIL_USER")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASS")
 SENDER_NAME = "ExecFlex Introductions"
 
-SMTP_HOST = (
-    os.getenv("EMAIL_SMTP_HOST")
-    or os.getenv("EMAIL_HOST")
-    or "smtp.gmail.com"
-)
-SMTP_PORT = int(
-    os.getenv("EMAIL_SMTP_PORT")
-    or os.getenv("EMAIL_PORT")
-    or "465"
-)
+SMTP_HOST = os.getenv("EMAIL_SMTP_HOST") or "smtp.gmail.com"
+SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT") or "465")
 
 
 def _send_message(msg: EmailMessage) -> None:
