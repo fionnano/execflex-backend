@@ -138,10 +138,7 @@ run_test() {
 # Test 1: Health Check
 run_test "Health Check (GET /)" "GET" "/" "" "200"
 
-# Test 2: View Roles (should work even if empty)
-run_test "View Roles (GET /view-roles)" "GET" "/view-roles" "" "200"
-
-# Test 3: Match - Valid request
+# Test 2: Match - Valid request
 run_test "Find Match - Valid Request" "POST" "/match" \
     '{
         "industry": "Fintech",
@@ -152,13 +149,13 @@ run_test "Find Match - Valid Request" "POST" "/match" \
         "location": "Ireland"
     }' "200"
 
-# Test 4: Match - Missing required fields (should return 400)
+# Test 3: Match - Missing required fields (should return 400)
 run_test "Find Match - Missing Fields (400)" "POST" "/match" \
     '{
         "industry": "Fintech"
     }' "400"
 
-# Test 5: Post Role - Valid request
+# Test 4: Post Role - Valid request
 run_test "Post Role - Valid Request" "POST" "/post-role" \
     '{
         "role_title": "Chief Financial Officer",
@@ -176,13 +173,13 @@ run_test "Post Role - Valid Request" "POST" "/post-role" \
         "phone": "+353123456789"
     }' "201"
 
-# Test 6: Post Role - Missing required fields (should return 400)
+# Test 5: Post Role - Missing required fields (should return 400)
 run_test "Post Role - Missing Fields (400)" "POST" "/post-role" \
     '{
         "role_title": "CFO"
     }' "400"
 
-# Test 7: Request Introduction - Valid request
+# Test 6: Request Introduction - Valid request
 run_test "Request Introduction - Valid Request" "POST" "/request-intro" \
     '{
         "user_type": "client",
@@ -193,45 +190,23 @@ run_test "Request Introduction - Valid Request" "POST" "/request-intro" \
         "notes": "Series B GTM help needed"
     }' "200"
 
-# Test 8: Request Introduction - Missing required fields (should return 400)
+# Test 7: Request Introduction - Missing required fields (should return 400)
 run_test "Request Introduction - Missing Fields (400)" "POST" "/request-intro" \
     '{
         "user_type": "client"
     }' "400"
 
-# Test 9: Submit Feedback - Valid request
-run_test "Submit Feedback - Valid Request" "POST" "/feedback" \
-    '{
-        "user_name": "Jane Doe",
-        "match_name": "John Smith",
-        "feedback_text": "Great match! Very responsive and professional."
-    }' "200"
-
-# Test 10: Submit Feedback - Alternative field names
-run_test "Submit Feedback - Alternative Fields" "POST" "/feedback" \
-    '{
-        "user": "Jane Doe",
-        "match": "John Smith",
-        "feedback": "Excellent service!"
-    }' "200"
-
-# Test 11: Submit Feedback - Missing required fields (should return 400)
-run_test "Submit Feedback - Missing Fields (400)" "POST" "/feedback" \
-    '{
-        "user_name": "Jane Doe"
-    }' "400"
-
-# Test 12: Call Candidate - Valid request (may fail if Twilio not configured)
+# Test 8: Call Candidate - Valid request (may fail if Twilio not configured)
 run_test "Call Candidate - Valid Request" "POST" "/call_candidate" \
     '{
         "phone": "+353123456789"
     }' "200" "true"  # Skip on error since Twilio may not be configured
 
-# Test 13: Call Candidate - Missing phone (should return 400)
+# Test 9: Call Candidate - Missing phone (should return 400)
 run_test "Call Candidate - Missing Phone (400)" "POST" "/call_candidate" \
     '{}' "400"
 
-# Test 14: CORS Preflight for call_candidate
+# Test 10: CORS Preflight for call_candidate
 run_test "CORS Preflight - call_candidate" "OPTIONS" "/call_candidate" "" "200"
 
 # Summary

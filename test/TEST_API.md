@@ -41,9 +41,9 @@ The test suite covers all major API endpoints:
 - ✅ `GET /` - Health check
 
 ### Role Management
-- ✅ `GET /view-roles` - List all role postings
 - ✅ `POST /post-role` - Create new role posting
 - ✅ `POST /post-role` - Validation (missing fields → 400)
+- **Note:** Role viewing is handled via direct Supabase connection (use `useRolePostings` hook in frontend)
 
 ### Executive Matching
 - ✅ `POST /match` - Find best candidate match
@@ -52,11 +52,6 @@ The test suite covers all major API endpoints:
 ### Introductions
 - ✅ `POST /request-intro` - Request introduction (recommended)
 - ✅ `POST /request-intro` - Validation (missing fields → 400)
-
-### Feedback
-- ✅ `POST /feedback` - Submit feedback
-- ✅ `POST /feedback` - Alternative field names
-- ✅ `POST /feedback` - Validation (missing fields → 400)
 
 ### Voice/Telephony
 - ✅ `POST /call_candidate` - Initiate outbound call (may skip if Twilio not configured)
@@ -100,11 +95,6 @@ If you prefer to test endpoints manually, here are example curl commands:
 curl https://api.execflex.ai/
 ```
 
-### View Roles
-```bash
-curl https://api.execflex.ai/view-roles
-```
-
 ### Find Match
 ```bash
 curl -X POST https://api.execflex.ai/match \
@@ -145,17 +135,6 @@ curl -X POST https://api.execflex.ai/request-intro \
     "requester_name": "Jane Doe",
     "requester_email": "jane@test.com",
     "match_id": "test-match-001"
-  }'
-```
-
-### Submit Feedback
-```bash
-curl -X POST https://api.execflex.ai/feedback \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_name": "Jane Doe",
-    "match_name": "John Smith",
-    "feedback_text": "Great match!"
   }'
 ```
 
