@@ -12,7 +12,6 @@ info:
     - Role posting and management
     - Email introductions
     - Voice calls via Twilio (Ai-dan)
-    - User feedback collection
     
     ## Authentication
     Currently, the API does not require authentication for MVP. Future versions may require API keys or OAuth tokens.
@@ -36,8 +35,6 @@ tags:
     description: Role posting and management
   - name: Introductions
     description: Email introductions between clients and candidates
-  - name: Feedback
-    description: User feedback collection
   - name: Voice
     description: Voice/telephony features (Ai-dan)
 
@@ -166,50 +163,25 @@ paths:
                     type: boolean
                   message:
                     type: string
+                  role:
+                    $ref: '#/components/schemas/RolePosting'
+                    nullable: true
+                    description: The created role posting record
               example:
                 ok: true
                 message: "Role posted successfully!"
+                role:
+                  id: "role-123"
+                  role_title: "Chief Financial Officer"
+                  company_name: "Acme Corp"
+                  industry: "Fintech"
+                  created_at: "2024-01-15T10:30:00Z"
         '400':
           description: Missing required fields
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /view-roles:
-    get:
-      tags:
-        - Roles
-      summary: List all role postings
-      description: Retrieve all role postings from the database, ordered by creation date (newest first)
-      operationId: viewRoles
-      responses:
-        '200':
-          description: List of role postings
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  roles:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/RolePosting'
-              example:
-                ok: true
-                roles:
-                  - role_title: "Chief Financial Officer"
-                    company_name: "Acme Corp"
-                    industry: "Fintech"
-                    created_at: "2024-01-15T10:30:00Z"
         '500':
           description: Server error
           content:
@@ -263,69 +235,6 @@ paths:
                   requester_email: "jane@acme.com"
                   status: "pending"
                   created_at: "2024-01-15T10:30:00Z"
-        '400':
-          description: Missing required fields
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /feedback:
-    post:
-      tags:
-        - Feedback
-      summary: Submit feedback
-      description: Submit user feedback to be stored in Supabase
-      operationId: submitFeedback
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - user_name
-                - match_name
-                - feedback_text
-              properties:
-                user:
-                  type: string
-                  description: Alternative to user_name
-                user_name:
-                  type: string
-                match:
-                  type: string
-                  description: Alternative to match_name
-                match_name:
-                  type: string
-                feedback:
-                  type: string
-                  description: Alternative to feedback_text
-                feedback_text:
-                  type: string
-            example:
-              user_name: "Jane Doe"
-              match_name: "John Smith"
-              feedback_text: "Great match! Very responsive."
-      responses:
-        '200':
-          description: Feedback saved successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  status:
-                    type: string
-                    example: "saved"
         '400':
           description: Missing required fields
           content:

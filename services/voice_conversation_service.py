@@ -6,7 +6,7 @@ from config.clients import VoiceResponse, Gather
 from config.app_config import TWILIO_PHONE_NUMBER
 from config.clients import supabase_client
 from services.tts_service import generate_tts
-from services.gpt_service import rephrase
+from services.gpt_service import rephrase, generate_conversational_response
 from services.voice_session_service import init_session
 from utils.voice_helpers import (
     is_yes, normalize_role, normalize_industry,
@@ -15,8 +15,27 @@ from utils.voice_helpers import (
 from modules.match_finder import find_best_match
 from modules.email_sender import send_intro_email
 
+# System prompt for Ai-dan (executive matching assistant)
+AI_DAN_SYSTEM_PROMPT = """You are Ai-dan, a friendly and efficient executive search consultant at ExecFlex.
 
-def say_and_gather(resp: VoiceResponse, prompt: str, next_step: str, call_sid: str):
+Your role is to help executives list themselves for work opportunities or help companies find executives. Be natural, conversational, and guide the conversation efficiently.
+
+Keep responses concise (1-2 sentences) and friendly. Ask one question at a time."""
+
+
+def update_conversation_history(call_sid: str, role: str, content: str):
+    """Update conversation history for GPT context."""
+    from services.voice_session_service import init_session
+    state = init_session(call_sid)
+    if "_conversation_history" not in state:
+        state["_conversation_history"] = []
+    state["_conversation_history"].append({"role": role, "content": content})
+    # Keep last 10 messages to avoid token limits
+    if len(state["_conversation_history"]) > 10:
+        state["_conversation_history"] = state["_conversation_history"][-10:]
+
+
+def say_and_gather(resp: VoiceResponse, prompt: str, next_step: str, call_sid: str, use_gpt: bool = True):
     """Helper to say a prompt and gather speech input."""
     if not VoiceResponse or not Gather:
         return resp
@@ -24,14 +43,48 @@ def say_and_gather(resp: VoiceResponse, prompt: str, next_step: str, call_sid: s
     state = init_session(call_sid)
     retries = state["_retries"].get(next_step, 0)
 
-    # Naturalize the prompt with GPT first (safe fallback)
-    context = (
-        f"Step: {next_step}\n"
-        f"State keys: user_type={state.get('user_type')}, name={state.get('name')}, "
-        f"role={state.get('role')}, industry={state.get('industry')}, "
-        f"location={state.get('location')}, availability={state.get('availability')}"
-    )
-    natural_prompt = rephrase(context, prompt)
+    # Use GPT for more natural conversation if enabled
+    if use_gpt:
+        conversation_history = state.get("_conversation_history", [])
+        context = {
+            "step": next_step,
+            "user_type": state.get("user_type"),
+            "name": state.get("name"),
+            "role": state.get("role"),
+            "industry": state.get("industry"),
+            "location": state.get("location"),
+            "availability": state.get("availability")
+        }
+        
+        gpt_response = generate_conversational_response(
+            system_prompt=AI_DAN_SYSTEM_PROMPT,
+            conversation_history=conversation_history,
+            user_input="",  # No user input, just generating next prompt
+            context=context,
+            temperature=0.7,
+            max_tokens=100
+        )
+        
+        # Use GPT response if available, otherwise use rephrase fallback
+        if gpt_response:
+            natural_prompt = gpt_response
+        else:
+            context_str = (
+                f"Step: {next_step}\n"
+                f"State keys: user_type={state.get('user_type')}, name={state.get('name')}, "
+                f"role={state.get('role')}, industry={state.get('industry')}, "
+                f"location={state.get('location')}, availability={state.get('availability')}"
+            )
+            natural_prompt = rephrase(context_str, prompt)
+    else:
+        # Fallback to simple rephrase
+        context_str = (
+            f"Step: {next_step}\n"
+            f"State keys: user_type={state.get('user_type')}, name={state.get('name')}, "
+            f"role={state.get('role')}, industry={state.get('industry')}, "
+            f"location={state.get('location')}, availability={state.get('availability')}"
+        )
+        natural_prompt = rephrase(context_str, prompt)
 
     tts_path = generate_tts(natural_prompt)
     if not tts_path:
@@ -78,61 +131,62 @@ def handle_conversation_step(step: str, speech: str, call_sid: str) -> Response:
     if step == "user_type":
         st = speech.lower()
         state["user_type"] = "client" if "hir" in st or "client" in st else "candidate"
+        prompt = "Great, thanks. What's your first name?"
+        update_conversation_history(call_sid, "assistant", prompt)
         return Response(
-            str(say_and_gather(resp, "Great, thanks. What's your first name?", "name", call_sid)),
+            str(say_and_gather(resp, prompt, "name", call_sid, use_gpt=False)),
             mimetype="text/xml"
         )
 
     if step == "name":
         state["name"] = speech or "there"
+        if speech:
+            update_conversation_history(call_sid, "user", speech)
+        prompt = f"Nice to meet you, {state['name']}. Which leadership role are you focused on — for example CFO, CEO, or CTO?"
+        update_conversation_history(call_sid, "assistant", prompt)
         return Response(
-            str(say_and_gather(
-                resp,
-                f"Nice to meet you, {state['name']}. Which leadership role are you focused on — for example CFO, CEO, or CTO?",
-                "role",
-                call_sid
-            )),
+            str(say_and_gather(resp, prompt, "role", call_sid)),
             mimetype="text/xml"
         )
 
     if step == "role":
         state["role"] = normalize_role(speech) or "CFO"
+        if speech:
+            update_conversation_history(call_sid, "user", speech)
+        prompt = f"Got it, {state['role']}. And which industry are you most focused on — like fintech, insurance, or SaaS?"
+        update_conversation_history(call_sid, "assistant", prompt)
         return Response(
-            str(say_and_gather(
-                resp,
-                f"Got it, {state['role']}. And which industry are you most focused on — like fintech, insurance, or SaaS?",
-                "industry",
-                call_sid
-            )),
+            str(say_and_gather(resp, prompt, "industry", call_sid)),
             mimetype="text/xml"
         )
 
     if step == "industry":
         state["industry"] = normalize_industry(speech) or "Fintech"
+        if speech:
+            update_conversation_history(call_sid, "user", speech)
+        prompt = "Perfect. Do you have a location preference — Ireland, the UK, or would remote work?"
+        update_conversation_history(call_sid, "assistant", prompt)
         return Response(
-            str(say_and_gather(
-                resp,
-                "Perfect. Do you have a location preference — Ireland, the UK, or would remote work?",
-                "location",
-                call_sid
-            )),
+            str(say_and_gather(resp, prompt, "location", call_sid)),
             mimetype="text/xml"
         )
 
     if step == "location":
         state["location"] = normalize_location(speech) or "Ireland"
+        if speech:
+            update_conversation_history(call_sid, "user", speech)
+        prompt = "Okay. And do you see this role as fractional — a few days a week — or full time?"
+        update_conversation_history(call_sid, "assistant", prompt)
         return Response(
-            str(say_and_gather(
-                resp,
-                "Okay. And do you see this role as fractional — a few days a week — or full time?",
-                "availability",
-                call_sid
-            )),
+            str(say_and_gather(resp, prompt, "availability", call_sid)),
             mimetype="text/xml"
         )
 
     if step == "availability":
         state["availability"] = normalize_availability(speech) or "fractional"
+        if speech:
+            update_conversation_history(call_sid, "user", speech)
+        
         matches = find_best_match(
             industry=state["industry"],
             expertise=state["role"],
@@ -144,12 +198,34 @@ def handle_conversation_step(step: str, speech: str, call_sid: str) -> Response:
         if matches:
             match = matches[0]
             state["__match"] = match
-            pitch = (
-                f"Based on what you've told me, I have someone in mind. "
-                f"I recommend {match.get('name','an executive')}, a {match.get('role','leader')} in {match.get('location','unknown')}. "
-                "Would you like me to make a warm email introduction?"
+            
+            # Use GPT to generate a natural pitch
+            context = {
+                "step": "availability",
+                "match_name": match.get('name', 'an executive'),
+                "match_role": match.get('role', 'leader'),
+                "match_location": match.get('location', 'unknown')
+            }
+            gpt_pitch = generate_conversational_response(
+                system_prompt=AI_DAN_SYSTEM_PROMPT,
+                conversation_history=state.get("_conversation_history", []),
+                user_input="",
+                context=context,
+                temperature=0.7,
+                max_tokens=120
             )
-            # Pre-cache the scripted pitch
+            
+            if gpt_pitch:
+                pitch = gpt_pitch + " Would you like me to make a warm email introduction?"
+            else:
+                pitch = (
+                    f"Based on what you've told me, I have someone in mind. "
+                    f"I recommend {match.get('name','an executive')}, a {match.get('role','leader')} in {match.get('location','unknown')}. "
+                    "Would you like me to make a warm email introduction?"
+                )
+            
+            update_conversation_history(call_sid, "assistant", pitch)
+            # Pre-cache the pitch
             try:
                 generate_tts(pitch)
             except Exception as _e:
@@ -159,27 +235,32 @@ def handle_conversation_step(step: str, speech: str, call_sid: str) -> Response:
                 mimetype="text/xml"
             )
         else:
-            resp.say("Thanks. I don't have a perfect match right now, but I can follow up soon. Goodbye.")
+            closing = "Thanks. I don't have a perfect match right now, but I can follow up soon. Goodbye."
+            update_conversation_history(call_sid, "assistant", closing)
+            resp.say(closing)
             resp.hangup()
             return Response(str(resp), mimetype="text/xml")
 
     if step == "confirm_intro":
+        if speech:
+            update_conversation_history(call_sid, "user", speech)
         if is_yes(speech):
+            prompt = "Perfect. What's the best email address for me to send the introduction to?"
+            update_conversation_history(call_sid, "assistant", prompt)
             return Response(
-                str(say_and_gather(
-                    resp,
-                    "Perfect. What's the best email address for me to send the introduction to?",
-                    "email",
-                    call_sid
-                )),
+                str(say_and_gather(resp, prompt, "email", call_sid)),
                 mimetype="text/xml"
             )
         else:
-            resp.say("No problem. You can always ask me for more profiles later. Goodbye.")
+            closing = "No problem. You can always ask me for more profiles later. Goodbye."
+            update_conversation_history(call_sid, "assistant", closing)
+            resp.say(closing)
             resp.hangup()
             return Response(str(resp), mimetype="text/xml")
 
     if step == "email":
+        if speech:
+            update_conversation_history(call_sid, "user", speech)
         text = speech.replace(" at ", "@").replace(" dot ", ".").replace(" underscore ", "_").replace(" dash ", "-").replace(" ", "")
         state["email"] = text if is_email_like(text) else "demo@example.com"
 

@@ -1,6 +1,7 @@
 """
-GPT service for natural conversation rephrasing.
+GPT service for natural conversation rephrasing and interactive conversations.
 """
+from typing import List, Dict, Optional
 from config.clients import gpt_client, OPENAI_API_KEY
 
 
@@ -44,4 +45,66 @@ def rephrase(context: str, fallback: str) -> str:
     except Exception as e:
         print("⚠️ GPT rephrase failed:", e)
         return fallback
+
+
+def generate_conversational_response(
+    system_prompt: str,
+    conversation_history: List[Dict[str, str]],
+    user_input: str,
+    context: Optional[Dict] = None,
+    temperature: float = 0.8,
+    max_tokens: int = 150
+) -> str:
+    """
+    Generate an interactive conversational response using GPT.
+    
+    Args:
+        system_prompt: System prompt defining the AI's role and behavior
+        conversation_history: List of previous messages [{"role": "user/assistant", "content": "..."}]
+        user_input: Current user input/speech
+        context: Optional context dict with additional information
+        temperature: GPT temperature (0.0-1.0)
+        max_tokens: Maximum tokens in response
+        
+    Returns:
+        Generated response text
+    """
+    if not gpt_client or not OPENAI_API_KEY:
+        return ""
+    
+    try:
+        # Build context string if provided
+        context_str = ""
+        if context:
+            context_parts = []
+            for key, value in context.items():
+                if value:
+                    context_parts.append(f"{key}: {value}")
+            if context_parts:
+                context_str = "\nAdditional Context:\n" + "\n".join(context_parts) + "\n"
+        
+        # Build messages
+        messages = [
+            {"role": "system", "content": system_prompt + context_str}
+        ]
+        
+        # Add conversation history
+        messages.extend(conversation_history)
+        
+        # Add current user input
+        messages.append({"role": "user", "content": user_input})
+        
+        # Generate response
+        resp = gpt_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        
+        out = resp.choices[0].message.content.strip()
+        return out if out else ""
+    except Exception as e:
+        print(f"⚠️ GPT conversational response failed: {e}")
+        return ""
 
