@@ -78,7 +78,6 @@ Environment variable loading is handled in `config/app_config.py`.
 
 ### Introductions
 - `POST /request-intro` - Request introduction (recommended)
-- `POST /send_intro` - Send intro email (legacy/deprecated)
 
 ### Feedback
 - `POST /feedback` - Submit feedback
