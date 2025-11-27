@@ -4,27 +4,7 @@ Executive matching routes.
 from flask import request
 from routes import matching_bp
 from utils.response_helpers import ok, bad
-from config.clients import supabase_client
 from modules.match_finder import find_best_match
-
-
-@matching_bp.route("/matches", methods=["GET"])
-def matches():
-    """Get matches - deprecated endpoint."""
-    return bad("This endpoint is deprecated. Use POST /match instead.", 410)
-
-
-@matching_bp.route("/matches/<match_id>", methods=["GET"])
-def match_by_id(match_id):
-    """Get a specific candidate by ID from Supabase."""
-    try:
-        response = supabase_client.table("executive_profiles").select("*").eq("id", match_id).execute()
-        if response.data and len(response.data) > 0:
-            return ok({"match": response.data[0]})
-        return bad("Match not found", 404)
-    except Exception as e:
-        print(f"❌ Error fetching match {match_id}:", e)
-        return bad(f"Failed to fetch match: {str(e)}", 500)
 
 
 @matching_bp.route("/match", methods=["POST"])

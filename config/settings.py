@@ -1,3 +1,0 @@
-OPENAI_API_KEY = "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"
-ELEVEN_API_KEY = "sk_5718b0ecc020bd0212746aaf97dab1f9cb7605e3b1b468d1"
-VOICE_NAME = "1fz2mW1imKTf5Ryjk5su"  # Or whichever ElevenLabs voice you'd like
