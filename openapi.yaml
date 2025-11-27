@@ -46,64 +46,12 @@ paths:
     get:
       tags:
         - Health
-      summary: Root health check
-      description: Simple health check endpoint that returns a status message
+      summary: Health check
+      description: Simple health check endpoint that returns 200 if the service is running
       operationId: rootHealth
       responses:
         '200':
-          description: Backend is live
-          content:
-            text/plain:
-              schema:
-                type: string
-                example: "✅ Backend is live!"
-
-  /health:
-    get:
-      tags:
-        - Health
-      summary: Detailed health check
-      description: Returns detailed health status including service configurations
-      operationId: health
-      responses:
-        '200':
-          description: Health status
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-                  env:
-                    type: string
-                    description: Environment (dev/prod)
-                    example: prod
-                  supabase_connected:
-                    type: boolean
-                    example: true
-                  twilio_configured:
-                    type: boolean
-                    example: true
-                  elevenlabs_configured:
-                    type: boolean
-                    example: true
-                  openai_configured:
-                    type: boolean
-                    example: true
-                  tts_cache_items:
-                    type: integer
-                    description: Number of cached TTS audio files
-                    example: 10
-              example:
-                ok: true
-                env: prod
-                supabase_connected: true
-                twilio_configured: true
-                elevenlabs_configured: true
-                openai_configured: true
-                tts_cache_items: 10
+          description: Service is healthy
 
   /match:
     post:

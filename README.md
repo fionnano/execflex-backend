@@ -67,8 +67,7 @@ Environment variable loading is handled in `config/app_config.py`.
 ## API Endpoints
 
 ### Health
-- `GET /` - Root health check
-- `GET /health` - Detailed health status
+- `GET /` - Health check (returns 200 if service is running)
 
 ### Matching
 - `POST /match` - Find best candidate match
