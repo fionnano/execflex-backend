@@ -26,7 +26,6 @@ from routes import (
     matching_bp,
     roles_bp,
     introductions_bp,
-    feedback_bp,
     voice_bp
 )
 
@@ -46,7 +45,6 @@ app.register_blueprint(health_bp)
 app.register_blueprint(matching_bp)
 app.register_blueprint(roles_bp)
 app.register_blueprint(introductions_bp)
-app.register_blueprint(feedback_bp)
 app.register_blueprint(voice_bp)
 
 # Apply rate limiting to voice endpoint after blueprint registration
