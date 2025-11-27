@@ -91,6 +91,61 @@ Environment variable loading is handled in `config/app_config.py`.
 
 See `openapi.yaml` for full API documentation.
 
+## Architecture: When to Create Backend Endpoints
+
+**IMPORTANT**: Follow this principle when adding new endpoints:
+
+### ✅ Create Backend Endpoints For:
+1. **Secret Credentials / API Keys**
+   - Email sending (Gmail SMTP credentials)
+   - Twilio voice calls (Twilio auth tokens)
+   - External service integrations (ElevenLabs, OpenAI)
+
+2. **Complex Business Logic**
+   - Matching algorithms with scoring
+   - Data transformation/validation before storage
+   - Multi-step workflows
+
+3. **External API Orchestration**
+   - Combining multiple external services
+   - Rate limiting and retry logic
+   - Webhook handling
+
+4. **Server-Side Processing**
+   - File processing
+   - Background jobs
+   - Scheduled tasks
+
+### ❌ Don't Create Backend Endpoints For:
+- Simple CRUD operations (frontend should use direct Supabase)
+- Auth validation alone (RLS handles this)
+- Role checking (RLS + `has_role()` function handles this)
+- Simple passthrough operations (just passing data to Supabase)
+
+**Key Principle**: Use backend API only when additional business logic is needed that should be hidden from public view, or when secret credentials are required. For simple CRUD operations on user-owned data, the frontend should connect directly to Supabase with RLS policies enforcing access control.
+
+**Example:**
+```python
+# ✅ GOOD: Backend endpoint with business logic
+@roles_bp.route("/post-role", methods=["POST"])
+def post_role():
+    # 1. Validate auth & role
+    # 2. Transform/clean data (business logic)
+    # 3. Save to Supabase
+    supabase_client.table("role_postings").insert(cleaned_data).execute()
+```
+
+```python
+# ❌ BAD: Backend endpoint just for passthrough
+@roles_bp.route("/update-profile", methods=["POST"])
+def update_profile():
+    # Just passes data through to Supabase - unnecessary!
+    supabase_client.table("profiles").update(data).execute()
+    # Frontend should do this directly with RLS protection
+```
+
+**See**: `docs/backend_vs_supabase_guidelines.md` for detailed guidelines and examples.
+
 ## Development
 
 The codebase is organized using Flask blueprints for modular route handling. Each route module is self-contained and imports its dependencies from `config/`, `services/`, and `utils/`.
