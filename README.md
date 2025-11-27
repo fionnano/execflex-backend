@@ -64,30 +64,22 @@ All environment variables are documented in `.env.example`. For Render deploymen
 
 Environment variable loading is handled in `config/app_config.py`.
 
-## API Endpoints
+## API Documentation
 
-### Health
-- `GET /` - Health check (returns 200 if service is running)
+Complete API documentation is available in the OpenAPI 3.0 specification:
 
-### Matching
-- `POST /match` - Find best candidate match
+**📄 [`openapi.yaml`](./openapi.yaml)**
 
-### Roles
-- `POST /post-role` - Submit role posting
-- `GET /view-roles` - List all role postings
+This file contains:
+- All available endpoints with request/response schemas
+- Authentication requirements
+- Example requests and responses
+- Error response formats
 
-### Introductions
-- `POST /request-intro` - Request introduction (recommended)
-
-### Feedback
-- `POST /feedback` - Submit feedback
-
-### Voice
-- `POST /call_candidate` - Initiate outbound Twilio call
-- `POST /voice/intro` - Twilio webhook (call start)
-- `POST /voice/capture` - Twilio webhook (speech capture)
-
-See `openapi.yaml` for full API documentation.
+You can view the OpenAPI spec using tools like:
+- [Swagger Editor](https://editor.swagger.io/) - Paste the YAML content
+- [Redoc](https://redocly.com/reference-docs/redoc/) - Generate interactive docs
+- Your IDE's OpenAPI preview (if supported)
 
 ## Architecture: When to Create Backend Endpoints
 
