@@ -17,6 +17,9 @@ from config.clients import supabase_client  # Initialize clients
 # Services initialization
 from services.tts_service import pre_cache_common_prompts
 
+# Rate limiting
+from utils.rate_limiting import create_limiter
+
 # Routes
 from routes import (
     health_bp,
@@ -35,6 +38,9 @@ print_config_status()
 app = Flask(__name__, static_folder="static")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
+# Initialize rate limiter (IP-based)
+limiter = create_limiter(app)
+
 # Register blueprints
 app.register_blueprint(health_bp)
 app.register_blueprint(matching_bp)
@@ -42,6 +48,13 @@ app.register_blueprint(roles_bp)
 app.register_blueprint(introductions_bp)
 app.register_blueprint(feedback_bp)
 app.register_blueprint(voice_bp)
+
+# Apply rate limiting to voice endpoint after blueprint registration
+# Import here to avoid circular imports
+from routes import voice
+if limiter:
+    # Apply stricter rate limits to the expensive call_candidate endpoint
+    limiter.limit("5 per hour;20 per day", override_defaults=True)(voice.call_candidate)
 
 # Pre-cache common TTS prompts at startup
 pre_cache_common_prompts()

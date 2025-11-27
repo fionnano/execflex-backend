@@ -6,6 +6,7 @@ from flask import request, Response, jsonify
 from flask_cors import cross_origin
 from routes import voice_bp
 from utils.response_helpers import ok, bad
+from utils.rate_limiting import get_limiter
 from config.clients import twilio_client, VoiceResponse
 from config.app_config import TWILIO_PHONE_NUMBER
 from services.voice_session_service import init_session
@@ -17,6 +18,10 @@ from services.voice_conversation_service import say_and_gather, handle_conversat
 def call_candidate():
     """
     Initiate an outbound Twilio call to a candidate/client.
+    
+    Security: Rate limited to prevent abuse (5 calls per hour, 20 per day per IP).
+    Rate limiting is applied in server.py after blueprint registration.
+    
     Body (JSON): { "phone": "+1234567890" }
     """
     if request.method == "OPTIONS":
@@ -28,10 +33,17 @@ def call_candidate():
 
     data = request.get_json(silent=True) or {}
     phone = data.get("phone")
-    print("DEBUG Incoming phone:", phone)
+    
+    # Log the request for security monitoring
+    client_ip = request.remote_addr or request.environ.get('HTTP_X_FORWARDED_FOR', 'unknown')
+    print(f"DEBUG Call request from IP {client_ip} to phone: {phone}")
 
     if not phone:
         return bad("Phone number required", 400)
+
+    # Basic phone number validation (E.164 format)
+    if not phone.startswith('+') or len(phone) < 10 or len(phone) > 16:
+        return bad("Invalid phone number format. Please use E.164 format (e.g., +353123456789)", 400)
 
     try:
         from flask import url_for
@@ -40,10 +52,11 @@ def call_candidate():
             from_=TWILIO_PHONE_NUMBER,
             url=url_for('voice.voice_intro', _external=True)
         )
-        print("DEBUG Call SID:", call.sid)
+        print(f"DEBUG Call SID: {call.sid} (IP: {client_ip}, Phone: {phone})")
         return ok({"status": "calling", "sid": call.sid})
     except Exception as e:
         traceback.print_exc()
+        print(f"ERROR Call failed (IP: {client_ip}, Phone: {phone}): {str(e)}")
         return bad(str(e), 500)
 
 
