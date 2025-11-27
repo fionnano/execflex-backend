@@ -52,8 +52,6 @@ The test suite covers all major API endpoints:
 ### Introductions
 - ✅ `POST /request-intro` - Request introduction (recommended)
 - ✅ `POST /request-intro` - Validation (missing fields → 400)
-- ✅ `POST /send_intro` - Legacy intro endpoint (may skip if email fails)
-- ✅ `POST /send_intro` - Validation (missing fields → 400)
 
 ### Feedback
 - ✅ `POST /feedback` - Submit feedback

@@ -50,54 +50,73 @@ def request_intro():
             print(f"❌ Supabase insert failed (intros): {e}")
             return bad(f"Failed to store intro request: {str(e)}", 500)
 
-        payload = {"intro_id": intro_id, "intro": record}
+        # Fetch candidate details from match_id to send email
+        candidate_name = "an executive"
+        candidate_email = None
+        candidate_role = None
+        candidate_industries = []
+        
+        try:
+            # Try to fetch candidate details from executive_profiles
+            cand_response = supabase_client.table("executive_profiles").select(
+                "first_name, last_name, email, contact_email, headline, industries"
+            ).eq("id", data["match_id"]).execute()
+            
+            if cand_response.data and len(cand_response.data) > 0:
+                cand = cand_response.data[0]
+                first = cand.get("first_name") or ""
+                last = cand.get("last_name") or ""
+                candidate_name = " ".join([p for p in [first, last] if p]).strip() or "an executive"
+                candidate_email = cand.get("email") or cand.get("contact_email")
+                candidate_role = cand.get("headline") or None
+                candidate_industries = cand.get("industries") or []
+        except Exception as e:
+            print(f"⚠️ Could not fetch candidate details: {e}")
+
+        # Send introduction email if we have candidate email
+        email_sent = False
+        if candidate_email:
+            try:
+                email_sent = send_intro_email(
+                    client_name=data["requester_name"],
+                    client_email=data["requester_email"],
+                    candidate_name=candidate_name,
+                    candidate_email=candidate_email,
+                    candidate_role=candidate_role,
+                    candidate_industries=candidate_industries if isinstance(candidate_industries, list) else [],
+                    requester_company=data.get("requester_company"),
+                    user_type=data["user_type"],
+                    match_id=data["match_id"],
+                    body_extra=data.get("notes")
+                )
+                
+                # Update status in Supabase
+                if email_sent:
+                    record["status"] = "sent"
+                    try:
+                        supabase_client.table("intros").update({"status": "sent"}).eq("id", intro_id).execute()
+                    except Exception as e:
+                        print(f"⚠️ Could not update intro status: {e}")
+                else:
+                    record["status"] = "failed"
+                    try:
+                        supabase_client.table("intros").update({"status": "failed"}).execute()
+                    except Exception as e:
+                        print(f"⚠️ Could not update intro status: {e}")
+            except Exception as e:
+                print(f"⚠️ Error sending intro email: {e}")
+                record["status"] = "failed"
+        else:
+            print(f"⚠️ No candidate email found for match_id {data['match_id']}, email not sent")
+
+        payload = {
+            "intro_id": intro_id,
+            "intro": record,
+            "email_sent": email_sent
+        }
         return ok(payload)
 
     except Exception as e:
         print("❌ /request-intro error:", e)
-        return bad(str(e), 500)
-
-
-@introductions_bp.route("/send_intro", methods=["POST"])
-def send_intro():
-    """
-    Legacy endpoint for sending intro emails.
-    NOTE: This endpoint is deprecated. Use /request-intro instead.
-    """
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        client_name = data.get("client_name")
-        match_name = data.get("match_name")
-        client_email = data.get("email") or data.get("client_email")
-        candidate_email = data.get("candidate_email")
-
-        if not client_name or not match_name or not client_email:
-            return bad("Missing required fields: client_name, match_name, email/client_email")
-
-        # If candidate_email not provided, try to fetch from match_id or use placeholder
-        if not candidate_email and data.get("match_id"):
-            try:
-                cand_response = supabase_client.table("executive_profiles").select("email, contact_email").eq("id", data.get("match_id")).execute()
-                if cand_response.data and len(cand_response.data) > 0:
-                    candidate_email = cand_response.data[0].get("email") or cand_response.data[0].get("contact_email")
-            except Exception as e:
-                print(f"⚠️ Could not fetch candidate email: {e}")
-
-        if not candidate_email:
-            candidate_email = "candidate@example.com"  # Fallback
-
-        print(f"🚀 Sending intro: {client_name} ↔ {match_name} → {client_email}")
-        success = send_intro_email(
-            client_name=client_name,
-            client_email=client_email,
-            candidate_name=match_name,
-            candidate_email=candidate_email,
-            user_type=data.get("user_type", "client"),
-            match_id=data.get("match_id")
-        )
-        return ok({"status": "success" if success else "fail"}, status=200 if success else 500)
-
-    except Exception as e:
-        print("❌ /send_intro error:", e)
         return bad(str(e), 500)
 

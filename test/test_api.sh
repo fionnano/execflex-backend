@@ -199,23 +199,7 @@ run_test "Request Introduction - Missing Fields (400)" "POST" "/request-intro" \
         "user_type": "client"
     }' "400"
 
-# Test 9: Send Intro (Legacy) - Valid request
-run_test "Send Intro (Legacy) - Valid Request" "POST" "/send_intro" \
-    '{
-        "client_name": "Jane Doe",
-        "match_name": "John Smith",
-        "email": "jane@test.com",
-        "candidate_email": "john@test.com",
-        "user_type": "client"
-    }' "200" "true"  # Skip on error since email sending may fail
-
-# Test 10: Send Intro (Legacy) - Missing required fields (should return 400)
-run_test "Send Intro (Legacy) - Missing Fields (400)" "POST" "/send_intro" \
-    '{
-        "client_name": "Jane Doe"
-    }' "400"
-
-# Test 11: Submit Feedback - Valid request
+# Test 9: Submit Feedback - Valid request
 run_test "Submit Feedback - Valid Request" "POST" "/feedback" \
     '{
         "user_name": "Jane Doe",
@@ -223,7 +207,7 @@ run_test "Submit Feedback - Valid Request" "POST" "/feedback" \
         "feedback_text": "Great match! Very responsive and professional."
     }' "200"
 
-# Test 12: Submit Feedback - Alternative field names
+# Test 10: Submit Feedback - Alternative field names
 run_test "Submit Feedback - Alternative Fields" "POST" "/feedback" \
     '{
         "user": "Jane Doe",
@@ -231,23 +215,23 @@ run_test "Submit Feedback - Alternative Fields" "POST" "/feedback" \
         "feedback": "Excellent service!"
     }' "200"
 
-# Test 13: Submit Feedback - Missing required fields (should return 400)
+# Test 11: Submit Feedback - Missing required fields (should return 400)
 run_test "Submit Feedback - Missing Fields (400)" "POST" "/feedback" \
     '{
         "user_name": "Jane Doe"
     }' "400"
 
-# Test 14: Call Candidate - Valid request (may fail if Twilio not configured)
+# Test 12: Call Candidate - Valid request (may fail if Twilio not configured)
 run_test "Call Candidate - Valid Request" "POST" "/call_candidate" \
     '{
         "phone": "+353123456789"
     }' "200" "true"  # Skip on error since Twilio may not be configured
 
-# Test 15: Call Candidate - Missing phone (should return 400)
+# Test 13: Call Candidate - Missing phone (should return 400)
 run_test "Call Candidate - Missing Phone (400)" "POST" "/call_candidate" \
     '{}' "400"
 
-# Test 16: CORS Preflight for call_candidate
+# Test 14: CORS Preflight for call_candidate
 run_test "CORS Preflight - call_candidate" "OPTIONS" "/call_candidate" "" "200"
 
 # Summary
