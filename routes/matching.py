@@ -23,7 +23,7 @@ def match():
         except Exception:
             return bad("min_experience and max_salary must be numbers.")
 
-        result = find_best_match(
+        matches = find_best_match(
             data["industry"],
             data["expertise"],
             data["availability"],
@@ -32,15 +32,32 @@ def match():
             data["location"],
         )
 
-        if result:
+        # find_best_match returns a list of matches (up to 5)
+        if matches and len(matches) > 0:
+            # Return the top match as primary, but include all matches
+            top_match = matches[0]
             return ok({
-                "message": f"We recommend {result['name']}: {result['summary']}",
-                "match": result
+                "message": f"We recommend {top_match.get('name', 'a candidate')}: {top_match.get('summary', '')}",
+                "match": top_match,
+                "matches": matches  # Include all matches for flexibility
             })
         else:
-            return ok({"message": "No match found yet. We'll follow up with suggestions soon.", "match": None})
+            return ok({
+                "message": "No match found yet. We'll follow up with suggestions soon.",
+                "match": None,
+                "matches": []
+            })
 
     except Exception as e:
-        print("❌ /match error:", e)
-        return bad(str(e), 500)
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"❌ /match error: {e}")
+        print(f"❌ Full traceback:\n{error_details}")
+        # Return user-friendly error message
+        error_msg = str(e)
+        if "Supabase" in error_msg or "SUPABASE" in error_msg:
+            error_msg = "Database connection error. Please try again later."
+        elif "permission" in error_msg.lower() or "policy" in error_msg.lower():
+            error_msg = "Database access error. Please check configuration."
+        return bad(f"Match request failed: {error_msg}", 500)
 

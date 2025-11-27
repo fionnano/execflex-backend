@@ -149,8 +149,15 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
         return []
 
     # 2) normalize
-    cands = [_norm_candidate(r) for r in rows]
-    print(f"Pulled {len(cands)} candidates from Supabase:executive_profiles")
+    cands = []
+    for r in rows:
+        try:
+            cands.append(_norm_candidate(r))
+        except Exception as e:
+            print(f"⚠️ Failed to normalize candidate record: {e}")
+            print(f"   Record: {r.get('id', 'unknown') if isinstance(r, dict) else 'non-dict'}")
+            continue
+    print(f"Pulled {len(cands)} candidates from Supabase:executive_profiles (from {len(rows)} total records)")
 
     # 3) filter by minimum experience
     filtered = []
