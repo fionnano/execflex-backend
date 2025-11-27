@@ -105,67 +105,6 @@ paths:
                 openai_configured: true
                 tts_cache_items: 10
 
-  /matches:
-    get:
-      tags:
-        - Matching
-      summary: Deprecated - Get matches
-      description: |
-        This endpoint is deprecated. Use POST /match instead.
-      operationId: matches
-      deprecated: true
-      responses:
-        '410':
-          description: Endpoint deprecated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                ok: false
-                error: "This endpoint is deprecated. Use POST /match instead."
-
-  /matches/{match_id}:
-    get:
-      tags:
-        - Matching
-      summary: Get match by ID
-      description: Retrieve a specific candidate/match by their ID from Supabase
-      operationId: getMatchById
-      parameters:
-        - name: match_id
-          in: path
-          required: true
-          description: The ID of the candidate/match to retrieve
-          schema:
-            type: string
-          example: "cand-001"
-      responses:
-        '200':
-          description: Match found
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  match:
-                    type: object
-                    description: Candidate/match details
-        '404':
-          description: Match not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
   /match:
     post:
       tags:
