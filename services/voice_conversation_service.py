@@ -3,7 +3,7 @@ Voice conversation flow handling for Ai-dan.
 """
 from flask import request, url_for, Response
 from config.clients import VoiceResponse, Gather
-from config.app_config import TWILIO_PHONE
+from config.app_config import TWILIO_PHONE_NUMBER
 from config.clients import supabase_client
 from services.tts_service import generate_tts
 from services.gpt_service import rephrase
