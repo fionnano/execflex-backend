@@ -130,7 +130,7 @@ def post_role():
 @roles_bp.route("/update-profile", methods=["POST"])
 def update_profile():
     # Just passes data through to Supabase - unnecessary!
-    supabase_client.table("profiles").update(data).execute()
+    supabase_client.table("executive_profiles").update(data).execute()
     # Frontend should do this directly with RLS protection
 ```
 
