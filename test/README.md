@@ -39,5 +39,9 @@ This directory contains regression tests for the ExecFlex API.
 
 **Note:** Always use `https://` for production URLs to avoid 307 redirects.
 
+## Render Deployment Integration
+
+The smoke test automatically detects the Render environment and uses the production URL by default. See [RENDER_DEPLOYMENT.md](./RENDER_DEPLOYMENT.md) for integration options with Render pipelines.
+
 See [TEST_API.md](./TEST_API.md) for detailed documentation.
 

@@ -18,13 +18,25 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# API base URL (default to localhost:5001)
-API_BASE="${1:-http://localhost:5001}"
+# Auto-detect API URL based on environment
+# Priority: 1) Command line arg, 2) RENDER_SERVICE_URL, 3) Default to Render production, 4) localhost
+if [ -n "$1" ]; then
+    API_BASE="$1"
+elif [ -n "$RENDER_SERVICE_URL" ]; then
+    # Running in Render environment - use the service URL
+    API_BASE="$RENDER_SERVICE_URL"
+elif [ -n "$RENDER_EXTERNAL_URL" ]; then
+    # Alternative Render env var
+    API_BASE="$RENDER_EXTERNAL_URL"
+else
+    # Default to Render production URL
+    API_BASE="https://execflex-backend-1.onrender.com"
+fi
 
 # Ensure URL starts with http:// or https://
 if [[ ! "$API_BASE" =~ ^https?:// ]]; then
-    echo -e "${YELLOW}Warning: URL missing protocol, assuming http://${NC}"
-    API_BASE="http://${API_BASE}"
+    echo -e "${YELLOW}Warning: URL missing protocol, assuming https://${NC}"
+    API_BASE="https://${API_BASE}"
 fi
 
 # Remove trailing slash if present

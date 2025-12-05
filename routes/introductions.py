@@ -30,8 +30,13 @@ def request_intro():
         if missing:
             return bad(f"Missing required fields: {', '.join(missing)}")
 
+        # Get user_id from request or use test user for MVP (no auth required yet)
+        # TODO: Replace with actual auth when authentication is implemented
+        user_id = data.get("user_id") or "00000000-0000-0000-0000-000000000000"  # Test user UUID
+
         created = datetime.utcnow().isoformat() + "Z"
         record = {
+            "user_id": user_id,
             "user_type": data["user_type"],
             "requester_name": data["requester_name"],
             "requester_email": data["requester_email"],

@@ -30,8 +30,13 @@ def post_role():
                 return None
             return value
 
+        # Get user_id from request or use test user for MVP (no auth required yet)
+        # TODO: Replace with actual auth when authentication is implemented
+        user_id = data.get("user_id") or "00000000-0000-0000-0000-000000000000"  # Test user UUID
+
         # Prepare Supabase payload with all fields
         supabase_payload = {
+            "user_id": user_id,
             "role_title": data["role_title"],
             "company_name": clean_optional(data.get("company_name")),
             "industry": data["industry"],
