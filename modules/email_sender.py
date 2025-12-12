@@ -57,26 +57,27 @@ def log_intro(user_type: str,
               match_id: str | None,
               status: str = "sent",
               notes: str | None = None):
-    """Log into Supabase intros table."""
+    """Log into Supabase matches table."""
     client = _get_supabase_client()
     if not client:
-        print("⚠️ Supabase not configured; skipping intro log.")
+        print("⚠️ Supabase not configured; skipping match log.")
         return
     
     try:
-        client.table("intros").insert({
+        client.table("matches").insert({
+            "match_type": "executive_match",
             "user_type": user_type,
             "requester_name": requester_name,
             "requester_email": requester_email,
             "requester_company": requester_company,
-            "match_id": match_id,
+            "old_match_id": match_id,  # Keep for backward compatibility
             "status": status,
             "notes": notes,
-            "timestamp": datetime.utcnow().isoformat()
+            "intro_requested_at": datetime.utcnow().isoformat() + "Z"
         }).execute()
-        print("📝 Logged intro in Supabase.")
+        print("📝 Logged match in Supabase.")
     except Exception as e:
-        print(f"❌ Could not log intro: {e}")
+        print(f"❌ Could not log match: {e}")
 
 
 def _is_valid_email(email: str) -> bool:

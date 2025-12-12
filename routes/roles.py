@@ -34,15 +34,45 @@ def post_role():
         # TODO: Replace with actual auth when authentication is implemented
         user_id = data.get("user_id") or "00000000-0000-0000-0000-000000000000"  # Test user UUID
 
+        # Create or get company_profile first (if company info provided)
+        company_id = None
+        if data.get("company_name"):
+            try:
+                # Try to find existing company profile
+                company_response = supabase_client.table("company_profiles").select("id").eq("user_id", user_id).eq("name", data["company_name"]).execute()
+                
+                if company_response.data and len(company_response.data) > 0:
+                    company_id = company_response.data[0].get("id")
+                else:
+                    # Create new company profile
+                    company_payload = {
+                        "user_id": user_id,
+                        "name": data["company_name"],
+                        "mission": clean_optional(data.get("company_mission")),
+                        "website": clean_optional(data.get("website")),
+                        "linkedin": clean_optional(data.get("linkedin")),
+                        "industry": [data["industry"]] if data.get("industry") else None,
+                        "location": clean_optional(data.get("location")),
+                    }
+                    company_response = supabase_client.table("company_profiles").upsert(company_payload, on_conflict="user_id").execute()
+                    if company_response.data:
+                        company_id = company_response.data[0].get("id")
+            except Exception as e:
+                print(f"⚠️ Could not create/update company profile: {e}")
+
+        # Determine opportunity_type (default to 'executive', can be 'board', 'ned', 'job')
+        opportunity_type = data.get("opportunity_type", "executive")
+
         # Prepare Supabase payload with all fields
         supabase_payload = {
             "user_id": user_id,
             "role_title": data["role_title"],
-            "company_name": clean_optional(data.get("company_name")),
+            "company_id": company_id,
             "industry": data["industry"],
             "role_description": data["role_description"],
             "experience_level": data["experience_level"],
             "commitment_type": data["commitment"],
+            "opportunity_type": opportunity_type,
             "is_remote": data.get("is_remote", False),
             "location": clean_optional(data.get("location")),
             "compensation": clean_optional(data.get("budget_range")),
@@ -52,7 +82,6 @@ def post_role():
             "phone": clean_optional(data.get("phone")),
             "linkedin": clean_optional(data.get("linkedin")),
             "website": clean_optional(data.get("website")),
-            "company_mission": clean_optional(data.get("company_mission")),
             "created_at": datetime.utcnow().isoformat() + "Z",
         }
 

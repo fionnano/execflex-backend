@@ -49,9 +49,9 @@ def request_intro():
                         user_id = roles_response.data[0].get("user_id")
                     else:
                         # Last fallback: Try intros table itself
-                        intros_response = supabase_client.table("intros").select("user_id").limit(1).execute()
-                        if intros_response.data and len(intros_response.data) > 0:
-                            user_id = intros_response.data[0].get("user_id")
+                        matches_response = supabase_client.table("matches").select("user_id").limit(1).execute()
+                        if matches_response.data and len(matches_response.data) > 0:
+                            user_id = matches_response.data[0].get("user_id")
             except Exception as e:
                 print(f"⚠️ Could not find existing user for intro request: {e}")
         
@@ -72,13 +72,20 @@ def request_intro():
             "created_at": created,
         }
 
-        # Store intro request in Supabase
+        # Store match/intro request in Supabase
         try:
-            res = supabase_client.table("intros").insert(record).execute()
-            intro_id = res.data[0].get("id") if getattr(res, "data", None) else None
+            # Add match_type and link to executive/role if available
+            record["match_type"] = "executive_match"
+            if data.get("match_id"):
+                # Try to find executive_id from match_id
+                exec_response = supabase_client.table("executive_profiles").select("id").eq("id", data["match_id"]).execute()
+                if exec_response.data:
+                    record["executive_id"] = exec_response.data[0].get("id")
+            res = supabase_client.table("matches").insert(record).execute()
+            match_id = res.data[0].get("id") if getattr(res, "data", None) else None
         except Exception as e:
-            print(f"❌ Supabase insert failed (intros): {e}")
-            return bad(f"Failed to store intro request: {str(e)}", 500)
+            print(f"❌ Supabase insert failed (matches): {e}")
+            return bad(f"Failed to store match request: {str(e)}", 500)
 
         # Fetch candidate details from match_id to send email
         candidate_name = "an executive"
@@ -123,16 +130,17 @@ def request_intro():
                 # Update status in Supabase
                 if email_sent:
                     record["status"] = "sent"
+                    record["intro_sent_at"] = datetime.utcnow().isoformat() + "Z"
                     try:
-                        supabase_client.table("intros").update({"status": "sent"}).eq("id", intro_id).execute()
+                        supabase_client.table("matches").update({"status": "sent", "intro_sent_at": record["intro_sent_at"]}).eq("id", match_id).execute()
                     except Exception as e:
-                        print(f"⚠️ Could not update intro status: {e}")
+                        print(f"⚠️ Could not update match status: {e}")
                 else:
                     record["status"] = "failed"
                     try:
-                        supabase_client.table("intros").update({"status": "failed"}).execute()
+                        supabase_client.table("matches").update({"status": "failed"}).eq("id", match_id).execute()
                     except Exception as e:
-                        print(f"⚠️ Could not update intro status: {e}")
+                        print(f"⚠️ Could not update match status: {e}")
             except Exception as e:
                 print(f"⚠️ Error sending intro email: {e}")
                 record["status"] = "failed"
@@ -140,8 +148,8 @@ def request_intro():
             print(f"⚠️ No candidate email found for match_id {data['match_id']}, email not sent")
 
         payload = {
-            "intro_id": intro_id,
-            "intro": record,
+            "match_id": match_id,
+            "match": record,
             "email_sent": email_sent
         }
         return ok(payload)

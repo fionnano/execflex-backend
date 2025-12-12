@@ -23,9 +23,12 @@ Your role is to help executives list themselves for work opportunities or help c
 Keep responses concise (1-2 sentences) and friendly. Ask one question at a time."""
 
 
-def update_conversation_history(call_sid: str, role: str, content: str):
-    """Update conversation history for GPT context."""
+def update_conversation_history(call_sid: str, role: str, content: str, step: str = None, user_id: str = None, role_posting_id: str = None, executive_id: str = None):
+    """Update conversation history for GPT context (in-memory and database)."""
     from services.voice_session_service import init_session
+    from config.clients import supabase_client
+    
+    # Update in-memory session (for immediate GPT context)
     state = init_session(call_sid)
     if "_conversation_history" not in state:
         state["_conversation_history"] = []
@@ -33,6 +36,21 @@ def update_conversation_history(call_sid: str, role: str, content: str):
     # Keep last 10 messages to avoid token limits
     if len(state["_conversation_history"]) > 10:
         state["_conversation_history"] = state["_conversation_history"][-10:]
+    
+    # Also persist to database for analytics
+    try:
+        if supabase_client:
+            supabase_client.table("ai_conversation_history").insert({
+                "call_sid": call_sid,
+                "user_id": user_id,
+                "role_posting_id": role_posting_id,
+                "executive_id": executive_id,
+                "role": role,
+                "content": content,
+                "step": step
+            }).execute()
+    except Exception as e:
+        print(f"⚠️ Could not save conversation history to database: {e}")
 
 
 def say_and_gather(resp: VoiceResponse, prompt: str, next_step: str, call_sid: str, use_gpt: bool = True):
