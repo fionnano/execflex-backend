@@ -45,47 +45,47 @@ def _to_set(v):
 
 def _norm_candidate(raw: dict) -> dict:
     """
-    Normalize candidate data from executive_profiles table.
-    Handles executive_profiles schema fields directly.
+    Normalize candidate data from people_profiles table.
+    Handles people_profiles schema fields directly.
     """
-    # --- name (executive_profiles has first_name, last_name)
+    # --- name (people_profiles has first_name, last_name)
     first = raw.get("first_name") or ""
     last = raw.get("last_name") or ""
     name = " ".join([p for p in [first, last] if p]).strip() or "Unknown Exec"
 
-    # --- role (executive_profiles has headline)
+    # --- role (people_profiles has headline)
     role = raw.get("headline") or ""
 
-    # --- industries (executive_profiles has industries array)
+    # --- industries (people_profiles has industries array)
     industries_val = raw.get("industries") or []
     industries = _to_set(industries_val)
 
-    # --- expertise (executive_profiles has expertise array)
+    # --- expertise (people_profiles has expertise array)
     expertise_val = raw.get("expertise") or raw.get("skills") or []
     expertise = _to_set(expertise_val)
 
-    # --- availability (executive_profiles has availability_type)
+    # --- availability (people_profiles has availability_type)
     availability = raw.get("availability_type") or ""
 
-    # --- location (executive_profiles has location)
+    # --- location (people_profiles has location)
     location = raw.get("location") or "Remote"
 
-    # --- summary (executive_profiles has bio)
+    # --- summary (people_profiles has bio)
     summary = raw.get("bio") or f"{name} — {role}"
 
-    # --- highlights (executive_profiles has achievements array)
-    highlights = raw.get("achievements") or []
+    # --- highlights (people_profiles doesn't have achievements, use empty list)
+    highlights = []
 
-    # --- experience (executive_profiles has years_of_experience)
-    exp = raw.get("years_of_experience") or 0
+    # --- experience (people_profiles has years_experience)
+    exp = raw.get("years_experience") or 0
     exp = _digits_int(exp)
 
-    # --- compensation (executive_profiles has rate_range JSON)
+    # --- compensation (people_profiles has rate_range JSONB)
     comp = 0
     rate_range = raw.get("rate_range")
     if rate_range:
         if isinstance(rate_range, dict):
-            # Try to extract numeric value from rate_range JSON
+            # Try to extract numeric value from rate_range JSONB
             comp = _digits_int(rate_range.get("min")) or _digits_int(rate_range.get("max")) or _digits_int(rate_range.get("amount"))
         else:
             comp = _digits_int(rate_range)
@@ -127,10 +127,10 @@ def _score(cand: dict, industry: str, expertise: str, availability: str, locatio
 
 
 def _fetch_candidates_from_supabase():
-    """Fetch candidates from executive_profiles table. Raises error if Supabase is unavailable."""
+    """Fetch candidates from people_profiles table. Raises error if Supabase is unavailable."""
     sb = _get_supabase()
     try:
-        res = sb.table("executive_profiles").select("*").execute()
+        res = sb.table("people_profiles").select("*").execute()
         data = res.data or []
         return data
     except Exception as e:
@@ -145,7 +145,7 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
     # 1) load candidates from Supabase
     rows = _fetch_candidates_from_supabase()
     if not rows:
-        print("⚠️ No candidates found in Supabase executive_profiles table")
+        print("⚠️ No candidates found in Supabase people_profiles table")
         return []
 
     # 2) normalize
@@ -157,7 +157,7 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
             print(f"⚠️ Failed to normalize candidate record: {e}")
             print(f"   Record: {r.get('id', 'unknown') if isinstance(r, dict) else 'non-dict'}")
             continue
-    print(f"Pulled {len(cands)} candidates from Supabase:executive_profiles (from {len(rows)} total records)")
+    print(f"Pulled {len(cands)} candidates from Supabase:people_profiles (from {len(rows)} total records)")
 
     # 3) filter by minimum experience
     filtered = []

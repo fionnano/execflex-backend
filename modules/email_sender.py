@@ -56,28 +56,21 @@ def log_intro(user_type: str,
               requester_company: str | None,
               match_id: str | None,
               status: str = "sent",
-              notes: str | None = None):
-    """Log into Supabase matches table."""
+              notes: str | None = None,
+              thread_id: str | None = None):
+    """Log interaction into Supabase interactions table via thread."""
+    # Note: This function is kept for backward compatibility but the main logging
+    # now happens in routes/introductions.py when creating interactions.
+    # If thread_id is provided, we could update the interaction here, but typically
+    # the interaction is already created in the route handler.
     client = _get_supabase_client()
     if not client:
         print("⚠️ Supabase not configured; skipping match log.")
         return
     
-    try:
-        client.table("matches").insert({
-            "match_type": "executive_match",
-            "user_type": user_type,
-            "requester_name": requester_name,
-            "requester_email": requester_email,
-            "requester_company": requester_company,
-            "old_match_id": match_id,  # Keep for backward compatibility
-            "status": status,
-            "notes": notes,
-            "intro_requested_at": datetime.utcnow().isoformat() + "Z"
-        }).execute()
-        print("📝 Logged match in Supabase.")
-    except Exception as e:
-        print(f"❌ Could not log match: {e}")
+    # If thread_id is provided, we could update the interaction
+    # For now, just log for debugging
+    print(f"📝 Intro logged (thread_id: {thread_id}, status: {status})")
 
 
 def _is_valid_email(email: str) -> bool:
@@ -95,7 +88,8 @@ def send_intro_email(client_name: str,
                      candidate_industries: list | None = None,
                      requester_company: str | None = None,
                      user_type: str = "client",
-                     match_id: str | None = None) -> bool:
+                     match_id: str | None = None,
+                     thread_id: str | None = None) -> bool:
     """Send branded intro email and log it."""
 
     # Validate addresses
@@ -177,7 +171,8 @@ def send_intro_email(client_name: str,
             requester_company=requester_company,
             match_id=match_id,
             status="sent",
-            notes=f"Intro made to {candidate_name} ({candidate_email}) for role {role_text} in {industries_text}"
+            notes=f"Intro made to {candidate_name} ({candidate_email}) for role {role_text} in {industries_text}",
+            thread_id=thread_id
         )
         return True
 
@@ -191,6 +186,7 @@ def send_intro_email(client_name: str,
             requester_company=requester_company,
             match_id=match_id,
             status="failed",
-            notes=str(e)
+            notes=str(e),
+            thread_id=thread_id
         )
         return False

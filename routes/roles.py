@@ -34,61 +34,68 @@ def post_role():
         # TODO: Replace with actual auth when authentication is implemented
         user_id = data.get("user_id") or "00000000-0000-0000-0000-000000000000"  # Test user UUID
 
-        # Create or get company_profile first (if company info provided)
-        company_id = None
+        # Create or get organization first (if company info provided)
+        organization_id = None
         if data.get("company_name"):
             try:
-                # Try to find existing company profile
-                company_response = supabase_client.table("company_profiles").select("id").eq("user_id", user_id).eq("name", data["company_name"]).execute()
+                # Try to find existing organization
+                org_response = supabase_client.table("organizations").select("id").eq("name", data["company_name"]).execute()
                 
-                if company_response.data and len(company_response.data) > 0:
-                    company_id = company_response.data[0].get("id")
+                if org_response.data and len(org_response.data) > 0:
+                    organization_id = org_response.data[0].get("id")
                 else:
-                    # Create new company profile
-                    company_payload = {
-                        "user_id": user_id,
+                    # Create new organization (organizations table doesn't have user_id)
+                    org_payload = {
                         "name": data["company_name"],
                         "mission": clean_optional(data.get("company_mission")),
                         "website": clean_optional(data.get("website")),
                         "linkedin": clean_optional(data.get("linkedin")),
-                        "industry": [data["industry"]] if data.get("industry") else None,
+                        "industry": data.get("industry"),
                         "location": clean_optional(data.get("location")),
                     }
-                    company_response = supabase_client.table("company_profiles").upsert(company_payload, on_conflict="user_id").execute()
-                    if company_response.data:
-                        company_id = company_response.data[0].get("id")
+                    org_response = supabase_client.table("organizations").insert(org_payload).execute()
+                    if org_response.data:
+                        organization_id = org_response.data[0].get("id")
             except Exception as e:
-                print(f"⚠️ Could not create/update company profile: {e}")
+                print(f"⚠️ Could not create/update organization: {e}")
 
-        # Determine opportunity_type (default to 'executive', can be 'board', 'ned', 'job')
-        opportunity_type = data.get("opportunity_type", "executive")
+        # Determine opportunity type (default to 'hire_fractional', map old types)
+        opp_type_map = {
+            "executive": "hire_fractional",
+            "board": "hire_ned",
+            "ned": "hire_ned",
+            "job": "general"
+        }
+        opportunity_type = opp_type_map.get(data.get("opportunity_type", "executive"), "hire_fractional")
 
-        # Prepare Supabase payload with all fields
+        # Prepare Supabase payload for opportunities table
         supabase_payload = {
-            "user_id": user_id,
-            "role_title": data["role_title"],
-            "company_id": company_id,
+            "created_by_user_id": user_id,
+            "organization_id": organization_id,
+            "type": opportunity_type,
+            "title": data["role_title"],
+            "description": data["role_description"],
             "industry": data["industry"],
-            "role_description": data["role_description"],
-            "experience_level": data["experience_level"],
-            "commitment_type": data["commitment"],
-            "opportunity_type": opportunity_type,
-            "is_remote": data.get("is_remote", False),
             "location": clean_optional(data.get("location")),
+            "is_remote": data.get("is_remote", False),
+            "commitment_type": data["commitment"],
             "compensation": clean_optional(data.get("budget_range")),
-            "role_type": data["role_type"],
-            "contact_name": clean_optional(data.get("contact_name")),
-            "contact_email": clean_optional(data.get("contact_email")),
-            "phone": clean_optional(data.get("phone")),
-            "linkedin": clean_optional(data.get("linkedin")),
-            "website": clean_optional(data.get("website")),
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "status": "open",
+            "metadata": {
+                "experience_level": data.get("experience_level"),
+                "role_type": data.get("role_type"),
+                "contact_name": clean_optional(data.get("contact_name")),
+                "contact_email": clean_optional(data.get("contact_email")),
+                "phone": clean_optional(data.get("phone")),
+                "linkedin": clean_optional(data.get("linkedin")),
+                "website": clean_optional(data.get("website")),
+            }
         }
 
         # Save to Supabase and return the created record
         try:
-            response = supabase_client.table("role_postings").insert(supabase_payload).execute()
-            print("✅ Saved to Supabase (role_postings).")
+            response = supabase_client.table("opportunities").insert(supabase_payload).execute()
+            print("✅ Saved to Supabase (opportunities).")
             
             # Supabase insert returns the created record(s) in response.data
             created_record = response.data[0] if response.data and len(response.data) > 0 else None
@@ -102,8 +109,8 @@ def post_role():
                 # Fallback if response doesn't include the record
                 return ok({"message": "Role posted successfully!"}, status=201)
         except Exception as e:
-            print(f"❌ Supabase insert failed (role_postings): {e}")
-            return bad(f"Failed to save role posting: {str(e)}", 500)
+            print(f"❌ Supabase insert failed (opportunities): {e}")
+            return bad(f"Failed to save opportunity: {str(e)}", 500)
 
     except Exception as e:
         print("❌ /post-role error:", e)

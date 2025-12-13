@@ -23,10 +23,11 @@ Your role is to help executives list themselves for work opportunities or help c
 Keep responses concise (1-2 sentences) and friendly. Ask one question at a time."""
 
 
-def update_conversation_history(call_sid: str, role: str, content: str, step: str = None, user_id: str = None, role_posting_id: str = None, executive_id: str = None):
+def update_conversation_history(call_sid: str, role: str, content: str, step: str = None, user_id: str = None, opportunity_id: str = None, thread_id: str = None):
     """Update conversation history for GPT context (in-memory and database)."""
     from services.voice_session_service import init_session
     from config.clients import supabase_client
+    from datetime import datetime
     
     # Update in-memory session (for immediate GPT context)
     state = init_session(call_sid)
@@ -37,18 +38,54 @@ def update_conversation_history(call_sid: str, role: str, content: str, step: st
     if len(state["_conversation_history"]) > 10:
         state["_conversation_history"] = state["_conversation_history"][-10:]
     
-    # Also persist to database for analytics
+    # Also persist to database interactions table for analytics
+    # We need a thread_id to store interactions - create or find one
     try:
         if supabase_client:
-            supabase_client.table("ai_conversation_history").insert({
-                "call_sid": call_sid,
-                "user_id": user_id,
-                "role_posting_id": role_posting_id,
-                "executive_id": executive_id,
-                "role": role,
-                "content": content,
-                "step": step
-            }).execute()
+            # Get or create thread for this call
+            if not thread_id:
+                # Try to find existing thread for this call_sid
+                if user_id:
+                    thread_resp = supabase_client.table("threads").select("id").eq("primary_user_id", user_id).eq("active", True).order("created_at", {"ascending": False}).limit(1).execute()
+                    if thread_resp.data and len(thread_resp.data) > 0:
+                        thread_id = thread_resp.data[0].get("id")
+                    else:
+                        # Create new thread for this call
+                        thread_payload = {
+                            "primary_user_id": user_id,
+                            "subject": f"Voice call: {call_sid}",
+                            "status": "open",
+                            "opportunity_id": opportunity_id,
+                            "active": True
+                        }
+                        thread_resp = supabase_client.table("threads").insert(thread_payload).execute()
+                        if thread_resp.data and len(thread_resp.data) > 0:
+                            thread_id = thread_resp.data[0].get("id")
+                            state["__thread_id"] = thread_id  # Store in session for future calls
+            
+            if thread_id:
+                # Store interaction record
+                # For voice calls, we accumulate transcript and create one interaction per call
+                # or append to existing interaction. For simplicity, create separate interactions per message step.
+                interaction_payload = {
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "channel": "voice",
+                    "direction": "inbound" if role == "user" else "outbound",
+                    "provider": "twilio",
+                    "provider_ref": call_sid,
+                    "transcript_text": content,
+                    "artifacts": {
+                        "step": step,
+                        "role": role,
+                        "call_sid": call_sid
+                    },
+                    "raw_payload": {
+                        "content": content,
+                        "step": step
+                    }
+                }
+                supabase_client.table("interactions").insert(interaction_payload).execute()
     except Exception as e:
         print(f"⚠️ Could not save conversation history to database: {e}")
 
@@ -286,11 +323,22 @@ def handle_conversation_step(step: str, speech: str, call_sid: str) -> Response:
         # Fetch candidate email from match data if available
         candidate_email = match.get("email") or match.get("contact_email")
         if not candidate_email and match.get("id"):
-            # Try to fetch from Supabase
+            # Try to fetch from Supabase - match.id is now a people_profiles.id or user_id
             try:
-                cand_response = supabase_client.table("executive_profiles").select("email, contact_email").eq("id", match.get("id")).execute()
+                # First try people_profiles by id
+                cand_response = supabase_client.table("people_profiles").select("user_id").eq("id", match.get("id")).limit(1).execute()
+                candidate_user_id = None
                 if cand_response.data and len(cand_response.data) > 0:
-                    candidate_email = cand_response.data[0].get("email") or cand_response.data[0].get("contact_email")
+                    candidate_user_id = cand_response.data[0].get("user_id")
+                else:
+                    # Try as user_id directly
+                    candidate_user_id = match.get("id")
+                
+                if candidate_user_id:
+                    # Get email from channel_identities
+                    email_response = supabase_client.table("channel_identities").select("value").eq("user_id", candidate_user_id).eq("channel", "email").limit(1).execute()
+                    if email_response.data and len(email_response.data) > 0:
+                        candidate_email = email_response.data[0].get("value")
             except Exception as e:
                 print(f"⚠️ Could not fetch candidate email: {e}")
 
