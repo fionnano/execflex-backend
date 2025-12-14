@@ -161,10 +161,11 @@ def _score(cand: dict, industry: str, expertise: str, availability: str, locatio
 
 
 def _fetch_candidates_from_supabase():
-    """Fetch candidates from people_profiles table. Raises error if Supabase is unavailable."""
+    """Fetch approved candidates from people_profiles table. Raises error if Supabase is unavailable."""
     sb = _get_supabase()
     try:
-        res = sb.table("people_profiles").select("*").execute()
+        # Only fetch approved profiles (approved = true)
+        res = sb.table("people_profiles").select("*").eq("approved", True).execute()
         data = res.data or []
         return data
     except Exception as e:
