@@ -67,7 +67,7 @@ def initialize_user_onboarding(user_id: Optional[str] = None) -> Dict[str, Any]:
         # Create outbound call job
         job_data = {
             "user_id": user_id,  # Set user_id for tracking
-            "phone_e164": QUALIFICATION_DESTINATION_PHONE,
+            "phone_e164": ONBOARDING_DESTINATION_PHONE,
             "status": "queued",
             "thread_id": thread_id,
             "interaction_id": interaction_id,
