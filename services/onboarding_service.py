@@ -184,7 +184,13 @@ def process_queued_jobs(limit: int = 10) -> int:
                 # Initiate Twilio call
                 # Construct URL manually (url_for requires app context which we don't have in worker)
                 # Use /voice/qualify endpoint for outbound qualification calls
-                base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", "https://api.execflex.ai"))
+                # Priority: API_BASE_URL > RENDER_EXTERNAL_URL > default Render URL
+                base_url = (
+                    os.getenv("API_BASE_URL") or 
+                    os.getenv("RENDER_EXTERNAL_URL") or 
+                    os.getenv("VITE_FLASK_API_URL") or 
+                    "https://execflex-backend-1.onrender.com"
+                )
                 twiml_url = f"{base_url}/voice/qualify?job_id={job_id}"
                 
                 call = twilio_client.calls.create(

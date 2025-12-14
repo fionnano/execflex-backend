@@ -64,7 +64,6 @@ def voice_intro():
 
 
 @voice_bp.route("/voice/qualify", methods=["POST", "GET"])
-@require_twilio_signature
 def voice_qualify():
     """
     Outbound qualification call endpoint.
@@ -82,14 +81,29 @@ def voice_qualify():
     
     Query params:
         job_id: Job ID from outbound_call_jobs table (required)
+    
+    Note: Signature verification is handled inside to allow better error handling.
     """
     if not VoiceResponse:
         return Response("Voice features not available", mimetype="text/plain"), 503
+    
+    # Check signature but don't block if in dev mode (for easier debugging)
+    from utils.twilio_helpers import verify_twilio_signature
+    import os
+    app_env = os.getenv("APP_ENV", "prod").lower()
+    if not verify_twilio_signature():
+        if app_env != "dev":
+            print("❌ Invalid Twilio signature in production mode")
+            return Response("Invalid signature", status=403), 403
+        else:
+            print("⚠️ Twilio signature verification failed, but continuing (dev mode)")
     
     call_sid = request.values.get("CallSid") or "unknown"
     job_id = request.values.get("job_id") or request.args.get("job_id")
     user_speech = (request.values.get("SpeechResult") or "").strip()
     speech_confidence = request.values.get("Confidence", "0")
+    
+    print(f"📞 Qualification call received: call_sid={call_sid}, job_id={job_id}, has_speech={bool(user_speech)}")
     
     if not job_id:
         print(f"⚠️ Missing job_id in qualification call: call_sid={call_sid}")
@@ -98,23 +112,32 @@ def voice_qualify():
         resp.hangup()
         return Response(str(resp), mimetype="text/xml")
     
-    # Handle conversation turn (works for both initial call and subsequent turns)
-    # If user_speech is empty, it's the opening turn
-    resp, error = handle_conversation_turn(
-        call_sid=call_sid,
-        user_speech=user_speech if user_speech else None,
-        speech_confidence=speech_confidence,
-        job_id=job_id,
-        request_url_root=request.url_root
-    )
-    
-    if error:
-        print(f"⚠️ Error in qualification call: {error}")
+    try:
+        # Handle conversation turn (works for both initial call and subsequent turns)
+        # If user_speech is empty, it's the opening turn
+        resp, error = handle_conversation_turn(
+            call_sid=call_sid,
+            user_speech=user_speech if user_speech else None,
+            speech_confidence=speech_confidence,
+            job_id=job_id,
+            request_url_root=request.url_root
+        )
+        
+        if error:
+            print(f"⚠️ Error in qualification call: {error}")
+            resp = VoiceResponse()
+            resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
+            resp.hangup()
+        
+        return Response(str(resp), mimetype="text/xml")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Exception in voice_qualify: {e}")
         resp = VoiceResponse()
         resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
         resp.hangup()
-    
-    return Response(str(resp), mimetype="text/xml")
+        return Response(str(resp), mimetype="text/xml")
 
 
 @voice_bp.route("/voice/inbound", methods=["POST", "GET"])

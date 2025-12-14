@@ -21,8 +21,9 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
     """
     # Allow in development if token not set (for local testing with ngrok)
     import os
-    if not TWILIO_AUTH_TOKEN or os.getenv("APP_ENV") == "dev":
-        print("⚠️ TWILIO_AUTH_TOKEN not configured or in dev mode. Skipping signature verification.")
+    app_env = os.getenv("APP_ENV", "prod").lower()
+    if not TWILIO_AUTH_TOKEN or app_env == "dev":
+        print(f"⚠️ TWILIO_AUTH_TOKEN not configured or in dev mode (APP_ENV={app_env}). Skipping signature verification.")
         return True  # Allow in development if token not set
     
     # Get signature from header
