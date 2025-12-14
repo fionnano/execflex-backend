@@ -54,11 +54,13 @@ def enqueue_call():
 
 # DEPRECATED ENDPOINTS REMOVED:
 # - /onboarding/intro → Use /voice/intro?call_type=onboarding
-# - /onboarding/turn → Use /voice/turn?call_type=onboarding
+# - /onboarding/turn → Use /voice/qualify (for outbound) or /voice/inbound (for inbound)
 # - /onboarding/status → Use /voice/status (already exists in voice.py)
 # 
-# All conversation handling is now unified in /voice/intro and /voice/turn
-# The worker uses /voice/intro and /voice/status directly
+# All conversation handling is now unified:
+# - Outbound: /voice/qualify
+# - Inbound: /voice/intro and /voice/inbound
+# The worker uses /voice/qualify and /voice/status directly
 
 @onboarding_bp.route("/onboarding/status", methods=["POST"])
 def onboarding_status():

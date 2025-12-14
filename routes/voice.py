@@ -117,8 +117,8 @@ def voice_qualify():
     return Response(str(resp), mimetype="text/xml")
 
 
-@voice_bp.route("/voice/turn", methods=["POST", "GET"])
-def voice_turn():
+@voice_bp.route("/voice/inbound", methods=["POST", "GET"])
+def voice_inbound():
     """
     Turn handler for inbound voice conversations.
     Called by Twilio after Gather collects user speech during inbound calls.

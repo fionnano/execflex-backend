@@ -553,7 +553,7 @@ paths:
         **DEPRECATED:** Legacy endpoint for inbound call conversation flow.
         Kept for backward compatibility only.
         
-        Use `/voice/turn` instead for unified turn handling.
+        Use `/voice/inbound` instead for inbound call handling.
         
         **Note:** This is a webhook endpoint, typically called by Twilio, not directly by API clients.
       operationId: voiceCapture
@@ -595,7 +595,7 @@ paths:
       tags:
         - Voice
       summary: Legacy Twilio webhook - Speech capture (GET, deprecated)
-      description: Alternative GET handler (deprecated - use /voice/turn)
+      description: Alternative GET handler (deprecated - use /voice/inbound)
       operationId: voiceCaptureGet
       deprecated: true
       parameters:

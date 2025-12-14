@@ -172,7 +172,7 @@ def handle_conversation_turn(
         # Generate audio and return TwiML with Gather
         audio_path = generate_tts(opening_message)
         
-        # Build turn endpoint URL (use unified /voice/turn)
+        # Build turn endpoint URL (use /voice/qualify for subsequent turns)
         base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", request_url_root.rstrip('/') if request_url_root else ''))
         if not base_url.startswith('http'):
             base_url = (request_url_root.rstrip('/') if request_url_root else '')
