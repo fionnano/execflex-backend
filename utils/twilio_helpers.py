@@ -3,24 +3,31 @@ Twilio webhook signature verification utilities.
 """
 from flask import request
 from config.app_config import TWILIO_AUTH_TOKEN
-import hmac
-import hashlib
-from urllib.parse import urlencode
+import os
 from typing import Optional
+
+# Try to import Twilio's RequestValidator (preferred method)
+try:
+    from twilio.request_validator import RequestValidator
+    TWILIO_VALIDATOR_AVAILABLE = True
+except ImportError:
+    TWILIO_VALIDATOR_AVAILABLE = False
+    print("⚠️ Twilio RequestValidator not available. Install: pip install twilio")
 
 
 def verify_twilio_signature(url: Optional[str] = None) -> bool:
     """
     Verify that a Twilio webhook request is authentic.
     
+    Uses Twilio's RequestValidator if available, otherwise falls back to manual verification.
+    
     Args:
-        url: Optional full URL of the webhook endpoint (defaults to reconstructing from env vars or request.url)
+        url: Optional full URL of the webhook endpoint (defaults to request.url)
         
     Returns:
         True if signature is valid, False otherwise
     """
     # Allow in development if token not set (for local testing with ngrok)
-    import os
     app_env = os.getenv("APP_ENV", "prod").lower()
     if not TWILIO_AUTH_TOKEN or app_env == "dev":
         print(f"⚠️ TWILIO_AUTH_TOKEN not configured or in dev mode (APP_ENV={app_env}). Skipping signature verification.")
@@ -32,54 +39,51 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
         print("⚠️ Missing X-Twilio-Signature header")
         return False
     
-    # Get the full URL - use provided URL, or reconstruct from base URL, or fall back to request.url
-    if not url:
-        # Try to reconstruct URL from environment variables (what Twilio was configured with)
-        base_url = (
-            os.getenv("API_BASE_URL") or 
-            os.getenv("RENDER_EXTERNAL_URL") or 
-            os.getenv("VITE_FLASK_API_URL") or 
-            None
-        )
-        
-        if base_url:
-            # Reconstruct the full URL that Twilio expects
-            # Remove trailing slash from base_url
-            base_url = base_url.rstrip('/')
-            # Get the path from request
-            path = request.path
-            # Reconstruct full URL
-            url = f"{base_url}{path}"
-        else:
-            # Fall back to request.url, but normalize it
-            url = request.url
-            # Remove query string from URL for signature verification (Twilio doesn't include it in the signed URL)
-            # Actually, wait - Twilio DOES include query params in the signature if they were in the original URL
-            # But if the URL was configured without query params, we should use it without query params
-            # For status callbacks, there are usually no query params, so let's try without first
-            if '?' in url:
-                # Try with and without query params
-                url_without_query = url.split('?')[0]
-                # We'll try both variations below
-                pass
+    # Use Twilio's RequestValidator if available (recommended)
+    if TWILIO_VALIDATOR_AVAILABLE:
+        try:
+            validator = RequestValidator(TWILIO_AUTH_TOKEN)
+            
+            # Use provided URL or request.url
+            url_to_validate = url if url else request.url
+            
+            # Get POST parameters as dict
+            post_args = request.form.to_dict()
+            
+            # Validate using Twilio's validator
+            is_valid = validator.validate(url_to_validate, post_args, signature)
+            
+            if not is_valid:
+                print(f"⚠️ Signature verification failed (using Twilio RequestValidator)")
+                print(f"   URL used: {url_to_validate}")
+                print(f"   POST params count: {len(post_args)}")
+            
+            return is_valid
+        except Exception as e:
+            print(f"⚠️ Error using Twilio RequestValidator: {e}")
+            # Fall through to manual verification
+    
+    # Fallback to manual verification (if RequestValidator not available)
+    import hmac
+    import hashlib
+    from urllib.parse import urlencode
+    import base64
+    
+    # Use provided URL or request.url
+    url_to_validate = url if url else request.url
     
     # Get all POST parameters
     params = {}
     for key in request.form:
         params[key] = request.form[key]
     
-    # Also get query parameters if they exist
-    for key in request.args:
-        if key not in params:  # Don't override POST params
-            params[key] = request.args[key]
-    
     # Sort parameters by key
     sorted_params = sorted(params.items())
     
-    # Build data string: URL + sorted parameters
-    # Remove query string from URL if we're including params separately
-    url_for_signing = url.split('?')[0] if '?' in url else url
-    data = url_for_signing + urlencode(sorted_params)
+    # Build data string: URL + sorted parameters (URL should NOT include query string)
+    # Twilio's signature is computed on: URL (without query) + sorted POST params
+    url_without_query = url_to_validate.split('?')[0]
+    data = url_without_query + urlencode(sorted_params)
     
     # Compute HMAC
     computed_signature = hmac.new(
@@ -89,19 +93,15 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
     ).digest()
     
     # Base64 encode
-    import base64
     computed_signature_b64 = base64.b64encode(computed_signature).decode('utf-8')
     
     # Compare (use constant-time comparison to prevent timing attacks)
     is_valid = hmac.compare_digest(computed_signature_b64, signature)
     
     if not is_valid:
-        # Log for debugging (but don't expose signature)
-        print(f"⚠️ Signature verification failed")
-        print(f"   URL used: {url_for_signing}")
+        print(f"⚠️ Signature verification failed (manual verification)")
+        print(f"   URL used: {url_without_query}")
         print(f"   Params: {sorted_params[:3]}...")  # Only show first 3 params
-        print(f"   Expected signature starts with: {computed_signature_b64[:10]}...")
-        print(f"   Received signature starts with: {signature[:10]}...")
     
     return is_valid
 

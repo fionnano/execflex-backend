@@ -92,22 +92,8 @@ def voice_qualify():
     import os
     app_env = os.getenv("APP_ENV", "prod").lower()
     
-    # For qualify endpoint, try to use the configured base URL with job_id
-    base_url = (
-        os.getenv("API_BASE_URL") or 
-        os.getenv("RENDER_EXTERNAL_URL") or 
-        os.getenv("VITE_FLASK_API_URL") or 
-        None
-    )
-    expected_url = None
-    if base_url:
-        job_id_param = request.values.get("job_id") or request.args.get("job_id")
-        if job_id_param:
-            expected_url = f"{base_url.rstrip('/')}/voice/qualify?job_id={job_id_param}"
-        else:
-            expected_url = f"{base_url.rstrip('/')}/voice/qualify"
-    
-    if not verify_twilio_signature(url=expected_url):
+    # Use request.url directly - Twilio's RequestValidator handles URL normalization
+    if not verify_twilio_signature():
         if app_env != "dev":
             print("❌ Invalid Twilio signature in production mode")
             # Log the URL we tried for debugging
@@ -225,18 +211,8 @@ def voice_status():
     import os
     app_env = os.getenv("APP_ENV", "prod").lower()
     
-    # For status callbacks, try to use the configured base URL
-    base_url = (
-        os.getenv("API_BASE_URL") or 
-        os.getenv("RENDER_EXTERNAL_URL") or 
-        os.getenv("VITE_FLASK_API_URL") or 
-        None
-    )
-    expected_url = None
-    if base_url:
-        expected_url = f"{base_url.rstrip('/')}/voice/status"
-    
-    if not verify_twilio_signature(url=expected_url):
+    # Use request.url directly - Twilio's RequestValidator handles URL normalization
+    if not verify_twilio_signature():
         if app_env != "dev":
             print("❌ Invalid Twilio signature in production mode")
             # Log the URL we tried for debugging
