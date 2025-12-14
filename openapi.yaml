@@ -14,7 +14,10 @@ info:
     - Voice calls via Twilio (Ai-dan)
     
     ## Authentication
-    Currently, the API does not require authentication for MVP. Future versions may require API keys or OAuth tokens.
+    Most endpoints require JWT authentication via Supabase Auth. Include the JWT token in the Authorization header:
+    `Authorization: Bearer <supabase_jwt_token>`
+    
+    Twilio webhook endpoints (`/voice/*`) are public and called by Twilio (signature verification recommended for production).
   version: 1.0.0
   contact:
     name: ExecFlex API Support
@@ -36,7 +39,7 @@ tags:
   - name: Introductions
     description: Email introductions between clients and candidates
   - name: Voice
-    description: Voice/telephony features (Ai-dan)
+    description: Voice/telephony features (Ai-dan) - Twilio webhooks
 
 paths:
   /:
@@ -58,7 +61,11 @@ paths:
       description: |
         Finds the best matching executive candidate based on role requirements.
         Uses a scoring algorithm considering industry, expertise, availability, location, and salary.
+        
+        **Requires authentication** - JWT token in Authorization header.
       operationId: findMatch
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -117,6 +124,12 @@ paths:
                     message: "No match found yet. We'll follow up with suggestions soon."
                     match: null
                     matches: []
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Invalid request
           content:
@@ -135,8 +148,13 @@ paths:
       tags:
         - Roles
       summary: Post a new executive role
-      description: Submit a new executive role posting to the platform
+      description: |
+        Submit a new executive role posting to the platform.
+        
+        **Requires authentication** - JWT token in Authorization header. The authenticated user's ID will be used as the creator.
       operationId: postRole
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -182,6 +200,12 @@ paths:
                   company_name: "Acme Corp"
                   industry: "Fintech"
                   created_at: "2024-01-15T10:30:00Z"
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Missing required fields
           content:
@@ -199,11 +223,15 @@ paths:
     post:
       tags:
         - Introductions
-      summary: Request an introduction (recommended)
+      summary: Request an email introduction
       description: |
-        Stores an introduction request in Supabase. This is the recommended endpoint for requesting introductions.
-        The introduction can be sent via email after the request is logged.
+        Creates a thread and interaction for an introduction request, then sends an email introduction.
+        The authenticated user's ID is used as the requester.
+        
+        **Requires authentication** - JWT token in Authorization header.
       operationId: requestIntro
+      security:
+        - bearerAuth: []
       requestBody:
         required: true
         content:
@@ -219,7 +247,7 @@ paths:
               notes: "Series B GTM help needed"
       responses:
         '200':
-          description: Introduction request created
+          description: Introduction request processed
           content:
             application/json:
               schema:
@@ -227,20 +255,32 @@ paths:
                 properties:
                   ok:
                     type: boolean
-                  intro_id:
+                  thread_id:
                     type: string
-                    description: ID of the created intro request
-                  intro:
-                    $ref: '#/components/schemas/IntroRecord'
+                    description: ID of the created thread
+                  interaction_id:
+                    type: string
+                    nullable: true
+                    description: ID of the created interaction (if email sent)
+                  email_sent:
+                    type: boolean
+                    description: Whether the introduction email was sent
+                  status:
+                    type: string
+                    enum: [sent, pending]
+                    description: Status of the introduction request
               example:
                 ok: true
-                intro_id: "intro-123"
-                intro:
-                  user_type: "client"
-                  requester_name: "Jane Doe"
-                  requester_email: "jane@acme.com"
-                  status: "pending"
-                  created_at: "2024-01-15T10:30:00Z"
+                thread_id: "thread-123"
+                interaction_id: "interaction-456"
+                email_sent: true
+                status: "sent"
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: Missing required fields
           content:
@@ -253,80 +293,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
-  /call_candidate:
-    post:
-      tags:
-        - Voice
-      summary: Initiate outbound Twilio call
-      description: |
-        Initiates an outbound phone call via Twilio to a candidate or client.
-        The call will be handled by Ai-dan, the AI voice agent.
-      operationId: callCandidate
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - phone
-              properties:
-                phone:
-                  type: string
-                  description: Phone number in E.164 format (e.g., +1234567890)
-                  example: "+353123456789"
-      responses:
-        '200':
-          description: Call initiated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  status:
-                    type: string
-                    example: "calling"
-                  sid:
-                    type: string
-                    description: Twilio Call SID
-                    example: "CA1234567890abcdef"
-        '400':
-          description: Phone number required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '503':
-          description: Twilio not configured
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-    options:
-      tags:
-        - Voice
-      summary: CORS preflight for call_candidate
-      operationId: callCandidateOptions
-      responses:
-        '200':
-          description: Preflight OK
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: "ok"
 
   /voice/intro:
     post:
@@ -525,6 +491,16 @@ paths:
           description: Voice features not available
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Supabase JWT token from authenticated user session.
+        Get the token from `supabase.auth.getSession()` in the frontend.
+        Include in header: `Authorization: Bearer <token>`
+
   schemas:
     Match:
       type: object
@@ -603,13 +579,9 @@ components:
 
     MatchRequest:
       type: object
-      required:
-        - industry
-        - expertise
-        - availability
-        - min_experience
-        - max_salary
-        - location
+      description: |
+        All fields are optional. The matching algorithm will score candidates based on provided criteria.
+        If no criteria are provided, returns all available candidates.
       properties:
         industry:
           type: string
@@ -787,39 +759,16 @@ components:
           example: "Acme Corp"
         match_id:
           type: string
-          description: ID of the candidate/match
+          description: ID of the candidate/match (people_profiles.id or user_id)
           example: "cand-001"
         notes:
           type: string
           nullable: true
           description: Additional notes about the introduction
           example: "Series B GTM help needed"
-
-    IntroRecord:
-      type: object
-      properties:
-        id:
-          type: string
-        user_type:
-          type: string
-          enum: [client, candidate]
-        requester_name:
-          type: string
-        requester_email:
-          type: string
-        requester_company:
+        opportunity_id:
           type: string
           nullable: true
-        match_id:
-          type: string
-        status:
-          type: string
-          enum: [pending, sent, failed]
-          default: pending
-        notes:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-          format: date-time
+          description: Optional opportunity ID to link this introduction to
+          example: "opp-123"
 

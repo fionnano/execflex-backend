@@ -1,5 +1,5 @@
 """
-Introduction request routes.
+Email Introduction request routes.
 """
 from datetime import datetime
 from flask import request
@@ -31,33 +31,10 @@ def request_intro():
         if missing:
             return bad(f"Missing required fields: {', '.join(missing)}")
 
-        # Get user_id from request or find an existing user for MVP (no auth required yet)
-        # TODO: Replace with actual auth when authentication is implemented
-        user_id = data.get("user_id")
-        
+        # Get user_id from authenticated JWT token
+        user_id = request.environ.get('authenticated_user_id')
         if not user_id:
-            # For smoke tests/MVP: Try to find any existing user_id from the database
-            try:
-                # Try to find a user_id from people_profiles (most likely to have users)
-                profiles_response = supabase_client.table("people_profiles").select("user_id").limit(1).execute()
-                if profiles_response.data and len(profiles_response.data) > 0:
-                    user_id = profiles_response.data[0].get("user_id")
-                else:
-                    # Fallback: Try opportunities
-                    opps_response = supabase_client.table("opportunities").select("created_by_user_id").limit(1).execute()
-                    if opps_response.data and len(opps_response.data) > 0:
-                        user_id = opps_response.data[0].get("created_by_user_id")
-                    else:
-                        # Last fallback: Try threads table
-                        threads_response = supabase_client.table("threads").select("primary_user_id").limit(1).execute()
-                        if threads_response.data and len(threads_response.data) > 0:
-                            user_id = threads_response.data[0].get("primary_user_id")
-            except Exception as e:
-                print(f"⚠️ Could not find existing user for intro request: {e}")
-        
-        if not user_id:
-            # If we still don't have a user_id, return a helpful error
-            return bad("Unable to determine user_id. Please provide user_id in request. For MVP testing, ensure at least one user exists in the database.", 400)
+            return bad("Authentication required", 401)
 
         # Fetch candidate details from people_profiles
         candidate_name = "an executive"

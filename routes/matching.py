@@ -4,10 +4,12 @@ Executive matching routes.
 from flask import request
 from routes import matching_bp
 from utils.response_helpers import ok, bad
+from utils.auth_helpers import require_auth
 from modules.match_finder import find_best_match
 
 
 @matching_bp.route("/match", methods=["POST"])
+@require_auth
 def match():
     """Find best candidate match."""
     try:

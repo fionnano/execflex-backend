@@ -14,53 +14,6 @@ from services.voice_conversation_service import say_and_gather, handle_conversat
 from services.company_scheduling_service import say_and_gather_scheduling, handle_scheduling_step
 
 
-@voice_bp.route("/call_candidate", methods=["POST", "OPTIONS"])
-@cross_origin()
-def call_candidate():
-    """
-    Initiate an outbound Twilio call to a candidate/client.
-    
-    Security: Rate limited to prevent abuse (5 calls per hour, 20 per day per IP).
-    Rate limiting is applied in server.py after blueprint registration.
-    
-    Body (JSON): { "phone": "+1234567890" }
-    """
-    if request.method == "OPTIONS":
-        # Preflight OK
-        return jsonify({"status": "ok"}), 200
-
-    if not twilio_client:
-        return bad("Twilio not configured. Voice features unavailable.", 503)
-
-    data = request.get_json(silent=True) or {}
-    phone = data.get("phone")
-    
-    # Log the request for security monitoring
-    client_ip = request.remote_addr or request.environ.get('HTTP_X_FORWARDED_FOR', 'unknown')
-    print(f"DEBUG Call request from IP {client_ip} to phone: {phone}")
-
-    if not phone:
-        return bad("Phone number required", 400)
-
-    # Basic phone number validation (E.164 format)
-    if not phone.startswith('+') or len(phone) < 10 or len(phone) > 16:
-        return bad("Invalid phone number format. Please use E.164 format (e.g., +353123456789)", 400)
-
-    try:
-        from flask import url_for
-        call = twilio_client.calls.create(
-            to=phone,
-            from_=TWILIO_PHONE_NUMBER,
-            url=url_for('voice.voice_intro', _external=True)
-        )
-        print(f"DEBUG Call SID: {call.sid} (IP: {client_ip}, Phone: {phone})")
-        return ok({"status": "calling", "sid": call.sid})
-    except Exception as e:
-        traceback.print_exc()
-        print(f"ERROR Call failed (IP: {client_ip}, Phone: {phone}): {str(e)}")
-        return bad(str(e), 500)
-
-
 @voice_bp.route("/voice/intro", methods=["POST", "GET"])
 def voice_intro():
     """

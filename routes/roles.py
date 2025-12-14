@@ -5,10 +5,12 @@ from datetime import datetime
 from flask import request
 from routes import roles_bp
 from utils.response_helpers import ok, bad
+from utils.auth_helpers import require_auth
 from config.clients import supabase_client
 
 
 @roles_bp.route("/post-role", methods=["POST"])
+@require_auth
 def post_role():
     """Submit a new executive role posting."""
     try:
@@ -30,9 +32,10 @@ def post_role():
                 return None
             return value
 
-        # Get user_id from request or use test user for MVP (no auth required yet)
-        # TODO: Replace with actual auth when authentication is implemented
-        user_id = data.get("user_id") or "00000000-0000-0000-0000-000000000000"  # Test user UUID
+        # Get user_id from authenticated JWT token
+        user_id = request.environ.get('authenticated_user_id')
+        if not user_id:
+            return bad("Authentication required", 401)
 
         # Create or get organization first (if company info provided)
         organization_id = None

@@ -49,12 +49,7 @@ app.register_blueprint(introductions_bp)
 app.register_blueprint(voice_bp)
 app.register_blueprint(qualification_bp)
 
-# Apply rate limiting to voice endpoint after blueprint registration
-# Import here to avoid circular imports
-from routes import voice
-if limiter:
-    # Apply stricter rate limits to the expensive call_candidate endpoint
-    limiter.limit("5 per hour;20 per day", override_defaults=True)(voice.call_candidate)
+# Rate limiting can be applied to specific endpoints here if needed
 
 # Pre-cache common TTS prompts at startup
 pre_cache_common_prompts()
