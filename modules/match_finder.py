@@ -171,10 +171,13 @@ def _fetch_candidates_from_supabase():
         raise RuntimeError(f"Failed to fetch candidates from Supabase: {e}") from e
 
 
-def find_best_match(industry: str, expertise: str, availability: str, min_experience: int, max_salary: int, location: str):
+def find_best_match(industry: str, expertise: str, availability: str, min_experience: int, max_salary: int, location: str, is_ned_only: bool = False):
     """
     Find best matching candidates from Supabase.
     Raises error if Supabase is unavailable or query fails.
+    
+    Args:
+        is_ned_only: If True, only return candidates with is_ned_available = True
     """
     # 1) load candidates from Supabase
     rows = _fetch_candidates_from_supabase()
@@ -193,7 +196,13 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
             continue
     print(f"Pulled {len(cands)} candidates from Supabase:people_profiles (from {len(rows)} total records)")
 
-    # 3) filter by minimum experience (only if min_experience is specified and > 0)
+    # 3) filter by NED availability if requested
+    if is_ned_only:
+        ned_cands = [c for c in cands if c.get("is_ned_available", False)]
+        print(f"🔍 Filtering for NED/iNED only: {len(ned_cands)} candidates have is_ned_available = True")
+        cands = ned_cands
+
+    # 4) filter by minimum experience (only if min_experience is specified and > 0)
     filtered = []
     for c in cands:
         if min_experience and min_experience > 0 and c["experience_years"] and c["experience_years"] < int(min_experience):

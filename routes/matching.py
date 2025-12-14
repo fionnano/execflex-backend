@@ -19,6 +19,14 @@ def match():
         availability = data.get("availability", "") or ""
         location = data.get("location", "") or ""
         
+        # Handle profileType filter (for NED/iNED filtering)
+        profile_type = data.get("profileType", "") or ""
+        is_ned_only = False
+        if profile_type:
+            # Check if profileType includes 'ned' (can be comma-separated)
+            profile_types = [pt.strip().lower() for pt in profile_type.split(',') if pt.strip()]
+            is_ned_only = 'ned' in profile_types or 'ined' in profile_types
+        
         try:
             min_experience = int(data.get("min_experience", 0) or 0)
             max_salary = int(data.get("max_salary", 999999) or 999999)
@@ -33,6 +41,7 @@ def match():
             min_experience,
             max_salary,
             location,
+            is_ned_only=is_ned_only,
         )
 
         # find_best_match returns a list of matches (up to 5)
