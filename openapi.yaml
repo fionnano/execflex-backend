@@ -40,6 +40,8 @@ tags:
     description: Email introductions between clients and candidates
   - name: Voice
     description: Voice/telephony features (Ai-dan) - Twilio webhooks
+  - name: Onboarding
+    description: Onboarding and qualification call management (admin-only)
 
 paths:
   /:
@@ -298,11 +300,15 @@ paths:
     post:
       tags:
         - Voice
-      summary: Twilio webhook - Call start
+      summary: Twilio webhook - Inbound call entry point
       description: |
-        Webhook endpoint called by Twilio when a voice call starts.
-        This initiates the IVR flow with Ai-dan.
-        **Note:** This is a webhook endpoint, typically called by Twilio, not directly by API clients.
+        Entry point for inbound voice calls from users.
+        Called by Twilio when a user calls the ExecFlex phone number.
+        
+        **Note:** This endpoint is for inbound calls only. For outbound qualification calls,
+        see `/voice/qualify`.
+        
+        **Note:** This is a webhook endpoint, called by Twilio, not directly by API clients.
       operationId: voiceIntro
       requestBody:
         content:
@@ -315,19 +321,19 @@ paths:
                   description: Twilio Call SID
       responses:
         '200':
-          description: TwiML response for call handling
+          description: TwiML response for inbound call handling
           content:
             application/xml:
               schema:
                 type: string
-                description: TwiML XML
+                description: TwiML XML with opening message and Gather
         '503':
           description: Voice features not available
     get:
       tags:
         - Voice
-      summary: Twilio webhook - Call start (GET)
-      description: Alternative GET handler for Twilio webhook
+      summary: Twilio webhook - Inbound call entry point (GET)
+      description: Alternative GET handler for inbound calls
       operationId: voiceIntroGet
       responses:
         '200':
@@ -339,16 +345,219 @@ paths:
         '503':
           description: Voice features not available
 
+  /voice/qualify:
+    post:
+      tags:
+        - Voice
+      summary: Twilio webhook - Outbound qualification call handler
+      description: |
+        Outbound qualification call endpoint. Called by Twilio when an outbound qualification call is answered.
+        
+        This endpoint handles all logic for qualification calls:
+        - OpenAI reasoning (with job seeker or talent seeker system prompts)
+        - Storing interaction + turns in database
+        - Converting text to speech with ElevenLabs
+        - Incremental DB updates (people_profiles, organizations, role_assignments)
+        
+        **Flow:**
+        1. Initial call: Twilio calls this endpoint when user answers → Returns opening message + Gather
+        2. Subsequent turns: Twilio calls this endpoint after Gather → Processes user speech, calls OpenAI, returns next message
+        
+        **Note:** This is a webhook endpoint, called by Twilio, not directly by API clients.
+        **Security:** Twilio signature verification required (X-Twilio-Signature header).
+      operationId: voiceQualify
+      parameters:
+        - name: job_id
+          in: query
+          description: Job ID from outbound_call_jobs table (required)
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: "123e4567-e89b-12d3-a456-426614174000"
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                CallSid:
+                  type: string
+                  description: Twilio Call SID
+                  required: true
+                SpeechResult:
+                  type: string
+                  description: Recognized speech text from user (present only for subsequent turns)
+                Confidence:
+                  type: string
+                  description: Speech recognition confidence score (0.0-1.0)
+      responses:
+        '200':
+          description: TwiML response for next turn or call termination
+          content:
+            application/xml:
+              schema:
+                type: string
+                description: TwiML XML with next message, Gather (if continuing), or Hangup (if complete)
+        '400':
+          description: Missing job_id
+        '403':
+          description: Invalid Twilio signature
+        '503':
+          description: Voice features not available
+    get:
+      tags:
+        - Voice
+      summary: Twilio webhook - Outbound qualification call handler (GET)
+      description: Alternative GET handler
+      operationId: voiceQualifyGet
+      parameters:
+        - name: job_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: TwiML response
+          content:
+            application/xml:
+              schema:
+                type: string
+        '503':
+          description: Voice features not available
+
+  /voice/turn:
+    post:
+      tags:
+        - Voice
+      summary: Twilio webhook - Inbound call turn handler
+      description: |
+        Turn handler for inbound voice conversations.
+        Called by Twilio after Gather collects user speech during inbound calls.
+        
+        **Note:** This endpoint is for inbound calls only. For outbound qualification calls,
+        see `/voice/qualify`.
+      operationId: voiceTurn
+      parameters:
+        - name: step
+          in: query
+          description: Current conversation step
+          schema:
+            type: string
+            enum: [user_type, name, role, industry, location, availability, confirm_intro, email]
+          example: "name"
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                CallSid:
+                  type: string
+                  description: Twilio Call SID
+                SpeechResult:
+                  type: string
+                  description: Recognized speech text from user
+                Confidence:
+                  type: string
+                  description: Speech recognition confidence score (0.0-1.0)
+      responses:
+        '200':
+          description: TwiML response for next step or call termination
+          content:
+            application/xml:
+              schema:
+                type: string
+                description: TwiML XML
+        '503':
+          description: Voice features not available
+    get:
+      tags:
+        - Voice
+      summary: Twilio webhook - Inbound call turn handler (GET)
+      description: Alternative GET handler for inbound calls
+      operationId: voiceTurnGet
+      parameters:
+        - name: step
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: TwiML response
+          content:
+            application/xml:
+              schema:
+                type: string
+        '503':
+          description: Voice features not available
+
+  /voice/status:
+    post:
+      tags:
+        - Voice
+      summary: Unified Twilio webhook - Call status callback
+      description: |
+        Unified status callback webhook for all Twilio voice calls.
+        Receives call status updates (initiated, ringing, answered, completed, failed, etc.)
+        and updates job and interaction records accordingly.
+        
+        **Note:** This is a webhook endpoint, called by Twilio, not directly by API clients.
+        **Security:** Twilio signature verification required (X-Twilio-Signature header).
+      operationId: voiceStatus
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                CallSid:
+                  type: string
+                  description: Twilio Call SID
+                  required: true
+                CallStatus:
+                  type: string
+                  description: Call status
+                  enum: [queued, ringing, in-progress, completed, failed, busy, no-answer, canceled]
+                CallDuration:
+                  type: string
+                  description: Call duration in seconds (only for completed calls)
+                From:
+                  type: string
+                  description: Caller's phone number
+                To:
+                  type: string
+                  description: Called phone number
+      responses:
+        '200':
+          description: Status update processed
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "OK"
+        '400':
+          description: Missing CallSid
+        '403':
+          description: Invalid Twilio signature
+
   /voice/capture:
     post:
       tags:
         - Voice
-      summary: Twilio webhook - Speech capture
+      summary: Legacy Twilio webhook - Speech capture (deprecated)
       description: |
-        Webhook endpoint called by Twilio after gathering speech input during a call.
-        Handles the conversation flow and state management for Ai-dan.
+        **DEPRECATED:** Legacy endpoint for inbound call conversation flow.
+        Kept for backward compatibility only.
+        
+        Use `/voice/turn` instead for unified turn handling.
+        
         **Note:** This is a webhook endpoint, typically called by Twilio, not directly by API clients.
       operationId: voiceCapture
+      deprecated: true
       parameters:
         - name: step
           in: query
@@ -385,9 +594,10 @@ paths:
     get:
       tags:
         - Voice
-      summary: Twilio webhook - Speech capture (GET)
-      description: Alternative GET handler for Twilio webhook
+      summary: Legacy Twilio webhook - Speech capture (GET, deprecated)
+      description: Alternative GET handler (deprecated - use /voice/turn)
       operationId: voiceCaptureGet
+      deprecated: true
       parameters:
         - name: step
           in: query
@@ -403,6 +613,183 @@ paths:
                 type: string
         '503':
           description: Voice features not available
+
+  /onboarding/enqueue:
+    post:
+      tags:
+        - Onboarding
+      summary: Manually trigger onboarding for a user (admin-only)
+      description: |
+        Manually trigger onboarding for a user. This endpoint requires authentication AND admin role.
+        Used for manual/admin triggers, testing, or re-triggering onboarding.
+        
+        **Note:** Automatic onboarding is handled by database trigger on signup,
+        so this endpoint is primarily for admin operations or edge cases.
+        
+        **Requires:** JWT authentication + admin role in role_assignments table.
+      operationId: enqueueOnboarding
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - user_id
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+                  description: The user_id to initialize onboarding for
+                  example: "123e4567-e89b-12d3-a456-426614174000"
+      responses:
+        '200':
+          description: Onboarding triggered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  job_id:
+                    type: string
+                    format: uuid
+                    description: ID of the created outbound call job
+                  thread_id:
+                    type: string
+                    format: uuid
+                    description: ID of the created thread
+                  interaction_id:
+                    type: string
+                    format: uuid
+                    nullable: true
+                    description: ID of the created interaction
+                  status:
+                    type: string
+                    enum: [queued, running, succeeded, failed]
+                    description: Status of the onboarding job
+              example:
+                ok: true
+                job_id: "123e4567-e89b-12d3-a456-426614174000"
+                thread_id: "456e7890-e89b-12d3-a456-426614174001"
+                interaction_id: "789e0123-e89b-12d3-a456-426614174002"
+                status: "queued"
+        '400':
+          description: Missing user_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /onboarding/process-jobs:
+    post:
+      tags:
+        - Onboarding
+      summary: Manually trigger job processing (optional)
+      description: |
+        Endpoint to trigger job processing for HTTP-based cron/scheduled tasks.
+        
+        **Note:** This endpoint is optional. If using Render Background Workers,
+        you can run `python -m workers.call_dispatcher` directly instead.
+        
+        Processes queued outbound call jobs and initiates Twilio calls.
+      operationId: processJobs
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of jobs to process
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Jobs processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  processed:
+                    type: integer
+                    description: Number of jobs processed
+                  message:
+                    type: string
+              example:
+                ok: true
+                processed: 3
+                message: "Processed 3 jobs"
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /onboarding/status:
+    post:
+      tags:
+        - Onboarding
+      summary: DEPRECATED - Twilio status callback (use /voice/status)
+      description: |
+        **DEPRECATED:** This endpoint is kept for backward compatibility only.
+        Use `/voice/status` instead.
+        
+        Twilio status callback webhook for onboarding calls.
+        Updates job and interaction records with call status.
+      operationId: onboardingStatus
+      deprecated: true
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                CallSid:
+                  type: string
+                  description: Twilio Call SID
+                  required: true
+                CallStatus:
+                  type: string
+                  description: Call status
+                  enum: [queued, ringing, in-progress, completed, failed, busy, no-answer, canceled]
+                CallDuration:
+                  type: string
+                  description: Call duration in seconds
+                From:
+                  type: string
+                  description: Caller's phone number
+                To:
+                  type: string
+                  description: Called phone number
+      responses:
+        '200':
+          description: Status update processed
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "OK"
+        '400':
+          description: Missing CallSid
 
 components:
   securitySchemes:

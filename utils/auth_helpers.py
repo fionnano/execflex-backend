@@ -123,7 +123,7 @@ def require_admin(f):
     Requires authentication AND admin role in role_assignments.
     
     Usage:
-        @qualification_bp.route("/enqueue", methods=["POST"])
+        @onboarding_bp.route("/enqueue", methods=["POST"])
         @require_admin
         def enqueue_call():
             user_id = request.environ.get('authenticated_user_id')
