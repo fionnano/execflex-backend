@@ -36,7 +36,7 @@ def enqueue_qualification_call(user_id: Optional[str] = None) -> Dict[str, Any]:
         now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
         
         thread_data = {
-            "primary_user_id": user_id,
+            "primary_user_id": user_id,  # Required by threads table
             "subject": "Qualification call",
             "status": "open",
             "active": True,
@@ -47,13 +47,14 @@ def enqueue_qualification_call(user_id: Optional[str] = None) -> Dict[str, Any]:
         thread_id = thread_resp.data[0]["id"] if thread_resp.data else None
         
         # Create interaction record (will be updated when call starts)
+        # Note: interactions table doesn't have 'status' - use started_at/ended_at instead
         interaction_data = {
             "thread_id": thread_id,
-            "user_id": user_id,
+            "user_id": user_id,  # Set user_id for tracking
             "channel": "voice",
             "direction": "outbound",
             "provider": "twilio",
-            "status": "pending",
+            "started_at": now_iso,  # Will be updated when call actually starts
             "created_at": now_iso
         }
         interaction_resp = supabase_client.table("interactions").insert(interaction_data).execute()
@@ -61,7 +62,7 @@ def enqueue_qualification_call(user_id: Optional[str] = None) -> Dict[str, Any]:
         
         # Create outbound call job
         job_data = {
-            "user_id": user_id,
+            "user_id": user_id,  # Set user_id for tracking
             "phone_e164": QUALIFICATION_DESTINATION_PHONE,
             "status": "queued",
             "thread_id": thread_id,
@@ -75,8 +76,31 @@ def enqueue_qualification_call(user_id: Optional[str] = None) -> Dict[str, Any]:
             "updated_at": now_iso
         }
         
-        job_resp = supabase_client.table("outbound_call_jobs").insert(job_data).execute()
-        job_id = job_resp.data[0]["id"] if job_resp.data else None
+        # Try to insert job (idempotency: dedupe_key prevents duplicates within same hour)
+        try:
+            job_resp = supabase_client.table("outbound_call_jobs").insert(job_data).execute()
+            job_id = job_resp.data[0]["id"] if job_resp.data else None
+        except Exception as insert_error:
+            # If duplicate (idempotency constraint), fetch existing job
+            error_str = str(insert_error)
+            if "duplicate key" in error_str.lower() or "23505" in error_str:
+                print(f"ℹ️  Job already exists for this user/hour (idempotency), fetching existing job...")
+                existing_job = supabase_client.table("outbound_call_jobs")\
+                    .select("*")\
+                    .eq("user_id", user_id)\
+                    .eq("dedupe_key", dedupe_key)\
+                    .limit(1)\
+                    .execute()
+                
+                if existing_job.data and len(existing_job.data) > 0:
+                    job_id = existing_job.data[0]["id"]
+                    thread_id = existing_job.data[0].get("thread_id")
+                    interaction_id = existing_job.data[0].get("interaction_id")
+                    print(f"✅ Using existing job: {job_id}")
+                else:
+                    raise insert_error
+            else:
+                raise insert_error
         
         return {
             "job_id": job_id,
@@ -169,25 +193,28 @@ def process_queued_jobs(limit: int = 10) -> int:
                 
                 call_sid = call.sid
                 
-                # Update job with call SID
+                # Update job with call SID and store interaction info in artifacts
+                # Note: interactions are append-only, so we can't update them
+                # Store call info in job artifacts instead
+                job_artifacts = job.get("artifacts", {}) or {}
+                job_artifacts.update({
+                    "call_initiated_at": now_iso,
+                    "twilio_call_sid": call_sid,
+                    "interaction_id": interaction_id
+                })
+                
                 supabase_client.table("outbound_call_jobs")\
                     .update({
                         "twilio_call_sid": call_sid,
+                        "artifacts": job_artifacts,
                         "updated_at": now_iso
                     })\
                     .eq("id", job_id)\
                     .execute()
                 
-                # Update interaction with provider_ref and started_at
-                if interaction_id:
-                    supabase_client.table("interactions")\
-                        .update({
-                            "provider_ref": call_sid,
-                            "started_at": now_iso,
-                            "status": "in_progress"
-                        })\
-                        .eq("id", interaction_id)\
-                        .execute()
+                # Note: We don't update the interaction because interactions are append-only
+                # The interaction was created at enqueue time with initial state
+                # Call status will be tracked via the job record and status callbacks
                 
                 print(f"✅ Initiated qualification call: job_id={job_id}, call_sid={call_sid}, phone={phone}")
                 processed += 1

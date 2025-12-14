@@ -34,7 +34,12 @@ backend/
 ## Quick Start
 
 ```bash
+# Create virtual environment (recommended)
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
 # Install dependencies
+pip install --upgrade pip
 pip install -r requirements.txt
 
 # Copy environment variables template and update with your values
@@ -43,6 +48,12 @@ cp .env.example .env
 
 # Run server
 python server.py
+```
+
+**Note**: Always activate the virtual environment before running scripts:
+```bash
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+python delete_user.py +447463212071
 ```
 
 ## Configuration
@@ -146,4 +157,17 @@ The `Procfile` is configured to run with Gunicorn:
 ```
 web: gunicorn server:app --preload --workers 2 --threads 8 --timeout 120 -b 0.0.0.0:$PORT
 ```
+
+### Render.io Deployment Pipeline
+
+Render.io supports customizable deployment steps:
+
+- **Build Command**: Auto-detected (installs dependencies via `pip install -r requirements.txt`)
+- **Pre-Deploy Command**: Can be configured in Render Dashboard → Settings → Pre-Deploy Command
+  - Useful for running database migrations, tests, or setup tasks
+  - Runs after build, before new version goes live
+  - See `docs/RENDER_DEPLOYMENT_STEPS.md` for detailed options
+- **Start Command**: Uses `Procfile` (Gunicorn with 2 workers)
+
+**Note**: Supabase migrations are currently run manually in Supabase SQL Editor. See `docs/RENDER_DEPLOYMENT_STEPS.md` for options to automate migrations in the Render pipeline.
 

@@ -3,41 +3,52 @@ Qualification call routes for outbound call management.
 """
 import os
 from flask import request, Response, jsonify
-from flask_cors import cross_origin
 from routes import qualification_bp
 from utils.response_helpers import ok, bad
+from utils.auth_helpers import require_admin, get_authenticated_user_id
 from services.qualification_call_service import enqueue_qualification_call, process_queued_jobs
+from services.tts_service import get_cached_audio_path
 from config.clients import VoiceResponse, twilio_client
 from config.app_config import TWILIO_PHONE_NUMBER
+from flask import url_for
 
 
-@qualification_bp.route("/enqueue", methods=["POST", "OPTIONS"])
-@cross_origin()
+@qualification_bp.route("/enqueue", methods=["POST"])
+@require_admin
 def enqueue_call():
     """
     Enqueue a qualification call job (non-blocking).
-    Called after user signup to trigger qualification call.
     
-    This endpoint should be called from the frontend after successful signup,
-    or can be triggered via Supabase webhook/database function.
+    **ADMIN ONLY**: This endpoint requires authentication AND admin role.
+    Used for manual/admin triggers, testing, or re-triggering calls.
     
-    Body (JSON, optional): { "user_id": "uuid" }
+    **Note:** Automatic signup triggers are handled by database trigger,
+    so this endpoint is primarily for admin operations.
+    
+    Headers:
+        Authorization: Bearer <supabase_jwt_token>
+    
+    Body (JSON, required): { "user_id": "uuid" }
+        - The user_id to enqueue a call for (can be any user, not just the authenticated admin)
     """
-    if request.method == "OPTIONS":
-        return jsonify({"status": "ok"}), 200
-    
     try:
+        # Get authenticated admin user (for logging/audit)
+        admin_user_id = request.environ.get('authenticated_user_id')
+        
         data = request.get_json(silent=True) or {}
-        user_id = data.get("user_id")
+        target_user_id = data.get("user_id")
+        
+        if not target_user_id:
+            return bad("user_id is required", 400)
+        
+        print(f"🔐 Admin {admin_user_id} enqueueing qualification call for user {target_user_id}")
         
         # Non-blocking: enqueue and return immediately
-        result = enqueue_qualification_call(user_id=user_id)
+        result = enqueue_qualification_call(user_id=target_user_id)
         return ok(result)
     except Exception as e:
         import traceback
         traceback.print_exc()
-        # Don't fail signup if qualification call enqueue fails
-        # Log error but return success to avoid blocking signup flow
         print(f"⚠️ Warning: Failed to enqueue qualification call: {str(e)}")
         return ok({"status": "enqueue_failed", "error": str(e)})
 
@@ -58,23 +69,31 @@ def qualification_intro():
     
     resp = VoiceResponse()
     
-    # Try to use pre-recorded audio if available
-    # Check for a qualification-specific audio file
-    # Note: Reusing existing audio infrastructure from PoC (backend/static/audio/)
-    # For MVP, using <Say> - can be upgraded to <Play> with audio file later
-    base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", "https://api.execflex.ai"))
-    audio_url = f"{base_url}/static/audio/qualification_intro.mp3"
-    
-    # For now, use <Say> as fallback (we can add audio file later)
-    # Reusing PoC pattern: simple, clear message
-    message = (
+    # Try to use pre-cached audio file if available
+    qualification_message = (
         "Hello, this is ExecFlex. We're calling to welcome you and learn more about your needs. "
         "Are you looking to hire executive talent, or are you an executive looking for opportunities?"
     )
     
-    resp.say(message, voice="alice", language="en-GB")
+    # Try to find a cached audio file for the exact qualification message
+    # (This message is now in COMMON_PROMPTS and will be pre-cached on startup)
+    cached_path = get_cached_audio_path(qualification_message)
     
-    # For MVP, just say the message and hang up
+    if cached_path:
+        # Use pre-cached audio file
+        base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", request.url_root.rstrip('/')))
+        if not base_url.startswith('http'):
+            # If API_BASE_URL is not set, construct from request
+            base_url = request.url_root.rstrip('/')
+        full_audio_url = f"{base_url}{cached_path}"
+        print(f"🎵 Using pre-cached audio: {full_audio_url}")
+        resp.play(full_audio_url)
+    else:
+        # Fallback to text-to-speech if audio not cached
+        print("⚠️ No cached audio found, using <Say> fallback")
+        resp.say(qualification_message, voice="alice", language="en-GB")
+    
+    # For MVP, just play the message and hang up
     # Later: add <Gather> for response collection
     resp.hangup()
     
@@ -151,19 +170,23 @@ def qualification_status():
             .execute()
         
         # Update interaction
+        # Note: interactions table doesn't have 'status' - use ended_at to indicate completion
         if interaction_id:
             interaction_update = {
-                "status": "completed" if call_status == "completed" else "failed",
                 "raw_payload": request.form.to_dict()
             }
             
-            if call_status == "completed" and call_duration:
+            # Set ended_at if call completed or failed
+            if call_status in ["completed", "failed", "busy", "no-answer", "canceled"]:
                 interaction_update["ended_at"] = datetime.utcnow().isoformat()
             
-            supabase_client.table("interactions")\
-                .update(interaction_update)\
-                .eq("id", interaction_id)\
-                .execute()
+            # Note: interactions are append-only, so we can't update them
+            # Instead, we'll store the status in the job's artifacts
+            # The interaction's ended_at will be set when the call completes
+            # For now, we'll just update the raw_payload via a direct SQL call if needed
+            # But since interactions are append-only, we should create a new interaction record
+            # For MVP, we'll just update the job and leave interaction as-is
+            print(f"ℹ️  Interaction {interaction_id} status: {call_status} (interactions are append-only)")
         
         print(f"✅ Updated qualification call status: job_id={job_id}, call_sid={call_sid}, status={call_status}")
         return Response("OK", status=200), 200
@@ -179,11 +202,14 @@ def qualification_status():
 @qualification_bp.route("/process-jobs", methods=["POST"])
 def process_jobs_endpoint():
     """
-    Endpoint to trigger job processing (for cron/scheduled tasks).
-    Can be called by Render cron jobs or external schedulers.
+    Endpoint to trigger job processing (for HTTP-based cron/scheduled tasks).
+    
+    **Note:** This endpoint is optional. If using Render Background Workers,
+    you can run `python -m workers.call_dispatcher` directly instead.
     
     Optional query param: limit (default 10)
     """
+    # Optional: Add service secret protection here if needed
     limit = int(request.args.get("limit", 10))
     
     try:

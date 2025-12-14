@@ -45,20 +45,49 @@ Asynchronous outbound qualification calls triggered after user signup. Uses a jo
 
 ### 1. After User Signup
 
-Frontend calls (non-blocking):
-```javascript
-// After successful Supabase Auth signup
-fetch('https://api.execflex.ai/voice/enqueue', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ user_id: user.id })
-});
+**IMPORTANT**: The `/enqueue` endpoint is **INTERNAL ONLY** and not accessible to frontend users.
+
+**Option A: Call from Backend Code (Recommended)**
+
+After user signup completes in your backend, call the endpoint with a service secret:
+
+```python
+# In your signup handler (backend code)
+import requests
+import os
+
+user_id = "newly-created-user-uuid"
+# Get admin user's JWT token (from Supabase Auth session)
+admin_token = "your_supabase_jwt_token_here"  # Get from session.access_token
+
+response = requests.post(
+    "https://api.execflex.ai/voice/enqueue",
+    headers={
+        "Authorization": f"Bearer {admin_token}",
+        "Content-Type": "application/json",
+        "X-Service-Secret": service_secret
+    },
+    json={"user_id": user_id}
+)
 ```
 
-Or use Supabase database function:
+**Option B: Use Supabase Database Function**
+
+Call the database function directly (from Supabase Edge Function or webhook):
+
 ```sql
 SELECT enqueue_qualification_call_for_user('user-uuid');
 ```
+
+**Option C: Supabase Webhook/Trigger**
+
+Set up a Supabase webhook or database trigger that calls the endpoint after `auth.users` insert.
+
+**Security Notes:**
+- The endpoint requires **authentication AND admin role** (checks `role_assignments` table)
+- Only users with `role='admin'` in `role_assignments` can call this endpoint
+- Frontend users without admin role **cannot** call this endpoint (403 Forbidden)
+- Automatic signup triggers are handled by database trigger, not this endpoint
 
 ### 2. Process Jobs
 

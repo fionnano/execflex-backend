@@ -14,6 +14,7 @@ TTS_CACHE = {}  # text -> path
 # Common prompts to pre-cache
 COMMON_PROMPTS = [
     "Hi, I'm Ai-dan, your advisor at ExecFlex. Let's keep this simple. Are you hiring for a role, or are you a candidate looking for opportunities?",
+    "Hello, this is ExecFlex. We're calling to welcome you and learn more about your needs. Are you looking to hire executive talent, or are you an executive looking for opportunities?",
     "Great, thanks. What's your first name?",
     "Nice to meet you. Which leadership role are you focused on — for example CFO, CEO, or CTO?",
     "Got it. And which industry are you most focused on — like fintech, insurance, or SaaS?",
@@ -87,4 +88,17 @@ def pre_cache_common_prompts():
 def get_cache_size() -> int:
     """Get the number of cached TTS items."""
     return len(TTS_CACHE)
+
+
+def get_cached_audio_path(text: str) -> str:
+    """
+    Get the cached audio file path for a given text prompt.
+    
+    Args:
+        text: The text prompt to look up
+        
+    Returns:
+        Relative path to audio file (e.g., "/static/audio/{filename}.mp3") or empty string if not found
+    """
+    return TTS_CACHE.get(text, "")
 
