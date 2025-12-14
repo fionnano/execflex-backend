@@ -3,7 +3,6 @@ Qualification Conversation Service - Handles turn-based conversation flow.
 Separated from provisioning/onboarding logic.
 """
 from typing import Dict, Optional, List, Any, Tuple
-from flask import url_for
 from config.clients import VoiceResponse, Gather
 from services.qualification_turn_service import (
     get_or_create_interaction_for_call,
@@ -177,23 +176,44 @@ def handle_conversation_turn(
         )
         
         # Generate audio and return TwiML with Gather
-        audio_path = generate_tts(opening_message)
+        try:
+            audio_path = generate_tts(opening_message)
+        except Exception as e:
+            print(f"⚠️ TTS generation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            audio_path = ""  # Fallback to text-to-speech
         
         # Build turn endpoint URL (use /voice/qualify for subsequent turns)
         # Priority: API_BASE_URL > RENDER_EXTERNAL_URL > request_url_root > default
-        base_url = (
-            os.getenv("API_BASE_URL") or 
-            os.getenv("RENDER_EXTERNAL_URL") or 
-            os.getenv("VITE_FLASK_API_URL") or 
-            (request_url_root.rstrip('/') if request_url_root else '') or
-            "https://execflex-backend-1.onrender.com"
-        )
-        if not base_url.startswith('http'):
-            base_url = (request_url_root.rstrip('/') if request_url_root else 'https://execflex-backend-1.onrender.com')
-        # Use /voice/qualify for subsequent turns (same endpoint handles both initial and turns)
-        turn_endpoint_url = f"{base_url}/voice/qualify?job_id={job_id}"
+        try:
+            base_url = (
+                os.getenv("API_BASE_URL") or 
+                os.getenv("RENDER_EXTERNAL_URL") or 
+                os.getenv("VITE_FLASK_API_URL") or 
+                (request_url_root.rstrip('/') if request_url_root else '') or
+                "https://execflex-backend-1.onrender.com"
+            )
+            if not base_url.startswith('http'):
+                base_url = (request_url_root.rstrip('/') if request_url_root else 'https://execflex-backend-1.onrender.com')
+            # Use /voice/qualify for subsequent turns (same endpoint handles both initial and turns)
+            turn_endpoint_url = f"{base_url}/voice/qualify?job_id={job_id}"
+        except Exception as e:
+            print(f"⚠️ Error building turn endpoint URL: {e}")
+            # Fallback URL
+            base_url = os.getenv("API_BASE_URL") or "https://execflex-backend-1.onrender.com"
+            turn_endpoint_url = f"{base_url}/voice/qualify?job_id={job_id}" if job_id else f"{base_url}/voice/qualify"
         
-        return _build_gather_response(resp, opening_message, audio_path, request_url_root, turn_endpoint_url), None
+        try:
+            return _build_gather_response(resp, opening_message, audio_path, request_url_root, turn_endpoint_url), None
+        except Exception as e:
+            print(f"❌ Error building gather response: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return a simple response as fallback
+            resp.say("Hello, this is ExecFlex. We're calling to welcome you.", voice="alice", language="en-GB")
+            resp.hangup()
+            return resp, None
     
     # User turn: save user speech
     turn_sequence = get_next_turn_sequence(interaction_id)
@@ -251,7 +271,13 @@ def handle_conversation_turn(
     )
     
     # Generate audio
-    audio_path = generate_tts(assistant_text)
+    try:
+        audio_path = generate_tts(assistant_text)
+    except Exception as e:
+        print(f"⚠️ TTS generation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        audio_path = ""  # Fallback to text-to-speech
     
     if is_complete:
         # Conversation complete - play final message and hang up
