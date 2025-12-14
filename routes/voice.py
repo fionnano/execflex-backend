@@ -98,12 +98,15 @@ def voice_qualify():
         else:
             print("⚠️ Twilio signature verification failed, but continuing (dev mode)")
     
-    call_sid = request.values.get("CallSid") or "unknown"
+    call_sid = request.values.get("CallSid") or request.args.get("CallSid") or "unknown"
     job_id = request.values.get("job_id") or request.args.get("job_id")
     user_speech = (request.values.get("SpeechResult") or "").strip()
     speech_confidence = request.values.get("Confidence", "0")
     
     print(f"📞 Qualification call received: call_sid={call_sid}, job_id={job_id}, has_speech={bool(user_speech)}")
+    print(f"📞 Request method: {request.method}, URL: {request.url}")
+    print(f"📞 Request args: {dict(request.args)}")
+    print(f"📞 Request values: {dict(request.values)}")
     
     if not job_id:
         print(f"⚠️ Missing job_id in qualification call: call_sid={call_sid}")
@@ -128,8 +131,25 @@ def voice_qualify():
             resp = VoiceResponse()
             resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
             resp.hangup()
+            return Response(str(resp), mimetype="text/xml")
         
-        return Response(str(resp), mimetype="text/xml")
+        if not resp:
+            print(f"❌ handle_conversation_turn returned None response (error was also None)")
+            resp = VoiceResponse()
+            resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
+            resp.hangup()
+            return Response(str(resp), mimetype="text/xml")
+        
+        # Ensure we have valid TwiML
+        twiml_str = str(resp)
+        if not twiml_str or len(twiml_str.strip()) == 0:
+            print(f"❌ Empty TwiML response generated")
+            resp = VoiceResponse()
+            resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
+            resp.hangup()
+            return Response(str(resp), mimetype="text/xml")
+        
+        return Response(twiml_str, mimetype="text/xml")
     except Exception as e:
         import traceback
         traceback.print_exc()

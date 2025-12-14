@@ -141,9 +141,16 @@ def handle_conversation_turn(
         return None, "Voice features not available"
     
     # Get call context
-    context = get_call_context(call_sid, job_id)
-    if not context.get("interaction"):
-        return None, f"Could not get/create interaction for call {call_sid}"
+    try:
+        context = get_call_context(call_sid, job_id)
+        if not context.get("interaction"):
+            print(f"⚠️ Could not get/create interaction for call {call_sid}, job_id={job_id}")
+            return None, f"Could not get/create interaction for call {call_sid}"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Exception in get_call_context: {e}")
+        return None, f"Error getting call context: {str(e)}"
     
     interaction_id = context["interaction_id"]
     thread_id = context["thread_id"]
@@ -173,9 +180,16 @@ def handle_conversation_turn(
         audio_path = generate_tts(opening_message)
         
         # Build turn endpoint URL (use /voice/qualify for subsequent turns)
-        base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", request_url_root.rstrip('/') if request_url_root else ''))
+        # Priority: API_BASE_URL > RENDER_EXTERNAL_URL > request_url_root > default
+        base_url = (
+            os.getenv("API_BASE_URL") or 
+            os.getenv("RENDER_EXTERNAL_URL") or 
+            os.getenv("VITE_FLASK_API_URL") or 
+            (request_url_root.rstrip('/') if request_url_root else '') or
+            "https://execflex-backend-1.onrender.com"
+        )
         if not base_url.startswith('http'):
-            base_url = (request_url_root.rstrip('/') if request_url_root else '')
+            base_url = (request_url_root.rstrip('/') if request_url_root else 'https://execflex-backend-1.onrender.com')
         # Use /voice/qualify for subsequent turns (same endpoint handles both initial and turns)
         turn_endpoint_url = f"{base_url}/voice/qualify?job_id={job_id}"
         
@@ -285,17 +299,27 @@ def _build_gather_response(
         VoiceResponse with Gather configured
     """
     # Build turn endpoint URL if not provided
+    # Note: This should not happen in normal flow since we pass job_id explicitly
+    # This is a fallback for edge cases
     if not turn_endpoint_url:
-        base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", request_url_root.rstrip('/') if request_url_root else ''))
+        base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", os.getenv("RENDER_EXTERNAL_URL", "https://execflex-backend-1.onrender.com")))
         if not base_url.startswith('http'):
-            base_url = (request_url_root.rstrip('/') if request_url_root else '')
-        turn_endpoint_url = f"{base_url}/onboarding/turn"
+            base_url = (request_url_root.rstrip('/') if request_url_root else 'https://execflex-backend-1.onrender.com')
+        # Fallback: use /voice/qualify (but job_id should be passed explicitly)
+        turn_endpoint_url = f"{base_url}/voice/qualify"
     
     if audio_path and request_url_root:
         # Use generated/cached audio
-        base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", request_url_root.rstrip('/')))
+        # Priority: API_BASE_URL > RENDER_EXTERNAL_URL > request_url_root
+        base_url = (
+            os.getenv("API_BASE_URL") or 
+            os.getenv("RENDER_EXTERNAL_URL") or 
+            os.getenv("VITE_FLASK_API_URL") or 
+            request_url_root.rstrip('/') or
+            "https://execflex-backend-1.onrender.com"
+        )
         if not base_url.startswith('http'):
-            base_url = request_url_root.rstrip('/')
+            base_url = request_url_root.rstrip('/') if request_url_root else 'https://execflex-backend-1.onrender.com'
         full_audio_url = f"{base_url}{audio_path}"
         
         gather = Gather(
