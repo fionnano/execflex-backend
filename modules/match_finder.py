@@ -56,13 +56,21 @@ def _norm_candidate(raw: dict) -> dict:
     # --- role (people_profiles has headline)
     role = raw.get("headline") or ""
 
-    # --- industries (people_profiles has industries array)
+    # --- industries (people_profiles has industries array - can be enum array or text array)
     industries_val = raw.get("industries") or []
-    industries = _to_set(industries_val)
+    # Handle both enum arrays and text arrays
+    if isinstance(industries_val, list):
+        industries = _to_set(industries_val)
+    else:
+        industries = set()
 
-    # --- expertise (people_profiles has expertise array)
+    # --- expertise (people_profiles has expertise array - can be enum array or text array)
     expertise_val = raw.get("expertise") or raw.get("skills") or []
-    expertise = _to_set(expertise_val)
+    # Handle both enum arrays and text arrays
+    if isinstance(expertise_val, list):
+        expertise = _to_set(expertise_val)
+    else:
+        expertise = set()
 
     # --- availability (people_profiles has availability_type)
     availability = raw.get("availability_type") or ""
@@ -90,6 +98,9 @@ def _norm_candidate(raw: dict) -> dict:
         else:
             comp = _digits_int(rate_range)
 
+    # --- NED availability (people_profiles has is_ned_available)
+    is_ned_available = raw.get("is_ned_available") or False
+
     return {
         "id": raw.get("id") or name.lower().replace(" ", "-"),
         "name": name,
@@ -102,6 +113,7 @@ def _norm_candidate(raw: dict) -> dict:
         "comp_expectation": comp,
         "summary": summary,
         "highlights": highlights if isinstance(highlights, list) else [str(highlights)],
+        "is_ned_available": is_ned_available,
         "_raw": raw,
         "email": raw.get("email") or "candidate@example.com",  # fallback
     }
@@ -109,20 +121,42 @@ def _norm_candidate(raw: dict) -> dict:
 
 def _score(cand: dict, industry: str, expertise: str, availability: str, location: str, max_salary: int) -> int:
     score = 0
-    if industry and industry.lower() in cand["industries"]:
-        score += 3
-    if expertise:
+    
+    # Industry matching (only if industry filter is provided)
+    if industry and industry.strip():
+        industry_lower = industry.lower().strip()
+        # Check if any industry matches (handles comma-separated values)
+        industry_tokens = {t.strip().lower() for t in re.split(r"[,/;|\s]+", industry) if t.strip()}
+        if industry_tokens & cand["industries"]:
+            score += 3
+    
+    # Expertise matching (only if expertise filter is provided)
+    if expertise and expertise.strip():
         req_tokens = {t.strip().lower() for t in re.split(r"[,/;|\s]+", expertise) if t.strip()}
         if req_tokens & cand["expertise"]:
             score += 3
         elif any(t in (cand["role"] or "").lower() for t in req_tokens):
             score += 2
-    if availability and availability.lower() in cand["availability"]:
-        score += 1
-    if location and (location.lower() in cand["location"].lower() or "remote" in cand["location"].lower()):
-        score += 1
-    if max_salary and cand["comp_expectation"] and cand["comp_expectation"] > max_salary:
+    
+    # Availability matching (only if availability filter is provided)
+    if availability and availability.strip():
+        availability_lower = availability.lower().strip()
+        # Handle comma-separated availability types
+        availability_tokens = {t.strip().lower() for t in re.split(r"[,/;|\s]+", availability) if t.strip()}
+        if availability_lower in cand["availability"] or availability_tokens & {cand["availability"]}:
+            score += 1
+    
+    # Location matching (only if location filter is provided)
+    if location and location.strip():
+        location_lower = location.lower().strip()
+        cand_location = (cand["location"] or "").lower()
+        if location_lower in cand_location or cand_location in location_lower or "remote" in cand_location:
+            score += 1
+    
+    # Salary filter (only if max_salary is set and meaningful)
+    if max_salary and max_salary < 999999 and cand["comp_expectation"] and cand["comp_expectation"] > max_salary:
         score -= 2
+    
     return score
 
 
@@ -159,10 +193,10 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
             continue
     print(f"Pulled {len(cands)} candidates from Supabase:people_profiles (from {len(rows)} total records)")
 
-    # 3) filter by minimum experience
+    # 3) filter by minimum experience (only if min_experience is specified and > 0)
     filtered = []
     for c in cands:
-        if min_experience and c["experience_years"] and c["experience_years"] < int(min_experience):
+        if min_experience and min_experience > 0 and c["experience_years"] and c["experience_years"] < int(min_experience):
             continue
         filtered.append(c)
 
@@ -194,5 +228,8 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
         if "_score" in match:
             match["score"] = match.pop("_score")
     
-    # 6) return top 5 matches
-    return filtered[:5]
+    # 6) return top matches (increased limit for better results)
+    # If no filters applied, return more results; otherwise return top matches
+    has_filters = bool(industry or expertise or availability or location or (min_experience and min_experience > 0) or (max_salary and max_salary < 999999))
+    limit = 100 if not has_filters else 20  # Return more if no filters, fewer if filtered
+    return filtered[:limit]
