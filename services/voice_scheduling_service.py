@@ -1,4 +1,6 @@
 """
+ORPHANED CODE - FOR REFERENCE ONLY
+TODO: DELETE THIS FILE
 Voice scheduling conversation flow handling for Emma (scheduling assistant).
 This service handles the scheduling-specific conversation flow via Twilio.
 """

@@ -1,4 +1,6 @@
 """
+ORPHANED CODE - FOR REFERENCE ONLY
+TODO: DELETE THIS FILE
 Company scheduling conversation flow for Emma (scheduling assistant).
 This service handles outbound calls to companies/clients to schedule consultations with executives.
 Uses ChatGPT for interactive conversations and ElevenLabs for natural TTS.
