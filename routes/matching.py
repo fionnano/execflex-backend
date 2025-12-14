@@ -12,24 +12,27 @@ def match():
     """Find best candidate match."""
     try:
         data = request.get_json(force=True, silent=True) or {}
-        required = ["industry", "expertise", "availability", "min_experience", "max_salary", "location"]
-        missing = [f for f in required if not data.get(f)]
-        if missing:
-            return bad(f"Missing or invalid data for: {', '.join(missing)}")
-
+        
+        # All fields are now optional - use empty strings/0 as defaults
+        industry = data.get("industry", "") or ""
+        expertise = data.get("expertise", "") or ""
+        availability = data.get("availability", "") or ""
+        location = data.get("location", "") or ""
+        
         try:
-            min_experience = int(data["min_experience"])
-            max_salary = int(data["max_salary"])
-        except Exception:
-            return bad("min_experience and max_salary must be numbers.")
+            min_experience = int(data.get("min_experience", 0) or 0)
+            max_salary = int(data.get("max_salary", 999999) or 999999)
+        except (ValueError, TypeError):
+            min_experience = 0
+            max_salary = 999999
 
         matches = find_best_match(
-            data["industry"],
-            data["expertise"],
-            data["availability"],
+            industry,
+            expertise,
+            availability,
             min_experience,
             max_salary,
-            data["location"],
+            location,
         )
 
         # find_best_match returns a list of matches (up to 5)
