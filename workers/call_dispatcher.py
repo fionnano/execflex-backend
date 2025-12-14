@@ -19,7 +19,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from services.qualification_call_service import process_queued_jobs
+from services.onboarding_service import process_queued_jobs
 from config.app_config import validate_config
 
 

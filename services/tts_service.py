@@ -15,6 +15,8 @@ TTS_CACHE = {}  # text -> path
 COMMON_PROMPTS = [
     "Hi, I'm Ai-dan, your advisor at ExecFlex. Let's keep this simple. Are you hiring for a role, or are you a candidate looking for opportunities?",
     "Hello, this is ExecFlex. We're calling to welcome you and learn more about your needs. Are you looking to hire executive talent, or are you an executive looking for opportunities?",
+    "Hello, this is ExecFlex. We're calling to welcome you and help you find executive opportunities. Let's get started with a few quick questions.",
+    "Hello, this is ExecFlex. We're calling to welcome you and help you find executive talent. Let's get started with a few quick questions.",
     "Great, thanks. What's your first name?",
     "Nice to meet you. Which leadership role are you focused on — for example CFO, CEO, or CTO?",
     "Got it. And which industry are you most focused on — like fintech, insurance, or SaaS?",

@@ -4,7 +4,9 @@ Background worker for processing outbound qualification call jobs.
 
 ## Overview
 
-The worker polls the `outbound_call_jobs` table for queued jobs and initiates Twilio calls. It runs continuously, processing jobs as they become available.
+The worker polls the `outbound_call_jobs` table for queued onboarding call jobs and initiates Twilio calls. It runs continuously, processing jobs as they become available.
+
+**Note:** Jobs are automatically created by the database trigger `on_auth_user_created_onboarding` when users sign up. The worker processes these jobs and initiates personalized calls based on signup_mode metadata.
 
 ## Running Locally
 

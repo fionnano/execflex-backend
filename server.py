@@ -27,7 +27,7 @@ from routes import (
     roles_bp,
     introductions_bp,
     voice_bp,
-    qualification_bp
+    onboarding_bp
 )
 
 # Validate configuration
@@ -47,7 +47,7 @@ app.register_blueprint(matching_bp)
 app.register_blueprint(roles_bp)
 app.register_blueprint(introductions_bp)
 app.register_blueprint(voice_bp)
-app.register_blueprint(qualification_bp)
+app.register_blueprint(onboarding_bp)
 
 # Rate limiting can be applied to specific endpoints here if needed
 

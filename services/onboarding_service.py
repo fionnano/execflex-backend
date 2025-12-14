@@ -1,5 +1,6 @@
 """
-Qualification call service for enqueueing and processing outbound calls.
+Onboarding service for initializing application state for new identities.
+Handles people_profiles, user_preferences, role_assignments, and outbound onboarding calls.
 """
 import os
 from datetime import datetime, timedelta
@@ -9,20 +10,23 @@ from config.app_config import TWILIO_PHONE_NUMBER
 from utils.response_helpers import ok, bad
 
 
-# Hardcoded destination for qualification calls (as per requirements)
-QUALIFICATION_DESTINATION_PHONE = "+447463212071"
+# Hardcoded destination for onboarding calls
+ONBOARDING_DESTINATION_PHONE = "+447463212071"
 
 
-def enqueue_qualification_call(user_id: Optional[str] = None) -> Dict[str, Any]:
+def initialize_user_onboarding(user_id: Optional[str] = None) -> Dict[str, Any]:
     """
-    Enqueue a qualification call job after user signup.
-    Creates thread and interaction records for tracking.
+    Initialize onboarding for a new user (called by database trigger or admin).
+    Note: This is a convenience wrapper. The database trigger handles full onboarding
+    including people_profiles, user_preferences, and role_assignments.
+    
+    This function primarily enqueues the outbound call job if needed.
     
     Args:
-        user_id: Optional user ID (nullable for testing)
+        user_id: User ID (required for production, nullable for testing)
     
     Returns:
-        Dict with job_id, thread_id, interaction_id
+        Dict with job_id, thread_id, interaction_id, status
     """
     if not supabase_client:
         raise RuntimeError("Supabase client not available")
@@ -109,7 +113,7 @@ def enqueue_qualification_call(user_id: Optional[str] = None) -> Dict[str, Any]:
             "status": "queued"
         }
     except Exception as e:
-        print(f"❌ Error enqueueing qualification call: {e}")
+        print(f"❌ Error initializing user onboarding: {e}")
         raise
 
 
@@ -180,13 +184,13 @@ def process_queued_jobs(limit: int = 10) -> int:
                 # Initiate Twilio call
                 # Construct URL manually (url_for requires app context which we don't have in worker)
                 base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", "https://api.execflex.ai"))
-                twiml_url = f"{base_url}/voice/qualification/intro?job_id={job_id}"
+                twiml_url = f"{base_url}/voice/onboarding/intro?job_id={job_id}"
                 
                 call = twilio_client.calls.create(
                     to=phone,
                     from_=TWILIO_PHONE_NUMBER,
                     url=twiml_url,
-                    status_callback=f"{base_url}/voice/qualification/status",
+                    status_callback=f"{base_url}/voice/onboarding/status",
                     status_callback_event=["initiated", "ringing", "answered", "completed", "failed", "busy", "no-answer"],
                     status_callback_method="POST"
                 )
@@ -216,7 +220,7 @@ def process_queued_jobs(limit: int = 10) -> int:
                 # The interaction was created at enqueue time with initial state
                 # Call status will be tracked via the job record and status callbacks
                 
-                print(f"✅ Initiated qualification call: job_id={job_id}, call_sid={call_sid}, phone={phone}")
+                print(f"✅ Initiated onboarding call: job_id={job_id}, call_sid={call_sid}, phone={phone}")
                 processed += 1
                 
             except Exception as e:

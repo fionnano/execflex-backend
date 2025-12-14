@@ -1,35 +1,36 @@
 """
-Qualification call routes for outbound call management.
+Onboarding service routes for outbound call management.
+Handles onboarding calls triggered after user signup.
 """
 import os
 from flask import request, Response, jsonify
-from routes import qualification_bp
+from routes import onboarding_bp
 from utils.response_helpers import ok, bad
 from utils.auth_helpers import require_admin, get_authenticated_user_id
-from services.qualification_call_service import enqueue_qualification_call, process_queued_jobs
+from services.onboarding_service import initialize_user_onboarding, process_queued_jobs
 from services.tts_service import get_cached_audio_path
 from config.clients import VoiceResponse, twilio_client
 from config.app_config import TWILIO_PHONE_NUMBER
 from flask import url_for
 
 
-@qualification_bp.route("/enqueue", methods=["POST"])
+@onboarding_bp.route("/enqueue", methods=["POST"])
 @require_admin
 def enqueue_call():
     """
-    Enqueue a qualification call job (non-blocking).
+    Manually trigger onboarding for a user (admin-only).
     
     **ADMIN ONLY**: This endpoint requires authentication AND admin role.
-    Used for manual/admin triggers, testing, or re-triggering calls.
+    Used for manual/admin triggers, testing, or re-triggering onboarding.
     
-    **Note:** Automatic signup triggers are handled by database trigger,
-    so this endpoint is primarily for admin operations.
+    **Note:** Automatic onboarding is handled by database trigger on signup,
+    so this endpoint is primarily for admin operations or edge cases.
     
     Headers:
         Authorization: Bearer <supabase_jwt_token>
     
     Body (JSON, required): { "user_id": "uuid" }
-        - The user_id to enqueue a call for (can be any user, not just the authenticated admin)
+        - The user_id to initialize onboarding for (can be any user, not just the authenticated admin)
     """
     try:
         # Get authenticated admin user (for logging/audit)
@@ -41,22 +42,22 @@ def enqueue_call():
         if not target_user_id:
             return bad("user_id is required", 400)
         
-        print(f"🔐 Admin {admin_user_id} enqueueing qualification call for user {target_user_id}")
+        print(f"🔐 Admin {admin_user_id} triggering onboarding for user {target_user_id}")
         
-        # Non-blocking: enqueue and return immediately
-        result = enqueue_qualification_call(user_id=target_user_id)
+        # Initialize onboarding (will check if already done by trigger)
+        result = initialize_user_onboarding(user_id=target_user_id)
         return ok(result)
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"⚠️ Warning: Failed to enqueue qualification call: {str(e)}")
-        return ok({"status": "enqueue_failed", "error": str(e)})
+        print(f"⚠️ Warning: Failed to initialize onboarding: {str(e)}")
+        return ok({"status": "onboarding_failed", "error": str(e)})
 
 
-@qualification_bp.route("/qualification/intro", methods=["POST", "GET"])
-def qualification_intro():
+@onboarding_bp.route("/onboarding/intro", methods=["POST", "GET"])
+def onboarding_intro():
     """
-    TwiML endpoint for qualification call opening message.
+    TwiML endpoint for onboarding call opening message.
     Called by Twilio when the outbound call is answered.
     
     Query params: job_id (optional, for tracking)
@@ -69,15 +70,45 @@ def qualification_intro():
     
     resp = VoiceResponse()
     
-    # Try to use pre-cached audio file if available
-    qualification_message = (
-        "Hello, this is ExecFlex. We're calling to welcome you and learn more about your needs. "
-        "Are you looking to hire executive talent, or are you an executive looking for opportunities?"
-    )
+    # Fetch job to get signup_mode from artifacts
+    signup_mode = None
+    if job_id:
+        try:
+            from config.clients import supabase_client
+            job_resp = supabase_client.table("outbound_call_jobs")\
+                .select("artifacts")\
+                .eq("id", job_id)\
+                .limit(1)\
+                .execute()
+            
+            if job_resp.data and len(job_resp.data) > 0:
+                artifacts = job_resp.data[0].get("artifacts", {}) or {}
+                signup_mode = artifacts.get("signup_mode")
+        except Exception as e:
+            print(f"⚠️ Could not fetch job artifacts: {e}")
     
-    # Try to find a cached audio file for the exact qualification message
-    # (This message is now in COMMON_PROMPTS and will be pre-cached on startup)
-    cached_path = get_cached_audio_path(qualification_message)
+    # Tailor message based on signup_mode
+    if signup_mode == "talent":
+        # User signed up as talent - skip the "are you hiring or looking" question
+        onboarding_message = (
+            "Hello, this is ExecFlex. We're calling to welcome you and help you find executive opportunities. "
+            "Let's get started with a few quick questions."
+        )
+    elif signup_mode == "hirer":
+        # User signed up as hirer - skip the "are you hiring or looking" question
+        onboarding_message = (
+            "Hello, this is ExecFlex. We're calling to welcome you and help you find executive talent. "
+            "Let's get started with a few quick questions."
+        )
+    else:
+        # Unknown signup_mode - ask the question
+        onboarding_message = (
+            "Hello, this is ExecFlex. We're calling to welcome you and learn more about your needs. "
+            "Are you looking to hire executive talent, or are you an executive looking for opportunities?"
+        )
+    
+    # Try to find a cached audio file for the message
+    cached_path = get_cached_audio_path(onboarding_message)
     
     if cached_path:
         # Use pre-cached audio file
@@ -91,7 +122,7 @@ def qualification_intro():
     else:
         # Fallback to text-to-speech if audio not cached
         print("⚠️ No cached audio found, using <Say> fallback")
-        resp.say(qualification_message, voice="alice", language="en-GB")
+        resp.say(onboarding_message, voice="alice", language="en-GB")
     
     # For MVP, just play the message and hang up
     # Later: add <Gather> for response collection
@@ -100,10 +131,10 @@ def qualification_intro():
     return Response(str(resp), mimetype="text/xml")
 
 
-@qualification_bp.route("/qualification/status", methods=["POST"])
-def qualification_status():
+@onboarding_bp.route("/onboarding/status", methods=["POST"])
+def onboarding_status():
     """
-    Twilio status callback webhook.
+    Twilio status callback webhook for onboarding calls.
     Updates job and interaction records with call status.
     """
     call_sid = request.form.get("CallSid")
@@ -188,7 +219,7 @@ def qualification_status():
             # For MVP, we'll just update the job and leave interaction as-is
             print(f"ℹ️  Interaction {interaction_id} status: {call_status} (interactions are append-only)")
         
-        print(f"✅ Updated qualification call status: job_id={job_id}, call_sid={call_sid}, status={call_status}")
+        print(f"✅ Updated onboarding call status: job_id={job_id}, call_sid={call_sid}, status={call_status}")
         return Response("OK", status=200), 200
         
     except Exception as e:
@@ -199,7 +230,7 @@ def qualification_status():
         return Response("OK", status=200), 200
 
 
-@qualification_bp.route("/process-jobs", methods=["POST"])
+@onboarding_bp.route("/process-jobs", methods=["POST"])
 def process_jobs_endpoint():
     """
     Endpoint to trigger job processing (for HTTP-based cron/scheduled tasks).
