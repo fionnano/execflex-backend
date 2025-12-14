@@ -196,20 +196,33 @@ def voice_capture():
     return handle_conversation_step(step, speech, call_sid)
 
 
-@voice_bp.route("/status", methods=["POST"])
-@require_twilio_signature
+@voice_bp.route("/status", methods=["POST", "GET"])
 def voice_status():
     """
     Unified status callback webhook for all Twilio voice calls.
     Updates job and interaction records with call status.
     """
-    call_sid = request.form.get("CallSid")
-    call_status = request.form.get("CallStatus")  # queued, ringing, in-progress, completed, failed, busy, no-answer, canceled
-    call_duration = request.form.get("CallDuration")  # seconds, only for completed
-    from_number = request.form.get("From")
-    to_number = request.form.get("To")
+    # Check signature but don't block if in dev mode (for easier debugging)
+    from utils.twilio_helpers import verify_twilio_signature
+    import os
+    app_env = os.getenv("APP_ENV", "prod").lower()
+    if not verify_twilio_signature():
+        if app_env != "dev":
+            print("❌ Invalid Twilio signature in production mode")
+            return Response("Invalid signature", status=403), 403
+        else:
+            print("⚠️ Twilio signature verification failed, but continuing (dev mode)")
+    
+    call_sid = request.form.get("CallSid") or request.values.get("CallSid")
+    call_status = request.form.get("CallStatus") or request.values.get("CallStatus")  # queued, ringing, in-progress, completed, failed, busy, no-answer, canceled
+    call_duration = request.form.get("CallDuration") or request.values.get("CallDuration")  # seconds, only for completed
+    from_number = request.form.get("From") or request.values.get("From")
+    to_number = request.form.get("To") or request.values.get("To")
+    
+    print(f"📞 Status callback: call_sid={call_sid}, status={call_status}")
     
     if not call_sid:
+        print("⚠️ Missing CallSid in status callback")
         return Response("Missing CallSid", status=400), 400
     
     try:
