@@ -7,9 +7,18 @@ from flask import request, Response, jsonify
 from routes import onboarding_bp
 from utils.response_helpers import ok, bad
 from utils.auth_helpers import require_admin, get_authenticated_user_id
+from utils.twilio_helpers import require_twilio_signature
 from services.onboarding_service import initialize_user_onboarding, process_queued_jobs
-from services.tts_service import get_cached_audio_path
-from config.clients import VoiceResponse, twilio_client
+from services.tts_service import get_cached_audio_path, generate_tts
+from services.qualification_turn_service import (
+    get_or_create_interaction_for_call,
+    get_next_turn_sequence,
+    save_turn,
+    get_conversation_turns,
+    apply_extracted_updates
+)
+from services.qualification_agent_service import generate_qualification_response
+from config.clients import VoiceResponse, twilio_client, Gather
 from config.app_config import TWILIO_PHONE_NUMBER
 from flask import url_for
 
@@ -59,16 +68,29 @@ def onboarding_intro():
     """
     TwiML endpoint for onboarding call opening message.
     Called by Twilio when the outbound call is answered.
+    Starts the turn-based qualification conversation.
     
     Query params: job_id (optional, for tracking)
     """
-    if not VoiceResponse:
+    if not VoiceResponse or not Gather:
         return Response("Voice features not available", mimetype="text/plain"), 503
     
     job_id = request.values.get("job_id") or request.args.get("job_id")
     call_sid = request.values.get("CallSid") or "unknown"
     
     resp = VoiceResponse()
+    
+    # Get or create interaction for this call
+    interaction = get_or_create_interaction_for_call(call_sid, job_id)
+    if not interaction:
+        print(f"⚠️ Could not get/create interaction for call {call_sid}")
+        resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
+        resp.hangup()
+        return Response(str(resp), mimetype="text/xml")
+    
+    interaction_id = interaction["id"]
+    thread_id = interaction.get("thread_id")
+    user_id = interaction.get("user_id")
     
     # Fetch job to get signup_mode from artifacts
     signup_mode = None
@@ -87,46 +109,267 @@ def onboarding_intro():
         except Exception as e:
             print(f"⚠️ Could not fetch job artifacts: {e}")
     
-    # Tailor message based on signup_mode
+    # Tailor opening message based on signup_mode
     if signup_mode == "talent":
-        # User signed up as talent - skip the "are you hiring or looking" question
         onboarding_message = (
             "Hello, this is ExecFlex. We're calling to welcome you and help you find executive opportunities. "
             "Let's get started with a few quick questions."
         )
     elif signup_mode == "hirer":
-        # User signed up as hirer - skip the "are you hiring or looking" question
         onboarding_message = (
             "Hello, this is ExecFlex. We're calling to welcome you and help you find executive talent. "
             "Let's get started with a few quick questions."
         )
     else:
-        # Unknown signup_mode - ask the question
         onboarding_message = (
             "Hello, this is ExecFlex. We're calling to welcome you and learn more about your needs. "
             "Are you looking to hire executive talent, or are you an executive looking for opportunities?"
         )
     
-    # Try to find a cached audio file for the message
-    cached_path = get_cached_audio_path(onboarding_message)
+    # Save assistant opening turn
+    turn_sequence = get_next_turn_sequence(interaction_id)
+    save_turn(
+        interaction_id=interaction_id,
+        thread_id=thread_id,
+        speaker="assistant",
+        text=onboarding_message,
+        turn_sequence=turn_sequence,
+        artifacts_json={"state": "intro", "signup_mode": signup_mode}
+    )
     
-    if cached_path:
-        # Use pre-cached audio file
+    # Generate audio for opening message
+    audio_path = generate_tts(onboarding_message)
+    
+    if audio_path:
+        # Use generated/cached audio
         base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", request.url_root.rstrip('/')))
         if not base_url.startswith('http'):
-            # If API_BASE_URL is not set, construct from request
             base_url = request.url_root.rstrip('/')
-        full_audio_url = f"{base_url}{cached_path}"
-        print(f"🎵 Using pre-cached audio: {full_audio_url}")
-        resp.play(full_audio_url)
+        full_audio_url = f"{base_url}{audio_path}"
+        print(f"🎵 Using audio: {full_audio_url}")
+        
+        # Play audio and gather response
+        gather = Gather(
+            input="speech",
+            action=url_for("onboarding.onboarding_turn", _external=True),
+            method="POST",
+            timeout=10,
+            speech_timeout="auto",
+            language="en-GB",
+            speech_model="phone_call"
+        )
+        gather.play(full_audio_url)
+        resp.append(gather)
     else:
-        # Fallback to text-to-speech if audio not cached
-        print("⚠️ No cached audio found, using <Say> fallback")
-        resp.say(onboarding_message, voice="alice", language="en-GB")
+        # Fallback to text-to-speech
+        print("⚠️ No audio generated, using <Say> fallback")
+        gather = Gather(
+            input="speech",
+            action=url_for("onboarding.onboarding_turn", _external=True),
+            method="POST",
+            timeout=10,
+            speech_timeout="auto",
+            language="en-GB",
+            speech_model="phone_call"
+        )
+        gather.say(onboarding_message, voice="alice", language="en-GB")
+        resp.append(gather)
     
-    # For MVP, just play the message and hang up
-    # Later: add <Gather> for response collection
-    resp.hangup()
+    # If no input, redirect to turn handler
+    resp.redirect(url_for("onboarding.onboarding_turn", _external=True))
+    
+    return Response(str(resp), mimetype="text/xml")
+
+
+@onboarding_bp.route("/onboarding/turn", methods=["POST", "GET"])
+@require_twilio_signature
+def onboarding_turn():
+    """
+    TwiML endpoint for handling each conversation turn.
+    Called by Twilio after Gather collects user speech.
+    
+    Flow:
+    1. Extract user speech from Twilio request
+    2. Save user turn (append-only)
+    3. Get conversation history
+    4. Call OpenAI to generate next response
+    5. Apply extracted DB updates
+    6. Save assistant turn
+    7. Generate audio and return TwiML
+    """
+    if not VoiceResponse or not Gather:
+        return Response("Voice features not available", mimetype="text/plain"), 503
+    
+    call_sid = request.values.get("CallSid") or "unknown"
+    user_speech = (request.values.get("SpeechResult") or "").strip()
+    speech_confidence = request.values.get("Confidence", "0")
+    
+    print(f"🎤 Turn received - CallSid: {call_sid}, Speech: '{user_speech[:50]}...', Confidence: {speech_confidence}")
+    
+    resp = VoiceResponse()
+    
+    # Get interaction for this call
+    interaction = get_or_create_interaction_for_call(call_sid)
+    if not interaction:
+        print(f"⚠️ Could not get interaction for call {call_sid}")
+        resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
+        resp.hangup()
+        return Response(str(resp), mimetype="text/xml")
+    
+    interaction_id = interaction["id"]
+    thread_id = interaction.get("thread_id")
+    user_id = interaction.get("user_id")
+    
+    # Get job to fetch signup_mode and existing profile data
+    signup_mode = None
+    existing_profile = None
+    existing_role = None
+    
+    try:
+        from config.clients import supabase_client
+        
+        # Get job
+        job_resp = supabase_client.table("outbound_call_jobs")\
+            .select("id, artifacts, user_id")\
+            .eq("twilio_call_sid", call_sid)\
+            .limit(1)\
+            .execute()
+        
+        if job_resp.data:
+            job = job_resp.data[0]
+            artifacts = job.get("artifacts", {}) or {}
+            signup_mode = artifacts.get("signup_mode")
+            user_id = user_id or job.get("user_id")
+        
+        # Get existing profile if user_id available
+        if user_id:
+            profile_resp = supabase_client.table("people_profiles")\
+                .select("first_name, last_name, headline")\
+                .eq("user_id", user_id)\
+                .limit(1)\
+                .execute()
+            
+            if profile_resp.data:
+                existing_profile = profile_resp.data[0]
+            
+            # Get existing role
+            role_resp = supabase_client.table("role_assignments")\
+                .select("role")\
+                .eq("user_id", user_id)\
+                .order("confidence", desc=True)\
+                .limit(1)\
+                .execute()
+            
+            if role_resp.data:
+                existing_role = role_resp.data[0].get("role")
+    except Exception as e:
+        print(f"⚠️ Could not fetch job/profile data: {e}")
+    
+    # Save user turn if we have speech
+    if user_speech:
+        turn_sequence = get_next_turn_sequence(interaction_id)
+        save_turn(
+            interaction_id=interaction_id,
+            thread_id=thread_id,
+            speaker="user",
+            text=user_speech,
+            turn_sequence=turn_sequence,
+            raw_payload={
+                "speech_confidence": speech_confidence,
+                "call_sid": call_sid
+            }
+        )
+    
+    # Get conversation history for OpenAI
+    conversation_turns = get_conversation_turns(interaction_id, limit=20)
+    
+    # Generate next assistant response using OpenAI
+    ai_response = generate_qualification_response(
+        conversation_turns=conversation_turns,
+        signup_mode=signup_mode,
+        existing_profile=existing_profile,
+        existing_role=existing_role
+    )
+    
+    assistant_text = ai_response.get("assistant_text", "I didn't catch that. Could you repeat?")
+    extracted_updates = ai_response.get("extracted_updates", {})
+    is_complete = ai_response.get("is_complete", False)
+    next_state = ai_response.get("next_state", "unknown")
+    
+    # Apply extracted updates to DB
+    if extracted_updates and user_id:
+        apply_results = apply_extracted_updates(
+            user_id=user_id,
+            extracted_updates=extracted_updates,
+            interaction_id=interaction_id
+        )
+        print(f"📝 Applied DB updates: {apply_results}")
+    
+    # Save assistant turn
+    turn_sequence = get_next_turn_sequence(interaction_id)
+    save_turn(
+        interaction_id=interaction_id,
+        thread_id=thread_id,
+        speaker="assistant",
+        text=assistant_text,
+        turn_sequence=turn_sequence,
+        artifacts_json={
+            "next_state": next_state,
+            "is_complete": is_complete,
+            "extracted_updates": extracted_updates,
+            "confidence": ai_response.get("confidence", 0.0)
+        }
+    )
+    
+    # Generate audio for assistant response
+    audio_path = generate_tts(assistant_text)
+    
+    if is_complete:
+        # Conversation complete - play final message and hang up
+        if audio_path:
+            base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", request.url_root.rstrip('/')))
+            if not base_url.startswith('http'):
+                base_url = request.url_root.rstrip('/')
+            full_audio_url = f"{base_url}{audio_path}"
+            resp.play(full_audio_url)
+        else:
+            resp.say(assistant_text, voice="alice", language="en-GB")
+        
+        resp.hangup()
+    else:
+        # Continue conversation - play message and gather next response
+        if audio_path:
+            base_url = os.getenv("API_BASE_URL", os.getenv("VITE_FLASK_API_URL", request.url_root.rstrip('/')))
+            if not base_url.startswith('http'):
+                base_url = request.url_root.rstrip('/')
+            full_audio_url = f"{base_url}{audio_path}"
+            
+            gather = Gather(
+                input="speech",
+                action=url_for("onboarding.onboarding_turn", _external=True),
+                method="POST",
+                timeout=10,
+                speech_timeout="auto",
+                language="en-GB",
+                speech_model="phone_call"
+            )
+            gather.play(full_audio_url)
+            resp.append(gather)
+        else:
+            gather = Gather(
+                input="speech",
+                action=url_for("onboarding.onboarding_turn", _external=True),
+                method="POST",
+                timeout=10,
+                speech_timeout="auto",
+                language="en-GB",
+                speech_model="phone_call"
+            )
+            gather.say(assistant_text, voice="alice", language="en-GB")
+            resp.append(gather)
+        
+        # Redirect if no input
+        resp.redirect(url_for("onboarding.onboarding_turn", _external=True))
     
     return Response(str(resp), mimetype="text/xml")
 
