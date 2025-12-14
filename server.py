@@ -26,7 +26,8 @@ from routes import (
     matching_bp,
     roles_bp,
     introductions_bp,
-    voice_bp
+    voice_bp,
+    qualification_bp
 )
 
 # Validate configuration
@@ -46,6 +47,7 @@ app.register_blueprint(matching_bp)
 app.register_blueprint(roles_bp)
 app.register_blueprint(introductions_bp)
 app.register_blueprint(voice_bp)
+app.register_blueprint(qualification_bp)
 
 # Apply rate limiting to voice endpoint after blueprint registration
 # Import here to avoid circular imports
