@@ -15,7 +15,7 @@ from services.qualification_conversation_service import handle_conversation_turn
 from utils.twilio_helpers import require_twilio_signature
 
 
-@voice_bp.route("/voice/intro", methods=["POST", "GET"])
+@voice_bp.route("/intro", methods=["POST", "GET"])
 def voice_intro():
     """
     Unified entry point for Twilio voice calls.
@@ -160,7 +160,7 @@ def voice_qualify():
         return Response(str(resp), mimetype="text/xml")
 
 
-@voice_bp.route("/voice/inbound", methods=["POST", "GET"])
+@voice_bp.route("/inbound", methods=["POST", "GET"])
 def voice_inbound():
     """
     Turn handler for inbound voice conversations.
@@ -196,7 +196,7 @@ def voice_capture():
     return handle_conversation_step(step, speech, call_sid)
 
 
-@voice_bp.route("/voice/status", methods=["POST"])
+@voice_bp.route("/status", methods=["POST"])
 @require_twilio_signature
 def voice_status():
     """
