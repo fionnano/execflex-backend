@@ -63,7 +63,7 @@ def voice_intro():
         return Response(str(say_and_gather(resp, prompt, "user_type", call_sid)), mimetype="text/xml")
 
 
-@voice_bp.route("/voice/qualify", methods=["POST", "GET"])
+@voice_bp.route("/qualify", methods=["POST", "GET"])
 def voice_qualify():
     """
     Outbound qualification call endpoint.
@@ -91,9 +91,27 @@ def voice_qualify():
     from utils.twilio_helpers import verify_twilio_signature
     import os
     app_env = os.getenv("APP_ENV", "prod").lower()
-    if not verify_twilio_signature():
+    
+    # For qualify endpoint, try to use the configured base URL with job_id
+    base_url = (
+        os.getenv("API_BASE_URL") or 
+        os.getenv("RENDER_EXTERNAL_URL") or 
+        os.getenv("VITE_FLASK_API_URL") or 
+        None
+    )
+    expected_url = None
+    if base_url:
+        job_id_param = request.values.get("job_id") or request.args.get("job_id")
+        if job_id_param:
+            expected_url = f"{base_url.rstrip('/')}/voice/qualify?job_id={job_id_param}"
+        else:
+            expected_url = f"{base_url.rstrip('/')}/voice/qualify"
+    
+    if not verify_twilio_signature(url=expected_url):
         if app_env != "dev":
             print("❌ Invalid Twilio signature in production mode")
+            # Log the URL we tried for debugging
+            print(f"   Tried URL: {expected_url or request.url}")
             return Response("Invalid signature", status=403), 403
         else:
             print("⚠️ Twilio signature verification failed, but continuing (dev mode)")
@@ -181,7 +199,7 @@ def voice_inbound():
     return handle_conversation_step(step, user_speech, call_sid)
 
 
-@voice_bp.route("/voice/capture", methods=["POST", "GET"])
+@voice_bp.route("/capture", methods=["POST", "GET"])
 def voice_capture():
     """
     Legacy endpoint for inbound call conversation flow.
@@ -206,9 +224,23 @@ def voice_status():
     from utils.twilio_helpers import verify_twilio_signature
     import os
     app_env = os.getenv("APP_ENV", "prod").lower()
-    if not verify_twilio_signature():
+    
+    # For status callbacks, try to use the configured base URL
+    base_url = (
+        os.getenv("API_BASE_URL") or 
+        os.getenv("RENDER_EXTERNAL_URL") or 
+        os.getenv("VITE_FLASK_API_URL") or 
+        None
+    )
+    expected_url = None
+    if base_url:
+        expected_url = f"{base_url.rstrip('/')}/voice/status"
+    
+    if not verify_twilio_signature(url=expected_url):
         if app_env != "dev":
             print("❌ Invalid Twilio signature in production mode")
+            # Log the URL we tried for debugging
+            print(f"   Tried URL: {expected_url or request.url}")
             return Response("Invalid signature", status=403), 403
         else:
             print("⚠️ Twilio signature verification failed, but continuing (dev mode)")
