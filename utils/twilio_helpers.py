@@ -44,11 +44,23 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
         try:
             validator = RequestValidator(TWILIO_AUTH_TOKEN)
             
-            # Use provided URL or request.url
-            url_to_validate = url if url else request.url
+            # Use provided URL or reconstruct from request
+            if url:
+                url_to_validate = url
+            else:
+                # Reconstruct URL from request, handling proxy headers
+                # Render uses X-Forwarded-Proto and X-Forwarded-Host
+                proto = request.headers.get('X-Forwarded-Proto', 'https')
+                host = request.headers.get('X-Forwarded-Host') or request.host
+                url_to_validate = f"{proto}://{host}{request.path}"
+                if request.query_string:
+                    url_to_validate += f"?{request.query_string.decode()}"
             
-            # Get POST parameters as dict
-            post_args = request.form.to_dict()
+            # Get POST parameters as dict (RequestValidator expects dict, not MultiDict)
+            post_args = {}
+            for key in request.form:
+                # Get the first value if multiple (form is MultiDict)
+                post_args[key] = request.form[key]
             
             # Validate using Twilio's validator
             is_valid = validator.validate(url_to_validate, post_args, signature)
@@ -57,10 +69,15 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
                 print(f"⚠️ Signature verification failed (using Twilio RequestValidator)")
                 print(f"   URL used: {url_to_validate}")
                 print(f"   POST params count: {len(post_args)}")
+                print(f"   Request URL: {request.url}")
+                print(f"   X-Forwarded-Proto: {request.headers.get('X-Forwarded-Proto')}")
+                print(f"   X-Forwarded-Host: {request.headers.get('X-Forwarded-Host')}")
             
             return is_valid
         except Exception as e:
             print(f"⚠️ Error using Twilio RequestValidator: {e}")
+            import traceback
+            traceback.print_exc()
             # Fall through to manual verification
     
     # Fallback to manual verification (if RequestValidator not available)

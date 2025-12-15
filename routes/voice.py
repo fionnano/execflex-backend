@@ -226,8 +226,18 @@ def voice_status():
     import os
     app_env = os.getenv("APP_ENV", "prod").lower()
     
-    # Use request.url directly - Twilio's RequestValidator handles URL normalization
-    if not verify_twilio_signature():
+    # Reconstruct the EXACT URL that Twilio was configured with (same logic as onboarding_service.py)
+    # This must match the URL used in status_callback when creating the call
+    base_url = (
+        os.getenv("API_BASE_URL") or 
+        os.getenv("RENDER_EXTERNAL_URL") or 
+        os.getenv("VITE_FLASK_API_URL") or 
+        "https://execflex-backend-1.onrender.com"
+    )
+    configured_url = f"{base_url.rstrip('/')}/voice/status"
+    
+    # Use the configured URL for verification (must match what Twilio used to generate signature)
+    if not verify_twilio_signature(url=configured_url):
         if app_env != "dev":
             print("❌ Invalid Twilio signature in production mode")
             # Log both URLs for debugging
