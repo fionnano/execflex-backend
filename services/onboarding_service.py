@@ -188,7 +188,6 @@ def process_queued_jobs(limit: int = 10) -> int:
                 base_url = (
                     os.getenv("API_BASE_URL") or 
                     os.getenv("RENDER_EXTERNAL_URL") or 
-                    os.getenv("VITE_FLASK_API_URL") or 
                     "https://execflex-backend-1.onrender.com"
                 )
                 twiml_url = f"{base_url}/voice/qualify?job_id={job_id}"

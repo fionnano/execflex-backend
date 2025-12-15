@@ -97,7 +97,6 @@ def voice_qualify():
     base_url = (
         os.getenv("API_BASE_URL") or 
         os.getenv("RENDER_EXTERNAL_URL") or 
-        os.getenv("VITE_FLASK_API_URL") or 
         "https://execflex-backend-1.onrender.com"
     )
     job_id_param = request.values.get("job_id") or request.args.get("job_id")
@@ -231,7 +230,6 @@ def voice_status():
     base_url = (
         os.getenv("API_BASE_URL") or 
         os.getenv("RENDER_EXTERNAL_URL") or 
-        os.getenv("VITE_FLASK_API_URL") or 
         "https://execflex-backend-1.onrender.com"
     )
     configured_url = f"{base_url.rstrip('/')}/voice/status"

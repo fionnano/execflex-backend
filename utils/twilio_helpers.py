@@ -56,22 +56,20 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
                 if request.query_string:
                     url_to_validate += f"?{request.query_string.decode()}"
             
-            # Get POST parameters as dict (RequestValidator expects dict, not MultiDict)
-            post_args = {}
-            for key in request.form:
-                # Get the first value if multiple (form is MultiDict)
-                post_args[key] = request.form[key]
-            
+            # RequestValidator can accept request.form (MultiDict) directly
+            # According to Twilio docs, it handles MultiDict internally
             # Validate using Twilio's validator
-            is_valid = validator.validate(url_to_validate, post_args, signature)
+            is_valid = validator.validate(url_to_validate, request.form, signature)
             
             if not is_valid:
                 print(f"⚠️ Signature verification failed (using Twilio RequestValidator)")
                 print(f"   URL used: {url_to_validate}")
-                print(f"   POST params count: {len(post_args)}")
+                print(f"   POST params count: {len(request.form)}")
                 print(f"   Request URL: {request.url}")
                 print(f"   X-Forwarded-Proto: {request.headers.get('X-Forwarded-Proto')}")
                 print(f"   X-Forwarded-Host: {request.headers.get('X-Forwarded-Host')}")
+                print(f"   Auth Token configured: {'Yes' if TWILIO_AUTH_TOKEN else 'No'}")
+                print(f"   Auth Token length: {len(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else 0}")
             
             return is_valid
         except Exception as e:
