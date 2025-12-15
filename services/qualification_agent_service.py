@@ -314,3 +314,4 @@ def generate_qualification_response(
             "is_complete": False,
             "confidence": 0.0
         }
+

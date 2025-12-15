@@ -327,3 +327,4 @@ def apply_extracted_updates(
         import traceback
         traceback.print_exc()
         return results
+
