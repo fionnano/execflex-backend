@@ -220,6 +220,7 @@ def generate_qualification_response(
     """
     if not gpt_client or not OPENAI_API_KEY:
         # Fallback response if OpenAI unavailable
+        print(f"⚠️ OpenAI client not available: gpt_client={gpt_client is not None}, OPENAI_API_KEY={OPENAI_API_KEY is not None}")
         return {
             "assistant_text": "I'm having trouble processing that. Let's continue.",
             "extracted_updates": {},
@@ -227,6 +228,12 @@ def generate_qualification_response(
             "is_complete": False,
             "confidence": 0.0
         }
+    
+    print(f"🤖 Generating qualification response:")
+    print(f"   - conversation_turns: {len(conversation_turns)} turns")
+    print(f"   - signup_mode: {signup_mode}")
+    print(f"   - existing_profile: {existing_profile is not None}")
+    print(f"   - existing_role: {existing_role}")
     
     try:
         # Determine which prompt to use based on signup_mode
@@ -267,7 +274,13 @@ def generate_qualification_response(
         ]
         
         # Add conversation history
-        messages.extend(get_conversation_context(conversation_turns))
+        conversation_messages = get_conversation_context(conversation_turns)
+        messages.extend(conversation_messages)
+        print(f"   - Total messages (system + conversation): {len(messages)}")
+        if conversation_messages:
+            print(f"   - Last user message: {conversation_messages[-1].get('content', '')[:50]}...")
+        else:
+            print(f"   - No conversation history yet (this is the first turn)")
         
         # Generate response with JSON mode (if available) or structured output
         # Note: When using response_format={"type": "json_object"}, the system prompt
@@ -296,16 +309,23 @@ def generate_qualification_response(
             )
         
         response_text = response.choices[0].message.content.strip()
+        print(f"📝 OpenAI response received: {response_text[:200]}...")
         
         # Parse structured response
         result = parse_structured_response(response_text)
+        print(f"✅ Parsed response: assistant_text={result.get('assistant_text', '')[:50]}..., next_state={result.get('next_state')}, is_complete={result.get('is_complete')}")
         
         return result
         
     except Exception as e:
-        print(f"⚠️ Qualification agent response generation failed: {e}")
+        print(f"❌ Qualification agent response generation failed: {e}")
         import traceback
         traceback.print_exc()
+        print(f"   Debug info:")
+        print(f"   - gpt_client available: {gpt_client is not None}")
+        print(f"   - OPENAI_API_KEY available: {OPENAI_API_KEY is not None and len(OPENAI_API_KEY) > 0}")
+        print(f"   - conversation_turns count: {len(conversation_turns) if conversation_turns else 0}")
+        print(f"   - signup_mode: {signup_mode}")
         # Fallback response
         return {
             "assistant_text": "I'm having trouble processing that. Let's continue.",
