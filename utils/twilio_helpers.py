@@ -44,21 +44,12 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
         try:
             validator = RequestValidator(TWILIO_AUTH_TOKEN)
             
-            # Use provided URL or reconstruct from request
-            if url:
-                url_to_validate = url
-            else:
-                # Reconstruct URL from request, handling proxy headers
-                # Render uses X-Forwarded-Proto and X-Forwarded-Host
-                proto = request.headers.get('X-Forwarded-Proto', 'https')
-                host = request.headers.get('X-Forwarded-Host') or request.host
-                url_to_validate = f"{proto}://{host}{request.path}"
-                if request.query_string:
-                    url_to_validate += f"?{request.query_string.decode()}"
+            # RequestValidator can use request.url directly (handles proxy headers automatically)
+            # If explicit URL provided, use it; otherwise let RequestValidator use request.url
+            url_to_validate = url if url else request.url
             
             # RequestValidator can accept request.form (MultiDict) directly
             # According to Twilio docs, it handles MultiDict internally
-            # Validate using Twilio's validator
             is_valid = validator.validate(url_to_validate, request.form, signature)
             
             if not is_valid:
@@ -70,6 +61,11 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
                 print(f"   X-Forwarded-Host: {request.headers.get('X-Forwarded-Host')}")
                 print(f"   Auth Token configured: {'Yes' if TWILIO_AUTH_TOKEN else 'No'}")
                 print(f"   Auth Token length: {len(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else 0}")
+                print(f"   Signature header: {signature[:20]}..." if signature and len(signature) > 20 else f"   Signature header: {signature}")
+                # Log first few POST params for debugging (don't log sensitive data)
+                if request.form:
+                    param_keys = list(request.form.keys())[:5]
+                    print(f"   Sample POST param keys: {param_keys}")
             
             return is_valid
         except Exception as e:

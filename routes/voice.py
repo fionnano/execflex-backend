@@ -87,37 +87,20 @@ def voice_qualify():
     if not VoiceResponse:
         return Response("Voice features not available", mimetype="text/plain"), 503
     
-    # Check signature but don't block if in dev mode (for easier debugging)
+    # Verify Twilio signature (RequestValidator handles request.url automatically)
     from utils.twilio_helpers import verify_twilio_signature
     import os
     app_env = os.getenv("APP_ENV", "prod").lower()
     
-    # Reconstruct the EXACT URL that Twilio was configured with (same logic as onboarding_service.py)
-    # This must match the URL used when creating the call
-    base_url = (
-        os.getenv("API_BASE_URL") or 
-        os.getenv("RENDER_EXTERNAL_URL") or 
-        "https://execflex-backend-1.onrender.com"
-    )
-    job_id_param = request.values.get("job_id") or request.args.get("job_id")
-    if job_id_param:
-        configured_url = f"{base_url.rstrip('/')}/voice/qualify?job_id={job_id_param}"
-    else:
-        configured_url = f"{base_url.rstrip('/')}/voice/qualify"
-    
-    # Use the configured URL for verification (must match what Twilio used to generate signature)
-    if not verify_twilio_signature(url=configured_url):
+    if not verify_twilio_signature():
         if app_env != "dev":
             print("❌ Invalid Twilio signature in production mode")
-            # Log both URLs for debugging
-            print(f"   Configured URL (what Twilio used): {configured_url}")
-            print(f"   Request URL (what Flask received): {request.url}")
             return Response("Invalid signature", status=403), 403
         else:
             print("⚠️ Twilio signature verification failed, but continuing (dev mode)")
     
     call_sid = request.values.get("CallSid") or request.args.get("CallSid") or "unknown"
-    job_id = job_id_param
+    job_id = request.values.get("job_id") or request.args.get("job_id")
     user_speech = (request.values.get("SpeechResult") or "").strip()
     speech_confidence = request.values.get("Confidence", "0")
     
@@ -220,27 +203,14 @@ def voice_status():
     Unified status callback webhook for all Twilio voice calls.
     Updates job and interaction records with call status.
     """
-    # Check signature but don't block if in dev mode (for easier debugging)
+    # Verify Twilio signature (RequestValidator handles request.url automatically)
     from utils.twilio_helpers import verify_twilio_signature
     import os
     app_env = os.getenv("APP_ENV", "prod").lower()
     
-    # Reconstruct the EXACT URL that Twilio was configured with (same logic as onboarding_service.py)
-    # This must match the URL used in status_callback when creating the call
-    base_url = (
-        os.getenv("API_BASE_URL") or 
-        os.getenv("RENDER_EXTERNAL_URL") or 
-        "https://execflex-backend-1.onrender.com"
-    )
-    configured_url = f"{base_url.rstrip('/')}/voice/status"
-    
-    # Use the configured URL for verification (must match what Twilio used to generate signature)
-    if not verify_twilio_signature(url=configured_url):
+    if not verify_twilio_signature():
         if app_env != "dev":
             print("❌ Invalid Twilio signature in production mode")
-            # Log both URLs for debugging
-            print(f"   Configured URL (what Twilio used): {configured_url}")
-            print(f"   Request URL (what Flask received): {request.url}")
             return Response("Invalid signature", status=403), 403
         else:
             print("⚠️ Twilio signature verification failed, but continuing (dev mode)")
