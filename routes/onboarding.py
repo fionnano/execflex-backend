@@ -289,6 +289,127 @@ def get_conversations():
         return bad(f"Failed to fetch conversations: {str(e)}", 500)
 
 
+@onboarding_bp.route("/conversations/<conversation_id>", methods=["GET"])
+@require_admin
+def get_conversation_details(conversation_id: str):
+    """
+    Get detailed conversation data for a specific conversation (admin-only).
+    
+    **ADMIN ONLY**: This endpoint requires authentication AND admin role.
+    Returns conversation turns, transcript, and full interaction details.
+    
+    Headers:
+        Authorization: Bearer <supabase_jwt_token>
+    
+    Returns:
+        {
+            "conversation": {
+                "id": "uuid",
+                "phone_e164": "+447700900001",
+                "status": "completed",
+                "interaction_id": "uuid",
+                "transcript": "Full transcript text...",
+                "summary": "Summary text...",
+                "turns": [
+                    {
+                        "speaker": "assistant",
+                        "text": "Hello, this is ExecFlex...",
+                        "created_at": "2024-12-15T10:30:00Z",
+                        "turn_sequence": 1
+                    },
+                    ...
+                ]
+            }
+        }
+    """
+    try:
+        # Get the job
+        job_result = supabase_client.table("outbound_call_jobs")\
+            .select("id, phone_e164, status, interaction_id, user_id, twilio_call_sid, created_at, updated_at")\
+            .eq("id", conversation_id)\
+            .limit(1)\
+            .execute()
+        
+        if not job_result.data or len(job_result.data) == 0:
+            return bad("Conversation not found", 404)
+        
+        job = job_result.data[0]
+        interaction_id = job.get("interaction_id")
+        
+        # Get interaction details (transcript, summary)
+        interaction_data = {}
+        if interaction_id:
+            try:
+                interaction_result = supabase_client.table("interactions")\
+                    .select("id, transcript_text, summary_text, started_at, ended_at, artifacts")\
+                    .eq("id", interaction_id)\
+                    .limit(1)\
+                    .execute()
+                
+                if interaction_result.data:
+                    interaction_data = interaction_result.data[0]
+            except Exception as e:
+                print(f"⚠️ Error fetching interaction: {e}")
+        
+        # Get conversation turns (if interaction_turns table exists)
+        turns = []
+        if interaction_id:
+            try:
+                # Check if interaction_turns table exists by trying to query it
+                turns_result = supabase_client.table("interaction_turns")\
+                    .select("speaker, text, created_at, turn_sequence, artifacts_json")\
+                    .eq("interaction_id", interaction_id)\
+                    .order("turn_sequence", desc=False)\
+                    .execute()
+                
+                if turns_result.data:
+                    turns = [
+                        {
+                            "speaker": turn.get("speaker"),
+                            "text": turn.get("text"),
+                            "created_at": turn.get("created_at"),
+                            "turn_sequence": turn.get("turn_sequence"),
+                            "artifacts": turn.get("artifacts_json")
+                        }
+                        for turn in turns_result.data
+                    ]
+            except Exception as e:
+                # Table might not exist or error - that's okay, we'll use transcript
+                print(f"⚠️ Could not fetch turns (table may not exist): {e}")
+        
+        # Map database status to frontend status
+        status_map = {
+            "queued": "pending",
+            "running": "in_progress",
+            "succeeded": "completed",
+            "failed": "failed"
+        }
+        frontend_status = status_map.get(job["status"], job["status"])
+        
+        return ok({
+            "conversation": {
+                "id": job["id"],
+                "phone_e164": job["phone_e164"],
+                "status": frontend_status,
+                "interaction_id": interaction_id,
+                "twilio_call_sid": job.get("twilio_call_sid"),
+                "created_at": job["created_at"],
+                "updated_at": job["updated_at"],
+                "transcript": interaction_data.get("transcript_text"),
+                "summary": interaction_data.get("summary_text"),
+                "turns": turns,
+                "started_at": interaction_data.get("started_at"),
+                "ended_at": interaction_data.get("ended_at"),
+                "artifacts": interaction_data.get("artifacts")
+            }
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error fetching conversation details: {str(e)}")
+        return bad(f"Failed to fetch conversation details: {str(e)}", 500)
+
+
 @onboarding_bp.route("/list-users", methods=["GET"])
 @require_admin
 def list_users():
