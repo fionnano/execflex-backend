@@ -10,10 +10,6 @@ from config.app_config import TWILIO_PHONE_NUMBER
 from utils.response_helpers import ok, bad
 
 
-# Hardcoded destination for onboarding calls
-ONBOARDING_DESTINATION_PHONE = "+447463212071"
-
-
 def initialize_user_onboarding(user_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Initialize onboarding for a new user (called by database trigger or admin).
