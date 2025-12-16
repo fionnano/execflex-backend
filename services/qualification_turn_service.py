@@ -318,13 +318,36 @@ def apply_extracted_updates(
                 
                 if existing.data:
                     org_id = existing.data[0]["id"]
+                    # Update existing org with industry/location if provided
+                    org_update = {}
+                    if "industry" in org_data and org_data["industry"]:
+                        # Convert single industry string to array
+                        if isinstance(org_data["industry"], str):
+                            org_update["industry"] = org_data["industry"]
+                        else:
+                            org_update["industry"] = str(org_data["industry"])
+                    if "location" in org_data and org_data["location"]:
+                        org_update["location"] = org_data["location"]
+                    
+                    if org_update:
+                        org_update["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        supabase_client.table("organizations")\
+                            .update(org_update)\
+                            .eq("id", org_id)\
+                            .execute()
                 else:
                     # Create new org
+                    new_org_data = {
+                        "name": org_name,
+                        "created_by_user_id": user_id
+                    }
+                    if "industry" in org_data and org_data["industry"]:
+                        new_org_data["industry"] = org_data["industry"] if isinstance(org_data["industry"], str) else str(org_data["industry"])
+                    if "location" in org_data and org_data["location"]:
+                        new_org_data["location"] = org_data["location"]
+                    
                     new_org = supabase_client.table("organizations")\
-                        .insert({
-                            "name": org_name,
-                            "created_by_user_id": user_id
-                        })\
+                        .insert(new_org_data)\
                         .execute()
                     
                     if new_org.data:
@@ -333,6 +356,69 @@ def apply_extracted_updates(
                         org_id = None
                 
                 results["organizations"] = org_id is not None
+        
+        # Update role_postings (for hirers - the role they're hiring for)
+        if "role_postings" in extracted_updates:
+            posting_data = extracted_updates["role_postings"]
+            if posting_data and (posting_data.get("title") or posting_data.get("location") or posting_data.get("engagement_type")):
+                # Get user's organization_id if available
+                org_id = None
+                try:
+                    # Try to find user's organization
+                    org_result = supabase_client.table("organizations")\
+                        .select("id")\
+                        .eq("created_by_user_id", user_id)\
+                        .order("created_at", desc=True)\
+                        .limit(1)\
+                        .execute()
+                    if org_result.data:
+                        org_id = org_result.data[0]["id"]
+                except Exception:
+                    pass
+                
+                # Create or update role posting
+                posting_update = {
+                    "user_id": user_id,
+                    "status": "draft"  # Default to draft until fully qualified
+                }
+                if "title" in posting_data and posting_data["title"]:
+                    posting_update["title"] = posting_data["title"]
+                if "location" in posting_data and posting_data["location"]:
+                    posting_update["location"] = posting_data["location"]
+                if "engagement_type" in posting_data and posting_data["engagement_type"]:
+                    posting_update["engagement_type"] = posting_data["engagement_type"]
+                if org_id:
+                    posting_update["company_id"] = org_id
+                
+                # Try to find existing draft posting for this user
+                try:
+                    existing_posting = supabase_client.table("role_postings")\
+                        .select("id")\
+                        .eq("user_id", user_id)\
+                        .eq("status", "draft")\
+                        .order("created_at", desc=True)\
+                        .limit(1)\
+                        .execute()
+                    
+                    if existing_posting.data:
+                        # Update existing draft
+                        posting_update["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        supabase_client.table("role_postings")\
+                            .update(posting_update)\
+                            .eq("id", existing_posting.data[0]["id"])\
+                            .execute()
+                        results["role_postings"] = True
+                    else:
+                        # Create new draft posting
+                        posting_update["created_at"] = datetime.now(timezone.utc).isoformat()
+                        posting_update["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        new_posting = supabase_client.table("role_postings")\
+                            .insert(posting_update)\
+                            .execute()
+                        results["role_postings"] = new_posting.data is not None
+                except Exception as e:
+                    print(f"⚠️ Failed to create/update role posting: {e}")
+                    results["role_postings"] = False
         
         return results
         
