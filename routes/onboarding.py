@@ -558,6 +558,8 @@ def delete_user():
             print(f"  ⚠️  Error updating organizations: {e}")
         
         # Finally, delete auth user (requires admin API)
+        # Note: Even if this fails, we've deleted all application data, so the user
+        # won't appear in list-users (which filters by people_profiles)
         print("\nDeleting auth user...")
         headers = {
             "apikey": SUPABASE_KEY,
@@ -582,13 +584,18 @@ def delete_user():
                 deletion_results["auth_user_deleted"] = False
                 deletion_results["warnings"].append(
                     "Cannot delete auth user: interactions are append-only (event sourcing). "
-                    "This is expected - interactions remain as historical records."
+                    "This is expected - interactions remain as historical records. "
+                    "User will not appear in admin list (filtered by people_profiles)."
                 )
                 print("  ⚠️  Cannot delete auth user: interactions are append-only")
             else:
                 deletion_results["auth_user_deleted"] = False
-                deletion_results["errors"].append(f"Auth user deletion failed: {response.status_code} - {error_msg}")
+                deletion_results["warnings"].append(
+                    f"Auth user deletion failed: {response.status_code} - {error_msg}. "
+                    "User will not appear in admin list (filtered by people_profiles)."
+                )
                 print(f"  ⚠️  Could not delete auth user: {response.status_code} - {error_msg}")
+                print(f"  Response body: {response.text}")
         
         deletion_results["success"] = len(deletion_results["errors"]) == 0
         deletion_results["message"] = f"User {target_user_id} deletion completed"
