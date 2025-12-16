@@ -573,7 +573,7 @@ def delete_user():
 # - Status: /voice/status (handles all call status updates)
 # The worker uses /voice/qualify and /voice/status directly
 
-@onboarding_bp.route("/onboarding/status", methods=["POST"])
+@onboarding_bp.route("/status", methods=["POST"])
 def onboarding_status():
     """
     DEPRECATED: Twilio status callback webhook for onboarding calls.
