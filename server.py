@@ -36,7 +36,18 @@ print_config_status()
 
 # Create Flask app
 app = Flask(__name__, static_folder="static")
-CORS(app, resources={r"/*": {"origins": "*"}})
+# Configure CORS to allow requests from frontend domain
+# Flask-CORS will automatically handle OPTIONS preflight requests
+CORS(app, resources={
+    r"/*": {
+        "origins": ["https://execflex.ai", "http://localhost:5173", "http://localhost:3000", "*"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
+        "expose_headers": ["Content-Type"],
+        "supports_credentials": True,
+        "max_age": 3600
+    }
+})
 
 # Initialize rate limiter (IP-based)
 limiter = create_limiter(app)
