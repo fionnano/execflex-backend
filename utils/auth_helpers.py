@@ -82,8 +82,10 @@ def require_auth(f):
         # Skip authentication for OPTIONS requests (CORS preflight)
         # Flask-CORS will handle the OPTIONS response automatically
         if request.method == "OPTIONS":
-            from flask import Response
-            return Response(status=200)
+            from flask import make_response
+            response = make_response()
+            response.status_code = 200
+            return response
         
         user_id, error = get_authenticated_user_id()
         if not user_id:
@@ -143,8 +145,10 @@ def require_admin(f):
         # Skip authentication for OPTIONS requests (CORS preflight)
         # Flask-CORS will handle the OPTIONS response automatically
         if request.method == "OPTIONS":
-            from flask import Response
-            return Response(status=200)
+            from flask import make_response
+            response = make_response()
+            response.status_code = 200
+            return response
         
         # First check authentication
         user_id, error = get_authenticated_user_id()
