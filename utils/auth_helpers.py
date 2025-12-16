@@ -79,6 +79,10 @@ def require_auth(f):
     
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Skip authentication for OPTIONS requests (CORS preflight)
+        if request.method == "OPTIONS":
+            return f(*args, **kwargs)
+        
         user_id, error = get_authenticated_user_id()
         if not user_id:
             return bad(error or "Authentication required", 401)
@@ -134,6 +138,10 @@ def require_admin(f):
     
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Skip authentication for OPTIONS requests (CORS preflight)
+        if request.method == "OPTIONS":
+            return f(*args, **kwargs)
+        
         # First check authentication
         user_id, error = get_authenticated_user_id()
         if not user_id:
