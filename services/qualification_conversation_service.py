@@ -231,12 +231,29 @@ def handle_conversation_turn(
     # Get conversation history
     conversation_turns = get_conversation_turns(interaction_id, limit=20)
     
+    # CRITICAL: After applying updates, refresh existing_role if it was just updated
+    # This ensures we use the detected role in subsequent turns
+    if user_id:
+        try:
+            role_resp = supabase_client.table("role_assignments")\
+                .select("role")\
+                .eq("user_id", user_id)\
+                .order("confidence", desc=True)\
+                .limit(1)\
+                .execute()
+            
+            if role_resp.data:
+                existing_role = role_resp.data[0].get("role")
+                print(f"🔄 Refreshed existing_role from DB: {existing_role}")
+        except Exception as e:
+            print(f"⚠️ Could not refresh role: {e}")
+    
     # Generate next assistant response using OpenAI
     ai_response = generate_qualification_response(
         conversation_turns=conversation_turns,
         signup_mode=signup_mode,
         existing_profile=existing_profile,
-        existing_role=existing_role
+        existing_role=existing_role  # Use refreshed role if available
     )
     
     assistant_text = ai_response.get("assistant_text", "I didn't catch that. Could you repeat?")
@@ -252,6 +269,13 @@ def handle_conversation_turn(
             interaction_id=interaction_id
         )
         print(f"📝 Applied DB updates: {apply_results}")
+        
+        # CRITICAL: If role was just updated, use it for subsequent turns
+        # This prevents the system from switching flows mid-conversation
+        role_updates = extracted_updates.get("role_assignments", {})
+        if role_updates.get("role") and role_updates.get("role") in ("talent", "hirer"):
+            existing_role = role_updates.get("role")
+            print(f"🎯 Role updated in this turn: {existing_role} - will use this for remaining conversation")
     
     # Save assistant turn
     turn_sequence = get_next_turn_sequence(interaction_id)
