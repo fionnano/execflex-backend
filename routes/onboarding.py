@@ -3,13 +3,14 @@ Onboarding service routes for outbound call management.
 Handles onboarding calls triggered after user signup.
 """
 import os
+import requests
 from flask import request, Response, jsonify
 from routes import onboarding_bp
 from utils.response_helpers import ok, bad
 from utils.auth_helpers import require_admin, get_authenticated_user_id
 from services.onboarding_service import initialize_user_onboarding, process_queued_jobs
-from config.clients import twilio_client
-from config.app_config import TWILIO_PHONE_NUMBER
+from config.clients import twilio_client, supabase_client
+from config.app_config import TWILIO_PHONE_NUMBER, SUPABASE_URL, SUPABASE_KEY
 
 
 @onboarding_bp.route("/enqueue", methods=["POST"])
@@ -50,6 +51,175 @@ def enqueue_call():
         traceback.print_exc()
         print(f"⚠️ Warning: Failed to initialize onboarding: {str(e)}")
         return ok({"status": "onboarding_failed", "error": str(e)})
+
+
+@onboarding_bp.route("/delete-user", methods=["POST"])
+@require_admin
+def delete_user():
+    """
+    Delete a user and all associated data (admin-only).
+    
+    **ADMIN ONLY**: This endpoint requires authentication AND admin role.
+    Performs comprehensive cleanup of all user-related data including:
+    - outbound_call_jobs, thread_participants, threads, organization_members
+    - opportunities, match_suggestions, channel_identities
+    - role_assignments, user_preferences, people_profiles
+    - organizations (sets created_by_user_id to NULL)
+    - auth.users (via Supabase Admin API)
+    
+    Note: Interactions are append-only (event sourcing) and remain as historical records.
+    
+    Headers:
+        Authorization: Bearer <supabase_jwt_token>
+    
+    Body (JSON, required): { "user_id": "uuid" } OR { "phone": "+1234567890" }
+        - user_id: UUID of the user to delete
+        - phone: Phone number (E.164 format) to find and delete user by
+    
+    Returns:
+        JSON response with deletion status and details
+    """
+    try:
+        # Get authenticated admin user (for logging/audit)
+        admin_user_id = request.environ.get('authenticated_user_id')
+        
+        data = request.get_json(silent=True) or {}
+        target_user_id = data.get("user_id")
+        phone = data.get("phone")
+        
+        if not target_user_id and not phone:
+            return bad("Either user_id or phone is required", 400)
+        
+        # If phone provided, find user_id first
+        if phone and not target_user_id:
+            print(f"🔐 Admin {admin_user_id} searching for user by phone: {phone}")
+            
+            # Search for user by phone in auth.users (requires admin API)
+            headers = {
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json"
+            }
+            
+            list_url = f"{SUPABASE_URL}/auth/v1/admin/users"
+            response = requests.get(list_url, headers=headers, params={"phone": phone})
+            
+            if response.status_code != 200:
+                return bad(f"Error querying auth users: {response.status_code}", 500)
+            
+            users = response.json().get("users", [])
+            if not users:
+                return bad(f"User with phone {phone} not found", 404)
+            
+            target_user_id = users[0]["id"]
+            print(f"  Found user ID: {target_user_id}")
+        
+        if not target_user_id:
+            return bad("Could not determine user_id", 400)
+        
+        print(f"🔐 Admin {admin_user_id} deleting user {target_user_id}")
+        
+        deletion_results = {
+            "user_id": target_user_id,
+            "deleted_tables": [],
+            "errors": [],
+            "warnings": []
+        }
+        
+        # Delete from related tables (order matters due to foreign keys)
+        tables_to_delete = [
+            ("outbound_call_jobs", "user_id"),
+            ("thread_participants", "user_id"),
+            ("organization_members", "user_id"),
+            ("opportunities", "created_by_user_id"),
+            ("match_suggestions", "suggested_user_id"),
+            ("channel_identities", "user_id"),
+            ("role_assignments", "user_id"),
+            ("user_preferences", "user_id"),
+            ("people_profiles", "user_id"),
+        ]
+        
+        for table_name, column_name in tables_to_delete:
+            try:
+                result = supabase_client.table(table_name).delete().eq(column_name, target_user_id).execute()
+                deletion_results["deleted_tables"].append(table_name)
+                print(f"  ✓ Deleted {table_name}")
+            except Exception as e:
+                error_msg = str(e)
+                if "does not exist" in error_msg.lower():
+                    pass  # Table doesn't exist, skip silently
+                else:
+                    deletion_results["errors"].append(f"{table_name}: {error_msg}")
+                    print(f"  ⚠️  Error deleting {table_name}: {e}")
+        
+        # Mark threads as inactive (interactions are append-only)
+        try:
+            supabase_client.table("threads").update({"active": False}).or_(
+                f"primary_user_id.eq.{target_user_id},owner_user_id.eq.{target_user_id}"
+            ).execute()
+            deletion_results["deleted_tables"].append("threads (marked inactive)")
+            print("  ✓ Marked threads as inactive")
+        except Exception as e:
+            deletion_results["warnings"].append(f"threads: {e}")
+            print(f"  ⚠️  Error updating threads: {e}")
+        
+        deletion_results["warnings"].append("Interactions are append-only and remain as historical records")
+        print("  ℹ️  Interactions are append-only and remain as historical records")
+        
+        # Update organizations (set created_by_user_id to NULL)
+        try:
+            supabase_client.table("organizations").update({"created_by_user_id": None}).eq(
+                "created_by_user_id", target_user_id
+            ).execute()
+            deletion_results["deleted_tables"].append("organizations (updated)")
+            print("  ✓ Updated organizations (set created_by_user_id to NULL)")
+        except Exception as e:
+            deletion_results["warnings"].append(f"organizations: {e}")
+            print(f"  ⚠️  Error updating organizations: {e}")
+        
+        # Finally, delete auth user (requires admin API)
+        print("\nDeleting auth user...")
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        }
+        delete_url = f"{SUPABASE_URL}/auth/v1/admin/users/{target_user_id}"
+        response = requests.delete(delete_url, headers=headers)
+        
+        if response.status_code == 200:
+            deletion_results["auth_user_deleted"] = True
+            print("  ✓ Deleted auth user")
+        elif response.status_code == 404:
+            deletion_results["auth_user_deleted"] = False
+            deletion_results["warnings"].append("Auth user not found (may have been already deleted)")
+            print("  ⚠️  Auth user not found (may have been already deleted)")
+        else:
+            error_response = response.json() if response.text else {}
+            error_msg = error_response.get("message", response.text)
+            
+            if "append-only" in error_msg.lower() or "interactions" in error_msg.lower():
+                deletion_results["auth_user_deleted"] = False
+                deletion_results["warnings"].append(
+                    "Cannot delete auth user: interactions are append-only (event sourcing). "
+                    "This is expected - interactions remain as historical records."
+                )
+                print("  ⚠️  Cannot delete auth user: interactions are append-only")
+            else:
+                deletion_results["auth_user_deleted"] = False
+                deletion_results["errors"].append(f"Auth user deletion failed: {response.status_code} - {error_msg}")
+                print(f"  ⚠️  Could not delete auth user: {response.status_code} - {error_msg}")
+        
+        deletion_results["success"] = len(deletion_results["errors"]) == 0
+        deletion_results["message"] = f"User {target_user_id} deletion completed"
+        
+        return ok(deletion_results)
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error deleting user: {e}")
+        return bad(f"Error deleting user: {str(e)}", 500)
 
 
 # DEPRECATED ENDPOINTS REMOVED:
