@@ -289,6 +289,115 @@ def get_conversations():
         return bad(f"Failed to fetch conversations: {str(e)}", 500)
 
 
+@onboarding_bp.route("/list-users", methods=["GET"])
+@require_admin
+def list_users():
+    """
+    Get list of all users with their roles (admin-only).
+    
+    **ADMIN ONLY**: This endpoint requires authentication AND admin role.
+    Returns all users from auth.users with their associated roles from role_assignments.
+    
+    Headers:
+        Authorization: Bearer <supabase_jwt_token>
+    
+    Query Parameters (optional):
+        - limit: Limit number of results (default: 100)
+        - offset: Pagination offset (default: 0)
+    
+    Returns:
+        {
+            "users": [
+                {
+                    "id": "uuid",
+                    "email": "user@example.com",
+                    "phone": "+1234567890",
+                    "created_at": "2024-12-15T10:30:00Z",
+                    "last_sign_in_at": "2024-12-16T10:30:00Z",
+                    "roles": ["hirer", "admin"]
+                },
+                ...
+            ],
+            "total": 50
+        }
+    """
+    try:
+        # Get query parameters
+        limit = int(request.args.get("limit", 100))
+        offset = int(request.args.get("offset", 0))
+        
+        # Use Supabase Admin API to list users
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        list_url = f"{SUPABASE_URL}/auth/v1/admin/users"
+        params = {"per_page": limit, "page": (offset // limit) + 1 if limit > 0 else 1}
+        
+        response = requests.get(list_url, headers=headers, params=params)
+        
+        if response.status_code != 200:
+            return bad(f"Error querying auth users: {response.status_code}", 500)
+        
+        auth_users = response.json().get("users", [])
+        
+        # Get all user IDs to fetch roles
+        user_ids = [user["id"] for user in auth_users]
+        
+        # Fetch roles for all users
+        roles_map = {}
+        if user_ids:
+            try:
+                # Try batch fetch with .in_()
+                roles_result = supabase_client.table("role_assignments")\
+                    .select("user_id, role")\
+                    .in_("user_id", user_ids)\
+                    .execute()
+                
+                for role_assignment in (roles_result.data or []):
+                    user_id = role_assignment["user_id"]
+                    if user_id not in roles_map:
+                        roles_map[user_id] = []
+                    roles_map[user_id].append(role_assignment["role"])
+            except AttributeError:
+                # Fallback: query individually
+                for user_id in user_ids:
+                    try:
+                        role_result = supabase_client.table("role_assignments")\
+                            .select("role")\
+                            .eq("user_id", user_id)\
+                            .execute()
+                        if role_result.data:
+                            roles_map[user_id] = [r["role"] for r in role_result.data]
+                    except Exception:
+                        continue
+        
+        # Transform data to match frontend format
+        users = []
+        for auth_user in auth_users:
+            user_id = auth_user["id"]
+            users.append({
+                "id": user_id,
+                "email": auth_user.get("email"),
+                "phone": auth_user.get("phone"),
+                "created_at": auth_user.get("created_at"),
+                "last_sign_in_at": auth_user.get("last_sign_in_at"),
+                "roles": roles_map.get(user_id, [])
+            })
+        
+        return ok({
+            "users": users,
+            "total": len(users)  # Note: Supabase Admin API doesn't return total count easily
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error listing users: {str(e)}")
+        return bad(f"Failed to list users: {str(e)}", 500)
+
+
 @onboarding_bp.route("/delete-user", methods=["POST"])
 @require_admin
 def delete_user():
