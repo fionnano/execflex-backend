@@ -149,7 +149,7 @@ def say_and_gather(resp: VoiceResponse, prompt: str, next_step: str, call_sid: s
         full_url = request.url_root[:-1] + tts_path  # absolute URL for Twilio to fetch
         gather = Gather(
             input="speech",
-            action=url_for("voice.voice_capture", step=next_step, _external=True),
+            action=url_for("voice.voice_inbound", step=next_step, _external=True),
             method="POST",
             timeout=10,
             speech_timeout="auto",
@@ -162,7 +162,7 @@ def say_and_gather(resp: VoiceResponse, prompt: str, next_step: str, call_sid: s
         if retries == 0:
             # Repeat once to aid recognition & reduce dead-ends
             resp.play(full_url)
-            resp.redirect(url_for("voice.voice_capture", step=next_step, _external=True))
+            resp.redirect(url_for("voice.voice_inbound", step=next_step, _external=True))
             state["_retries"][next_step] = 1
         else:
             resp.say("Moving forward with a default option.")
@@ -364,6 +364,8 @@ def handle_conversation_step(step: str, speech: str, call_sid: str) -> Response:
         return Response(str(resp), mimetype="text/xml")
 
     resp.say("Sorry, I didn't catch that. Let's try again quickly.")
-    resp.redirect(url_for("voice.voice_intro", _external=True))
+    # TODO: Update to use inbound endpoint when implemented
+    resp.say("Please use the web interface for now.", voice="alice", language="en-GB")
+    resp.hangup()
     return Response(str(resp), mimetype="text/xml")
 

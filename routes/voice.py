@@ -1,88 +1,58 @@
 """
-Voice/telephony routes for Ai-dan.
+Voice/telephony routes for Ai-dan (outbound qualification calls).
+
+This module handles Twilio webhook endpoints for voice conversations:
+- /voice/qualify: Main endpoint for outbound qualification calls (handles entire conversation)
+- /voice/inbound: Turn handler for future inbound calls
+- /voice/status: Status callback webhook for all calls
+
+Architecture:
+- Outbound calls: Worker creates call → Twilio calls /voice/qualify → Conversation service handles turns
+- Status updates: Twilio automatically calls /voice/status on status changes
+- All conversation logic is in services/qualification_conversation_service.py
 """
 import traceback
-from flask import request, Response, jsonify
-from flask_cors import cross_origin
+from flask import request, Response
 from routes import voice_bp
-from utils.response_helpers import ok, bad
-from utils.rate_limiting import get_limiter
-from config.clients import twilio_client, VoiceResponse
-from config.app_config import TWILIO_PHONE_NUMBER
-from services.voice_session_service import init_session
-from services.voice_conversation_service import say_and_gather, handle_conversation_step
+from config.clients import VoiceResponse
 from services.qualification_conversation_service import handle_conversation_turn
-from utils.twilio_helpers import require_twilio_signature
-
-
-@voice_bp.route("/intro", methods=["POST", "GET"])
-def voice_intro():
-    """
-    Unified entry point for Twilio voice calls.
-    Called by Twilio when a call is answered.
-    
-    Routes to appropriate conversation handler based on call_type:
-    - onboarding: Qualification conversation for new signups
-    - inbound: Inbound calls from users (legacy/fallback)
-    
-    Query params:
-        job_id: Optional job ID for outbound calls
-        call_type: 'onboarding' | 'inbound' (defaults to 'inbound' for backward compatibility)
-    """
-    if not VoiceResponse:
-        return Response("Voice features not available", mimetype="text/plain"), 503
-
-    call_sid = request.values.get("CallSid") or "unknown"
-    job_id = request.values.get("job_id") or request.args.get("job_id")
-    call_type = request.values.get("call_type") or request.args.get("call_type", "inbound")
-    
-    # Route based on call type
-    if call_type == "onboarding":
-        # Qualification conversation for onboarding calls
-        # Delegate to conversation service (opening turn, no user speech)
-        resp, error = handle_conversation_turn(
-            call_sid=call_sid,
-            user_speech=None,  # Opening turn
-            job_id=job_id,
-            request_url_root=request.url_root
-        )
-        
-        if error:
-            print(f"⚠️ Error in onboarding intro: {error}")
-            resp = VoiceResponse()
-            resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
-            resp.hangup()
-        
-        return Response(str(resp), mimetype="text/xml")
-    
-    else:
-        # Legacy inbound call flow (for backward compatibility)
-        init_session(call_sid)
-        resp = VoiceResponse()
-        prompt = "Hi, I'm Ai-dan, your advisor at ExecFlex. Let's keep this simple. Are you hiring for a role, or are you a candidate looking for opportunities?"
-        return Response(str(say_and_gather(resp, prompt, "user_type", call_sid)), mimetype="text/xml")
 
 
 @voice_bp.route("/qualify", methods=["POST", "GET"])
 def voice_qualify():
     """
-    Outbound qualification call endpoint.
-    Called by Twilio when an outbound qualification call is answered.
+    Outbound qualification call endpoint - PRIMARY ENDPOINT FOR QUALIFICATION CALLS.
     
-    This endpoint handles all logic for qualification calls:
-    - OpenAI reasoning (with job seeker or talent seeker system prompts)
-    - Storing interaction + turns in database
-    - Converting text to speech with ElevenLabs
-    - Incremental DB updates (people_profiles, organizations, role_assignments)
+    This is the main entry point for all outbound qualification conversations.
+    Called by Twilio when:
+    1. Initial call: User answers the phone → Returns opening message + Gather
+    2. Subsequent turns: After Gather collects user speech → Processes response, calls OpenAI, returns next message
     
-    Flow:
-    1. Initial call: Twilio calls this endpoint when user answers → Returns opening message + Gather
-    2. Subsequent turns: Twilio calls this endpoint after Gather → Processes user speech, calls OpenAI, returns next message
+    Conversation Flow:
+    - Opening turn: No SpeechResult → generate_opening_message() → TTS → TwiML with Gather
+    - User turn: SpeechResult present → save user turn → get conversation history → OpenAI → extract data → save assistant turn → TTS → TwiML
+    - Completion: When is_complete=True → play final message → hangup
+    
+    All conversation logic is delegated to:
+    - services/qualification_conversation_service.py: Turn handling, opening messages, closing
+    - services/qualification_agent_service.py: OpenAI prompts, question sequences, data extraction
+    - services/qualification_turn_service.py: Database operations (saving turns, applying updates)
     
     Query params:
-        job_id: Job ID from outbound_call_jobs table (required)
+        job_id: Job ID from outbound_call_jobs table (required) - links call to user/signup
+        SpeechResult: User's spoken response (for subsequent turns, empty on initial call)
+        CallSid: Twilio call identifier (automatically provided)
+        Confidence: Speech recognition confidence score
     
-    Note: Signature verification is handled inside to allow better error handling.
+    Security:
+    - Twilio signature verification (bypasses in dev mode)
+    - Returns 403 if signature invalid in production
+    
+    Returns:
+        TwiML Response (text/xml) with either:
+        - Opening message + Gather (initial call)
+        - Next question + Gather (subsequent turns)
+        - Final message + Hangup (conversation complete)
     """
     if not VoiceResponse:
         return Response("Voice features not available", mimetype="text/plain"), 503
@@ -164,44 +134,50 @@ def voice_qualify():
 @voice_bp.route("/inbound", methods=["POST", "GET"])
 def voice_inbound():
     """
-    Turn handler for inbound voice conversations.
-    Called by Twilio after Gather collects user speech during inbound calls.
+    Turn handler for inbound voice conversations (future use).
     
-    This endpoint is for inbound calls only. For outbound qualification calls,
-    see /voice/qualify.
+    Called by Twilio after Gather collects user speech during inbound calls.
+    This endpoint is reserved for future inbound call functionality.
+    
+    For outbound qualification calls, see /voice/qualify.
     """
     if not VoiceResponse:
         return Response("Voice features not available", mimetype="text/plain"), 503
     
-    call_sid = request.values.get("CallSid") or "unknown"
-    user_speech = (request.values.get("SpeechResult") or "").strip()
-    speech_confidence = request.values.get("Confidence", "0")
-    step = request.args.get("step", "user_type")
-    
-    print(f"DEBUG SpeechResult (step={step}): '{user_speech}' (confidence={speech_confidence})")
-    return handle_conversation_step(step, user_speech, call_sid)
-
-
-@voice_bp.route("/capture", methods=["POST", "GET"])
-def voice_capture():
-    """
-    Legacy endpoint for inbound call conversation flow.
-    Kept for backward compatibility.
-    """
-    call_sid = request.values.get("CallSid") or "unknown"
-    step = request.args.get("step", "user_type")
-    speech = (request.values.get("SpeechResult") or "").strip()
-    confidence = request.values.get("Confidence", "n/a")
-    print(f"DEBUG SpeechResult (step={step}): '{speech}' (confidence={confidence})")
-
-    return handle_conversation_step(step, speech, call_sid)
+    # TODO: Implement inbound call handling when needed
+    resp = VoiceResponse()
+    resp.say("Inbound calls are not yet implemented. Please use the web interface.", voice="alice", language="en-GB")
+    resp.hangup()
+    return Response(str(resp), mimetype="text/xml")
 
 
 @voice_bp.route("/status", methods=["POST", "GET"])
 def voice_status():
     """
-    Unified status callback webhook for all Twilio voice calls.
-    Updates job and interaction records with call status.
+    Status callback webhook for all Twilio voice calls.
+    
+    Called automatically by Twilio when call status changes:
+    - initiated, ringing, answered, in-progress, completed, failed, busy, no-answer, canceled
+    
+    Updates:
+    - outbound_call_jobs table: Sets job status and stores call metadata (duration, numbers, etc.)
+    - Note: interactions table is append-only, so status is stored in job artifacts
+    
+    Status Mapping:
+    - completed → succeeded
+    - failed, busy, no-answer, canceled → failed
+    - Other statuses → keep existing job status
+    
+    Security:
+    - Twilio signature verification (bypasses in dev mode)
+    - Returns 200 OK even on errors (to prevent Twilio retries)
+    
+    Query params (from Twilio):
+        CallSid: Twilio call identifier
+        CallStatus: Current call status
+        CallDuration: Call duration in seconds (only for completed calls)
+        From: Caller phone number
+        To: Called phone number
     """
     # Verify Twilio signature (RequestValidator handles request.url automatically)
     from utils.twilio_helpers import verify_twilio_signature
