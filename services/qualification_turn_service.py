@@ -249,7 +249,7 @@ def apply_extracted_updates(
             profile_updates = extracted_updates["people_profiles"]
             # Only update non-null fields
             update_data = {}
-            for key in ["first_name", "last_name", "headline"]:
+            for key in ["first_name", "last_name", "headline", "location"]:
                 if key in profile_updates and profile_updates[key] is not None:
                     update_data[key] = profile_updates[key]
             

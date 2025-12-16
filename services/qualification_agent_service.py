@@ -40,7 +40,8 @@ You MUST respond with valid JSON only, no other text. Use this exact structure:
     "people_profiles": {
       "first_name": "value or null",
       "last_name": "value or null",
-      "headline": "value or null"
+      "headline": "value or null",
+      "location": "value or null (e.g., 'UK', 'Ireland', 'Remote', 'Hybrid')"
     },
     "role_assignments": {
       "role": "talent",
@@ -93,7 +94,8 @@ You MUST respond with valid JSON only, no other text. Use this exact structure:
     "people_profiles": {
       "first_name": "value or null",
       "last_name": "value or null",
-      "headline": "value or null"
+      "headline": "value or null",
+      "location": "value or null (e.g., 'UK', 'Ireland', 'Remote', 'Hybrid')"
     },
     "role_assignments": {
       "role": "hirer",
