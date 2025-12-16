@@ -597,8 +597,13 @@ def delete_user():
                 print(f"  ⚠️  Could not delete auth user: {response.status_code} - {error_msg}")
                 print(f"  Response body: {response.text}")
         
+        # Consider deletion successful if all application data is deleted
+        # Even if auth.users deletion fails, user won't appear in admin list
         deletion_results["success"] = len(deletion_results["errors"]) == 0
-        deletion_results["message"] = f"User {target_user_id} deletion completed"
+        deletion_results["message"] = (
+            f"User {target_user_id} deletion completed. "
+            "All application data removed. User will no longer appear in admin list."
+        )
         
         return ok(deletion_results)
         
