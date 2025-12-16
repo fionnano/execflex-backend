@@ -130,6 +130,165 @@ def set_admin():
         return bad(f"Error setting admin role: {str(e)}", 500)
 
 
+@onboarding_bp.route("/conversations", methods=["GET"])
+@require_admin
+def get_conversations():
+    """
+    Get list of outbound qualifying conversations (admin-only).
+    
+    **ADMIN ONLY**: This endpoint requires authentication AND admin role.
+    Returns all outbound call jobs with user information and conversation summaries.
+    
+    Headers:
+        Authorization: Bearer <supabase_jwt_token>
+    
+    Query Parameters (optional):
+        - status: Filter by status (queued, running, succeeded, failed)
+        - limit: Limit number of results (default: 100)
+        - offset: Pagination offset (default: 0)
+    
+    Returns:
+        {
+            "conversations": [
+                {
+                    "id": "uuid",
+                    "phone_e164": "+447700900001",
+                    "status": "completed",
+                    "attempts": 1,
+                    "created_at": "2024-12-15T10:30:00Z",
+                    "updated_at": "2024-12-15T10:35:00Z",
+                    "next_run_at": null,
+                    "last_error": null,
+                    "twilio_call_sid": "CA1234567890abcdef",
+                    "summary": "Candidate interested in CFO roles...",
+                    "user_name": "Sarah Mitchell"
+                },
+                ...
+            ],
+            "total": 50
+        }
+    """
+    try:
+        # Get query parameters
+        status_filter = request.args.get("status")
+        limit = int(request.args.get("limit", 100))
+        offset = int(request.args.get("offset", 0))
+        
+        # Build base query
+        query = supabase_client.table("outbound_call_jobs").select(
+            "id, phone_e164, status, attempts, created_at, updated_at, next_run_at, last_error, twilio_call_sid, interaction_id, user_id",
+            count="exact"
+        )
+        
+        # Apply filters
+        if status_filter:
+            # Map frontend status to database status
+            status_map = {
+                "pending": "queued",
+                "in_progress": "running",
+                "completed": "succeeded",
+                "failed": "failed"
+            }
+            db_status = status_map.get(status_filter, status_filter)
+            query = query.eq("status", db_status)
+        
+        # Apply pagination and ordering
+        query = query.order("created_at", desc=True).limit(limit).offset(offset)
+        
+        # Execute query
+        result = query.execute()
+        
+        # Get all user_ids and interaction_ids for batch fetching
+        user_ids = [job["user_id"] for job in result.data if job.get("user_id")]
+        interaction_ids = [job["interaction_id"] for job in result.data if job.get("interaction_id")]
+        
+        # Batch fetch user profiles (query each user individually if .in_() doesn't work)
+        profiles_map = {}
+        if user_ids:
+            try:
+                # Try using .in_() method (Supabase Python client supports this)
+                profiles_result = supabase_client.table("people_profiles").select("user_id, first_name, last_name").in_("user_id", user_ids).execute()
+                for profile in (profiles_result.data or []):
+                    profiles_map[profile["user_id"]] = profile
+            except AttributeError:
+                # Fallback: query individually
+                for user_id in user_ids:
+                    try:
+                        profile_result = supabase_client.table("people_profiles").select("user_id, first_name, last_name").eq("user_id", user_id).limit(1).execute()
+                        if profile_result.data:
+                            profiles_map[user_id] = profile_result.data[0]
+                    except Exception:
+                        continue
+        
+        # Batch fetch interaction summaries
+        summaries_map = {}
+        if interaction_ids:
+            try:
+                # Try using .in_() method
+                interactions_result = supabase_client.table("interactions").select("id, summary_text").in_("id", interaction_ids).execute()
+                for interaction in (interactions_result.data or []):
+                    summaries_map[interaction["id"]] = interaction.get("summary_text")
+            except AttributeError:
+                # Fallback: query individually
+                for interaction_id in interaction_ids:
+                    try:
+                        interaction_result = supabase_client.table("interactions").select("id, summary_text").eq("id", interaction_id).limit(1).execute()
+                        if interaction_result.data:
+                            summaries_map[interaction_id] = interaction_result.data[0].get("summary_text")
+                    except Exception:
+                        continue
+        
+        # Transform data to match frontend format
+        conversations = []
+        for job in result.data:
+            # Get user name from people_profiles
+            user_name = None
+            if job.get("user_id") and job["user_id"] in profiles_map:
+                profile = profiles_map[job["user_id"]]
+                first_name = profile.get("first_name") or ""
+                last_name = profile.get("last_name") or ""
+                if first_name or last_name:
+                    user_name = f"{first_name} {last_name}".strip()
+            
+            # Get summary from interactions
+            summary = None
+            if job.get("interaction_id") and job["interaction_id"] in summaries_map:
+                summary = summaries_map[job["interaction_id"]]
+            
+            # Map database status to frontend status
+            status_map = {
+                "queued": "pending",
+                "running": "in_progress",
+                "succeeded": "completed",
+                "failed": "failed"
+            }
+            frontend_status = status_map.get(job["status"], job["status"])
+            
+            conversations.append({
+                "id": job["id"],
+                "phone_e164": job["phone_e164"],
+                "status": frontend_status,
+                "attempts": job["attempts"],
+                "created_at": job["created_at"],
+                "updated_at": job["updated_at"],
+                "next_run_at": job.get("next_run_at"),
+                "last_error": job.get("last_error"),
+                "twilio_call_sid": job.get("twilio_call_sid"),
+                "summary": summary,
+                "user_name": user_name
+            })
+        
+        return ok({
+            "conversations": conversations,
+            "total": result.count or len(conversations)
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error fetching conversations: {str(e)}")
+        return bad(f"Failed to fetch conversations: {str(e)}", 500)
+
+
 @onboarding_bp.route("/delete-user", methods=["POST"])
 @require_admin
 def delete_user():
