@@ -249,9 +249,23 @@ def apply_extracted_updates(
             profile_updates = extracted_updates["people_profiles"]
             # Only update non-null fields
             update_data = {}
-            for key in ["first_name", "last_name", "headline", "location"]:
+            for key in ["first_name", "last_name", "headline", "location", "availability_type"]:
                 if key in profile_updates and profile_updates[key] is not None:
                     update_data[key] = profile_updates[key]
+            
+            # Handle industries (array field)
+            if "industries" in profile_updates and profile_updates["industries"] is not None:
+                industries_value = profile_updates["industries"]
+                # Convert single string to array, or use array as-is
+                if isinstance(industries_value, str):
+                    # Single industry string - convert to array
+                    update_data["industries"] = [industries_value]
+                elif isinstance(industries_value, list):
+                    # Already an array
+                    update_data["industries"] = industries_value
+                else:
+                    # Try to convert to array
+                    update_data["industries"] = [str(industries_value)]
             
             if update_data:
                 update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
