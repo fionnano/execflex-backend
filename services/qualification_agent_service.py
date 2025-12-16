@@ -94,15 +94,23 @@ You MUST respond with valid JSON only, no other text. Use this exact structure:
     "people_profiles": {
       "first_name": "value or null",
       "last_name": "value or null",
-      "headline": "value or null",
-      "location": "value or null (e.g., 'UK', 'Ireland', 'Remote', 'Hybrid')"
+      "headline": "value or null (role they're hiring for, e.g., 'CFO', 'CEO', 'CTO')",
+      "location": "value or null (e.g., 'UK', 'Ireland', 'Remote', 'Hybrid')",
+      "industries": "value or null (single industry string, e.g., 'fintech', 'SaaS', 'healthcare')"
     },
     "role_assignments": {
       "role": "hirer",
       "confidence": 0.0-1.0
     },
     "organizations": {
-      "name": "value or null"
+      "name": "value or null",
+      "industry": "value or null (single industry string, e.g., 'fintech', 'SaaS', 'healthcare')",
+      "location": "value or null (e.g., 'UK', 'Ireland', 'Remote', 'Hybrid')"
+    },
+    "role_postings": {
+      "title": "value or null (role they're hiring for, e.g., 'CFO', 'CEO', 'CTO')",
+      "location": "value or null (e.g., 'UK', 'Ireland', 'Remote', 'Hybrid')",
+      "engagement_type": "value or null ('full_time', 'fractional', 'part_time', or 'contract')"
     }
   },
   "next_state": "name|company|role|industry|location|engagement|complete",
