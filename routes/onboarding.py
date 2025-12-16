@@ -53,6 +53,83 @@ def enqueue_call():
         return ok({"status": "onboarding_failed", "error": str(e)})
 
 
+@onboarding_bp.route("/set-admin", methods=["POST"])
+@require_admin
+def set_admin():
+    """
+    Set a user as admin (admin-only).
+    
+    **ADMIN ONLY**: This endpoint requires authentication AND admin role.
+    Adds 'admin' role to the specified user in role_assignments table.
+    
+    Headers:
+        Authorization: Bearer <supabase_jwt_token>
+    
+    Body (JSON, required): { "user_id": "uuid" }
+        - The user_id to grant admin role to
+    """
+    try:
+        # Get authenticated admin user (for logging/audit)
+        admin_user_id = request.environ.get('authenticated_user_id')
+        
+        data = request.get_json(silent=True) or {}
+        target_user_id = data.get("user_id")
+        
+        if not target_user_id:
+            return bad("user_id is required", 400)
+        
+        print(f"🔐 Admin {admin_user_id} setting admin role for user {target_user_id}")
+        
+        # Check if user already has admin role
+        existing = supabase_client.table("role_assignments")\
+            .select("id")\
+            .eq("user_id", target_user_id)\
+            .eq("role", "admin")\
+            .limit(1)\
+            .execute()
+        
+        if existing.data and len(existing.data) > 0:
+            return ok({
+                "message": "User already has admin role",
+                "user_id": target_user_id,
+                "already_admin": True
+            })
+        
+        # Insert admin role assignment
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        
+        result = supabase_client.table("role_assignments")\
+            .insert({
+                "user_id": target_user_id,
+                "role": "admin",
+                "confidence": 1.0,
+                "evidence": {
+                    "source": "manual",
+                    "granted_by": admin_user_id,
+                    "granted_at": now_iso
+                },
+                "created_at": now_iso
+            })\
+            .execute()
+        
+        if result.data:
+            print(f"✅ Admin role granted to user {target_user_id}")
+            return ok({
+                "message": "Admin role granted successfully",
+                "user_id": target_user_id,
+                "role_assignment_id": result.data[0]["id"]
+            })
+        else:
+            return bad("Failed to grant admin role", 500)
+            
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error setting admin role: {e}")
+        return bad(f"Error setting admin role: {str(e)}", 500)
+
+
 @onboarding_bp.route("/delete-user", methods=["POST"])
 @require_admin
 def delete_user():

@@ -696,6 +696,217 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /onboarding/set-admin:
+    post:
+      tags:
+        - Onboarding
+      summary: Grant admin role to a user (admin-only)
+      description: |
+        Grant admin role to a user. This endpoint requires authentication AND admin role.
+        Adds 'admin' role to the specified user in role_assignments table.
+        
+        **Note:** If the user already has admin role, returns success without creating duplicate.
+        
+        **Requires:** JWT authentication + admin role in role_assignments table.
+      operationId: setAdmin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - user_id
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+                  description: UUID of the user to grant admin role to
+                  example: "123e4567-e89b-12d3-a456-426614174000"
+      responses:
+        '200':
+          description: Admin role granted (or already exists)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  message:
+                    type: string
+                    description: Status message
+                  user_id:
+                    type: string
+                    format: uuid
+                    description: ID of the user
+                  already_admin:
+                    type: boolean
+                    description: Whether user already had admin role
+                  role_assignment_id:
+                    type: string
+                    format: uuid
+                    nullable: true
+                    description: ID of the role assignment (if newly created)
+              example:
+                ok: true
+                message: "Admin role granted successfully"
+                user_id: "123e4567-e89b-12d3-a456-426614174000"
+                already_admin: false
+                role_assignment_id: "456e7890-e89b-12d3-a456-426614174001"
+        '400':
+          description: Missing user_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error granting admin role
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /onboarding/delete-user:
+    post:
+      tags:
+        - Onboarding
+      summary: Delete a user and all associated data (admin-only)
+      description: |
+        Delete a user and all associated data. This endpoint requires authentication AND admin role.
+        Performs comprehensive cleanup of all user-related data including:
+        - outbound_call_jobs, thread_participants, threads, organization_members
+        - opportunities, match_suggestions, channel_identities
+        - role_assignments, user_preferences, people_profiles
+        - organizations (sets created_by_user_id to NULL)
+        - auth.users (via Supabase Admin API)
+        
+        **Note:** Interactions are append-only (event sourcing) and remain as historical records.
+        This is by design - interactions serve as an immutable audit trail.
+        
+        **Requires:** JWT authentication + admin role in role_assignments table.
+      operationId: deleteUser
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: []
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+                  description: UUID of the user to delete
+                  example: "123e4567-e89b-12d3-a456-426614174000"
+                phone:
+                  type: string
+                  description: Phone number (E.164 format) to find and delete user by
+                  example: "+447463212071"
+              oneOf:
+                - required: [user_id]
+                - required: [phone]
+      responses:
+        '200':
+          description: User deletion completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  user_id:
+                    type: string
+                    format: uuid
+                    description: ID of the deleted user
+                  deleted_tables:
+                    type: array
+                    items:
+                      type: string
+                    description: List of tables that were successfully deleted from
+                  errors:
+                    type: array
+                    items:
+                      type: string
+                    description: List of errors encountered during deletion
+                  warnings:
+                    type: array
+                    items:
+                      type: string
+                    description: List of warnings (e.g., append-only interactions)
+                  auth_user_deleted:
+                    type: boolean
+                    description: Whether the auth user was successfully deleted
+                  success:
+                    type: boolean
+                    description: Whether deletion completed without errors
+                  message:
+                    type: string
+                    description: Status message
+              example:
+                ok: true
+                user_id: "123e4567-e89b-12d3-a456-426614174000"
+                deleted_tables:
+                  - "outbound_call_jobs"
+                  - "role_assignments"
+                  - "user_preferences"
+                  - "people_profiles"
+                  - "threads (marked inactive)"
+                  - "organizations (updated)"
+                errors: []
+                warnings:
+                  - "Interactions are append-only and remain as historical records"
+                auth_user_deleted: true
+                success: true
+                message: "User 123e4567-e89b-12d3-a456-426614174000 deletion completed"
+        '400':
+          description: Missing user_id or phone, or could not determine user_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Admin role required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: User not found (when searching by phone)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Error deleting user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /onboarding/process-jobs:
     post:
       tags:
