@@ -28,6 +28,34 @@ def initialize_user_onboarding(user_id: Optional[str] = None) -> Dict[str, Any]:
         raise RuntimeError("Supabase client not available")
     
     try:
+        # Fetch user's phone number from auth.users
+        # Use Supabase Admin API to get user phone
+        from config.app_config import SUPABASE_URL, SUPABASE_KEY
+        import requests
+        
+        user_phone = None
+        if user_id:
+            try:
+                headers = {
+                    "apikey": SUPABASE_KEY,
+                    "Authorization": f"Bearer {SUPABASE_KEY}",
+                    "Content-Type": "application/json"
+                }
+                user_url = f"{SUPABASE_URL}/auth/v1/admin/users/{user_id}"
+                user_resp = requests.get(user_url, headers=headers)
+                
+                if user_resp.status_code == 200:
+                    user_data = user_resp.json()
+                    user_phone = user_data.get("phone")
+                    if user_phone and not user_phone.startswith("+"):
+                        # Normalize to E.164 format
+                        user_phone = "+" + user_phone.replace(" ", "").replace("-", "")
+            except Exception as e:
+                print(f"⚠️ Warning: Could not fetch user phone: {e}")
+        
+        if not user_phone:
+            raise ValueError(f"User {user_id} does not have a phone number. Cannot create outbound call job.")
+        
         # Create dedupe key to prevent duplicate jobs within 1 hour
         dedupe_key = f"qualification-{user_id or 'test'}-{datetime.utcnow().strftime('%Y%m%d%H')}"
         
@@ -60,10 +88,10 @@ def initialize_user_onboarding(user_id: Optional[str] = None) -> Dict[str, Any]:
         interaction_resp = supabase_client.table("interactions").insert(interaction_data).execute()
         interaction_id = interaction_resp.data[0]["id"] if interaction_resp.data else None
         
-        # Create outbound call job
+        # Create outbound call job with user's actual phone number
         job_data = {
             "user_id": user_id,  # Set user_id for tracking
-            "phone_e164": ONBOARDING_DESTINATION_PHONE,
+            "phone_e164": user_phone,  # User's actual phone number from auth.users
             "status": "queued",
             "thread_id": thread_id,
             "interaction_id": interaction_id,

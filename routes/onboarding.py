@@ -296,7 +296,9 @@ def list_users():
     Get list of all users with their roles (admin-only).
     
     **ADMIN ONLY**: This endpoint requires authentication AND admin role.
-    Returns all users from auth.users with their associated roles from role_assignments.
+    Returns users from auth.users who have entries in people_profiles (i.e., have completed onboarding).
+    Only shows users who have profiles in our system, not just auth.users entries.
+    Includes their associated roles from role_assignments.
     
     Headers:
         Authorization: Bearer <supabase_jwt_token>
@@ -343,17 +345,50 @@ def list_users():
         
         auth_users = response.json().get("users", [])
         
-        # Get all user IDs to fetch roles
+        # Get all user IDs to check which ones have people_profiles
         user_ids = [user["id"] for user in auth_users]
         
-        # Fetch roles for all users
-        roles_map = {}
+        # Filter to only users who have entries in people_profiles
+        # This ensures we only show users who have actually completed onboarding
+        # or have profiles in our system (not just auth.users entries)
+        users_with_profiles = set()
         if user_ids:
+            try:
+                # Batch fetch user_ids that have people_profiles
+                profiles_result = supabase_client.table("people_profiles")\
+                    .select("user_id")\
+                    .in_("user_id", user_ids)\
+                    .execute()
+                
+                users_with_profiles = {profile["user_id"] for profile in (profiles_result.data or [])}
+            except AttributeError:
+                # Fallback: query individually
+                for user_id in user_ids:
+                    try:
+                        profile_result = supabase_client.table("people_profiles")\
+                            .select("user_id")\
+                            .eq("user_id", user_id)\
+                            .limit(1)\
+                            .execute()
+                        if profile_result.data:
+                            users_with_profiles.add(user_id)
+                    except Exception:
+                        continue
+        
+        # Filter auth_users to only those with profiles
+        filtered_auth_users = [user for user in auth_users if user["id"] in users_with_profiles]
+        
+        # Get all filtered user IDs to fetch roles
+        filtered_user_ids = [user["id"] for user in filtered_auth_users]
+        
+        # Fetch roles for filtered users
+        roles_map = {}
+        if filtered_user_ids:
             try:
                 # Try batch fetch with .in_()
                 roles_result = supabase_client.table("role_assignments")\
                     .select("user_id, role")\
-                    .in_("user_id", user_ids)\
+                    .in_("user_id", filtered_user_ids)\
                     .execute()
                 
                 for role_assignment in (roles_result.data or []):
@@ -363,7 +398,7 @@ def list_users():
                     roles_map[user_id].append(role_assignment["role"])
             except AttributeError:
                 # Fallback: query individually
-                for user_id in user_ids:
+                for user_id in filtered_user_ids:
                     try:
                         role_result = supabase_client.table("role_assignments")\
                             .select("role")\
@@ -376,7 +411,7 @@ def list_users():
         
         # Transform data to match frontend format
         users = []
-        for auth_user in auth_users:
+        for auth_user in filtered_auth_users:
             user_id = auth_user["id"]
             users.append({
                 "id": user_id,
