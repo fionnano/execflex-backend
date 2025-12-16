@@ -108,10 +108,10 @@ def generate_opening_message(signup_mode: Optional[str] = None) -> str:
             "Let's get started with a few quick questions about your hiring needs."
         )
     else:
-        # Unknown signup_mode - ask to clarify
+        # Unknown signup_mode - ask to clarify with clear distinction
         return (
             "Hello, this is ExecFlex. We're calling to welcome you and learn more about your needs. "
-            "Are you looking to hire executive talent, or are you an executive looking for opportunities?"
+            "Are you a company looking to hire executive talent, or are you an executive looking for job opportunities?"
         )
 
 
@@ -231,8 +231,8 @@ def handle_conversation_turn(
     # Get conversation history
     conversation_turns = get_conversation_turns(interaction_id, limit=20)
     
-    # CRITICAL: After applying updates, refresh existing_role if it was just updated
-    # This ensures we use the detected role in subsequent turns
+    # CRITICAL: Refresh existing_role from DB before generating response
+    # This ensures we use the most up-to-date role (in case it was updated in a previous turn)
     if user_id:
         try:
             role_resp = supabase_client.table("role_assignments")\
@@ -244,7 +244,7 @@ def handle_conversation_turn(
             
             if role_resp.data:
                 existing_role = role_resp.data[0].get("role")
-                print(f"🔄 Refreshed existing_role from DB: {existing_role}")
+                print(f"🔄 Using existing_role from DB: {existing_role}")
         except Exception as e:
             print(f"⚠️ Could not refresh role: {e}")
     
@@ -253,7 +253,7 @@ def handle_conversation_turn(
         conversation_turns=conversation_turns,
         signup_mode=signup_mode,
         existing_profile=existing_profile,
-        existing_role=existing_role  # Use refreshed role if available
+        existing_role=existing_role  # Use most recent role from DB
     )
     
     assistant_text = ai_response.get("assistant_text", "I didn't catch that. Could you repeat?")
@@ -270,12 +270,11 @@ def handle_conversation_turn(
         )
         print(f"📝 Applied DB updates: {apply_results}")
         
-        # CRITICAL: If role was just updated, use it for subsequent turns
-        # This prevents the system from switching flows mid-conversation
+        # CRITICAL: If role was just updated, log it for next turn
+        # The next turn will pick it up via the refresh above
         role_updates = extracted_updates.get("role_assignments", {})
         if role_updates.get("role") and role_updates.get("role") in ("talent", "hirer"):
-            existing_role = role_updates.get("role")
-            print(f"🎯 Role updated in this turn: {existing_role} - will use this for remaining conversation")
+            print(f"🎯 Role updated in this turn: {role_updates.get('role')} - will be used in next turn")
     
     # Save assistant turn
     turn_sequence = get_next_turn_sequence(interaction_id)

@@ -19,7 +19,7 @@ Your role is to conduct a qualification call with an executive who is looking fo
 **DO NOT ask about hiring, companies they're hiring for, or roles they need to fill.**
 **ONLY ask about: their own career goals, what roles they want, where they want to work.**
 
-**Question Sequence (TALENT FLOW ONLY):**
+**Have a normal conversation but here are some example questions:**
 1. Welcome and confirm they're looking for opportunities (if not already known)
 2. Ask for their first name
 3. Ask about their target role (e.g., "What type of executive role are you looking for? CFO, CEO, CTO?")
@@ -58,11 +58,15 @@ You MUST respond with valid JSON only, no other text. Use this exact structure:
   "confidence": 0.0-1.0
 }
 
-**Important:**
+**CRITICAL RULES:**
+- role_assignments.role MUST always be "talent" for this flow - NEVER set it to "hirer"
+- ONLY ask questions about the executive's own career goals and preferences
+- NEVER ask about hiring, companies they're hiring for, or roles they need to fill
+- If the user mentions hiring or looking for talent, they may have answered the wrong question - gently redirect them
+- Once you determine they are TALENT, stick to TALENT questions only
 - Only include fields in extracted_updates if you extracted actual values from the conversation
 - Set is_complete=true when all questions are answered
 - next_state should indicate what question comes next
-- role_assignments.role should always be "talent" for this flow
 """
 
 
@@ -128,12 +132,16 @@ You MUST respond with valid JSON only, no other text. Use this exact structure:
   "confidence": 0.0-1.0
 }
 
-**Important:**
+**CRITICAL RULES:**
+- role_assignments.role MUST always be "hirer" for this flow - NEVER set it to "talent"
+- ONLY ask questions about their hiring needs and company requirements
+- NEVER ask about opportunities they're looking for, roles they want, or where they want to work
+- If the user mentions looking for opportunities or jobs, they may have answered the wrong question - gently redirect them
+- Once you determine they are HIRER, stick to HIRER questions only
+- organizations.name should be set when company name is mentioned
 - Only include fields in extracted_updates if you extracted actual values from the conversation
 - Set is_complete=true when all questions are answered
 - next_state should indicate what question comes next
-- role_assignments.role should always be "hirer" for this flow
-- organizations.name should be set when company name is mentioned
 """
 
 
@@ -256,9 +264,14 @@ def generate_qualification_response(
     print(f"   - existing_role: {existing_role}")
     
     try:
-        # Determine which prompt to use based on signup_mode
-        # Normalize signup_mode
-        if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
+        # CRITICAL: Prioritize existing_role over signup_mode
+        # Once role is detected and saved, use it consistently
+        if existing_role in ("talent", "hirer"):
+            # Role already determined - use it
+            user_type = existing_role
+            base_prompt = TALENT_QUALIFICATION_PROMPT if existing_role == "talent" else HIRER_QUALIFICATION_PROMPT
+            print(f"✅ Using existing_role: {existing_role} (overrides signup_mode: {signup_mode})")
+        elif signup_mode in ("talent", "job_seeker", "executive", "candidate"):
             user_type = "talent"
             base_prompt = TALENT_QUALIFICATION_PROMPT
         elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
@@ -266,14 +279,8 @@ def generate_qualification_response(
             base_prompt = HIRER_QUALIFICATION_PROMPT
         else:
             # Unknown - need to detect from conversation or ask to clarify
-            # Check if we can infer from existing_role
-            if existing_role in ("talent", "hirer"):
-                user_type = existing_role
-                base_prompt = TALENT_QUALIFICATION_PROMPT if existing_role == "talent" else HIRER_QUALIFICATION_PROMPT
-            else:
-                # Truly unknown - use a prompt that can detect from conversation
-                user_type = "unknown"
-                base_prompt = TALENT_QUALIFICATION_PROMPT  # Default, but will detect from user response
+            user_type = "unknown"
+            base_prompt = TALENT_QUALIFICATION_PROMPT  # Default, but will detect from user response
         
         # Build context string
         context_parts = []
@@ -298,15 +305,18 @@ def generate_qualification_response(
         if user_type == "unknown":
             system_prompt += """
 
-**IMPORTANT - ROLE DETECTION:**
+**CRITICAL - ROLE DETECTION:**
 If the user says they are:
-- "looking for talent", "finding talent", "hiring", "need to hire", "looking to hire" → They are a HIRER
-- "looking for opportunities", "looking for a job", "seeking roles", "want opportunities" → They are TALENT
+- "looking for talent", "finding talent", "hiring", "need to hire", "looking to hire", "want to hire" → They are a HIRER
+- "looking for opportunities", "looking for a job", "seeking roles", "want opportunities", "looking for work" → They are TALENT
 
 When you detect their role from their response:
-1. Immediately set role_assignments.role to "hirer" or "talent" with high confidence (0.9+)
-2. Switch to the appropriate question flow and STAY in that flow
-3. NEVER mix questions from both flows - stick to one flow once determined"""
+1. IMMEDIATELY set role_assignments.role to "hirer" or "talent" with high confidence (0.9+)
+2. Switch to the appropriate question flow and STAY in that flow for the ENTIRE conversation
+3. NEVER mix questions from both flows - stick to one flow once determined
+4. If you detect they are HIRER, ask about: company name, role they're hiring for, industry, location, engagement type
+5. If you detect they are TALENT, ask about: their name, target role, industry interest, location preference, availability
+6. Once role is set, NEVER switch back - the role_assignments.role you set will be used for all future turns"""
         
         # Build messages
         messages = [
