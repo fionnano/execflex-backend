@@ -1,7 +1,7 @@
 """
 Text-to-Speech service using ElevenLabs with caching.
 """
-import uuid
+import hashlib
 import requests
 from pathlib import Path
 from config.app_config import ELEVEN_API_KEY, ELEVEN_VOICE_ID
@@ -14,9 +14,12 @@ TTS_CACHE = {}  # text -> path
 # Common prompts to pre-cache
 COMMON_PROMPTS = [
     "Hi, I'm Ai-dan, your advisor at ExecFlex. Let's keep this simple. Are you hiring for a role, or are you a candidate looking for opportunities?",
-    "Hello, this is ExecFlex. We're calling to welcome you and learn more about your needs. Are you looking to hire executive talent, or are you an executive looking for opportunities?",
-    "Hello, this is ExecFlex. We're calling to welcome you and help you find executive opportunities. Let's get started with a few quick questions.",
-    "Hello, this is ExecFlex. We're calling to welcome you and help you find executive talent. Let's get started with a few quick questions.",
+
+    # Outbound qualification opening messages (must match generate_opening_message())
+    "Hello, this is ExecFlex. We're calling to welcome you and learn more about your needs. Are you a company looking to hire executive talent, or are you an executive looking for job opportunities?",
+    "Hello, this is ExecFlex. We're calling to welcome you and help you find executive opportunities. Let's get started with a few quick questions about what you're looking for.",
+    "Hello, this is ExecFlex. We're calling to welcome you and help you find executive talent for your organization. Let's get started with a few quick questions about your hiring needs.",
+
     "Great, thanks. What's your first name?",
     "Nice to meet you. Which leadership role are you focused on — for example CFO, CEO, or CTO?",
     "Got it. And which industry are you most focused on — like fintech, insurance, or SaaS?",
@@ -32,10 +35,10 @@ COMMON_PROMPTS = [
 def generate_tts(text: str) -> str:
     """
     Generate TTS from ElevenLabs (or return cached).
-    
+
     Args:
         text: Text to convert to speech
-        
+
     Returns:
         Relative path to audio file, or empty string if generation failed
     """
@@ -46,8 +49,18 @@ def generate_tts(text: str) -> str:
         print("⚠️ ElevenLabs not configured. TTS unavailable.")
         return ""
 
-    filename = f"{uuid.uuid4()}.mp3"
+    # Deterministic filename so we can reuse mp3s across restarts
+    # (otherwise pre-cache regenerates everything every deploy).
+    cache_key = f"{ELEVEN_VOICE_ID}:{text}".encode("utf-8")
+    digest = hashlib.sha256(cache_key).hexdigest()[:32]
+    filename = f"{digest}.mp3"
     filepath = CACHE_DIR / filename
+
+    # If we already have the mp3 on disk, reuse it (no ElevenLabs call).
+    if filepath.exists():
+        rel_path = f"/static/audio/{filename}"
+        TTS_CACHE[text] = rel_path
+        return rel_path
 
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}"
     headers = {"xi-api-key": ELEVEN_API_KEY, "Content-Type": "application/json"}
@@ -95,12 +108,11 @@ def get_cache_size() -> int:
 def get_cached_audio_path(text: str) -> str:
     """
     Get the cached audio file path for a given text prompt.
-    
+
     Args:
         text: The text prompt to look up
-        
+
     Returns:
         Relative path to audio file (e.g., "/static/audio/{filename}.mp3") or empty string if not found
     """
     return TTS_CACHE.get(text, "")
-

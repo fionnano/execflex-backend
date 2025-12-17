@@ -99,19 +99,20 @@ def generate_opening_message(signup_mode: Optional[str] = None) -> str:
     # Normalize signup_mode
     if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
         return (
-            "Hello, this is ExecFlex. We're calling to welcome you and help you find executive opportunities. "
-            "Let's get started with a few quick questions about what you're looking for."
+            "Hi, this is A I Dan from ExecFlex. I noticed you just logged in looking for executive opportunities. "
+            "Have I caught you at a bad time?"
         )
     elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
         return (
-            "Hello, this is ExecFlex. We're calling to welcome you and help you find executive talent for your organization. "
-            "Let's get started with a few quick questions about your hiring needs."
+            "Hello, this is A I Dan from ExecFlex. I noticed you just logged in looking for executive talent for your organization. "
+            "Have I caught you at a bad time?"
         )
     else:
         # Unknown signup_mode - ask to clarify with clear distinction
         return (
-            "Hello, this is ExecFlex. We're calling to welcome you and learn more about your needs. "
-            "Are you a company looking to hire executive talent, or are you an executive looking for job opportunities?"
+            "Hello, this is A I Dan from ExecFlex. I noticed you just logged in and I wasn't sure "
+            "if you are looking for executive talent for your organization, or if you are an executive looking for job opportunities. "
+            "Is this a bad time to talk?"
         )
 
 
