@@ -17,6 +17,7 @@ from config.clients import supabase_client
 import os
 import time
 import json
+import re
 
 
 def _timing_enabled() -> bool:
@@ -35,6 +36,32 @@ def _log_timing(event: str, payload: Dict[str, Any]) -> None:
     except Exception:
         # Never break call flow due to logging issues
         pass
+
+
+def _user_wants_to_end_call(user_speech: Optional[str]) -> bool:
+    """
+    Deterministic early-exit for voice UX.
+    If the user says "not now", "stop", "bye", etc, end politely instead of forcing more questions.
+    """
+    if not user_speech:
+        return False
+    text = user_speech.strip().lower()
+    # Keep this conservative to avoid false positives.
+    patterns = [
+        r"\bnot now\b",
+        r"\bcall me back\b",
+        r"\b(can you )?call back\b",
+        r"\bi'?m busy\b",
+        r"\bbusy right now\b",
+        r"\bstop\b",
+        r"\bplease stop\b",
+        r"\bhang up\b",
+        r"\bgoodbye\b",
+        r"\bbye\b",
+        r"\bno thanks\b",
+        r"\bnot interested\b",
+    ]
+    return any(re.search(p, text) for p in patterns)
 
 
 def get_call_context(call_sid: str, job_id: Optional[str] = None) -> Dict[str, Any]:
@@ -278,6 +305,75 @@ def handle_conversation_turn(
         }
     )
     timings["save_turn_user_ms"] = _ms_since(t0)
+
+    # Deterministic early-exit: user asked to end / call back / stop
+    if _user_wants_to_end_call(user_speech):
+        assistant_text = (
+            "No problem at all. I’ll stop here. If you’d like, you can come back to ExecFlex anytime and we can pick this up later. "
+            "Thanks for your time — goodbye."
+        )
+        extracted_updates = {}
+        is_complete = True
+        next_state = "complete"
+
+        # Save assistant turn
+        t0 = time.perf_counter()
+        turn_sequence = get_next_turn_sequence(interaction_id)
+        timings["get_next_turn_sequence_assistant_ms"] = _ms_since(t0)
+        t0 = time.perf_counter()
+        save_turn(
+            interaction_id=interaction_id,
+            thread_id=thread_id,
+            speaker="assistant",
+            text=assistant_text,
+            turn_sequence=turn_sequence,
+            artifacts_json={
+                "next_state": next_state,
+                "is_complete": is_complete,
+                "extracted_updates": extracted_updates,
+                "confidence": 1.0,
+                "ended_by": "user_request"
+            }
+        )
+        timings["save_turn_assistant_ms"] = _ms_since(t0)
+
+        # Generate audio + hang up
+        try:
+            t0 = time.perf_counter()
+            audio_path = generate_tts(assistant_text)
+            timings["tts_assistant_ms"] = _ms_since(t0)
+        except Exception as e:
+            print(f"⚠️ TTS generation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            audio_path = ""
+
+        if audio_path and request_url_root:
+            base_url = os.getenv("API_BASE_URL") or request_url_root.rstrip('/') if request_url_root else None
+            if not base_url or not base_url.startswith('http'):
+                base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://execflex-backend-1.onrender.com"
+            if not base_url.startswith('http'):
+                base_url = request_url_root.rstrip('/')
+            full_audio_url = f"{base_url}{audio_path}"
+            resp.play(full_audio_url)
+        else:
+            resp.say(assistant_text, voice="alice", language="en-GB")
+
+        resp.hangup()
+        timings["total_ms"] = _ms_since(total_start)
+        _log_timing("voice_qualify_turn", {
+            "call_sid": call_sid,
+            "job_id": job_id,
+            "interaction_id": interaction_id,
+            "is_opening": False,
+            "has_audio": bool(audio_path),
+            "signup_mode": signup_mode,
+            "existing_role": existing_role,
+            "next_state": next_state,
+            "is_complete": is_complete,
+            "timings_ms": timings,
+        })
+        return resp, None
     
     # Get conversation history
     t0 = time.perf_counter()
