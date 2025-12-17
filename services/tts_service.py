@@ -5,6 +5,9 @@ import hashlib
 import requests
 from pathlib import Path
 from config.app_config import ELEVEN_API_KEY, ELEVEN_VOICE_ID
+import os
+import time
+import json
 
 # TTS cache directory
 CACHE_DIR = Path("static/audio")
@@ -42,7 +45,15 @@ def generate_tts(text: str) -> str:
     Returns:
         Relative path to audio file, or empty string if generation failed
     """
+    timing_enabled = os.getenv("VOICE_TIMING_LOG", "0").lower() in ("1", "true", "yes", "y")
+    t0 = time.perf_counter()
+
     if text in TTS_CACHE:
+        if timing_enabled:
+            try:
+                print(json.dumps({"event": "tts_timing", "hit": "memory", "ms": int((time.perf_counter()-t0)*1000)}))
+            except Exception:
+                pass
         return TTS_CACHE[text]
 
     if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
@@ -60,6 +71,11 @@ def generate_tts(text: str) -> str:
     if filepath.exists():
         rel_path = f"/static/audio/{filename}"
         TTS_CACHE[text] = rel_path
+        if timing_enabled:
+            try:
+                print(json.dumps({"event": "tts_timing", "hit": "disk", "ms": int((time.perf_counter()-t0)*1000)}))
+            except Exception:
+                pass
         return rel_path
 
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}"
@@ -76,6 +92,7 @@ def generate_tts(text: str) -> str:
 
     print("DEBUG Generating TTS:", text[:80])
     try:
+        t_api = time.perf_counter()
         r = requests.post(url, headers=headers, json=data, timeout=60)
         r.raise_for_status()
 
@@ -84,9 +101,25 @@ def generate_tts(text: str) -> str:
 
         rel_path = f"/static/audio/{filename}"
         TTS_CACHE[text] = rel_path
+        if timing_enabled:
+            try:
+                print(json.dumps({
+                    "event": "tts_timing",
+                    "hit": "elevenlabs",
+                    "ms_total": int((time.perf_counter()-t0)*1000),
+                    "ms_api": int((time.perf_counter()-t_api)*1000),
+                    "chars": len(text or ""),
+                }))
+            except Exception:
+                pass
         return rel_path
     except Exception as e:
         print(f"⚠️ TTS generation failed: {e}")
+        if timing_enabled:
+            try:
+                print(json.dumps({"event": "tts_timing", "hit": "error", "ms": int((time.perf_counter()-t0)*1000)}))
+            except Exception:
+                pass
         return ""
 
 

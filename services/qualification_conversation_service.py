@@ -15,6 +15,26 @@ from services.qualification_agent_service import generate_qualification_response
 from services.tts_service import generate_tts
 from config.clients import supabase_client
 import os
+import time
+import json
+
+
+def _timing_enabled() -> bool:
+    return os.getenv("VOICE_TIMING_LOG", "0").lower() in ("1", "true", "yes", "y")
+
+
+def _ms_since(start: float) -> int:
+    return int((time.perf_counter() - start) * 1000)
+
+
+def _log_timing(event: str, payload: Dict[str, Any]) -> None:
+    if not _timing_enabled():
+        return
+    try:
+        print(json.dumps({"event": event, **payload}, default=str))
+    except Exception:
+        # Never break call flow due to logging issues
+        pass
 
 
 def get_call_context(call_sid: str, job_id: Optional[str] = None) -> Dict[str, Any]:
@@ -139,10 +159,15 @@ def handle_conversation_turn(
     """
     if not VoiceResponse or not Gather:
         return None, "Voice features not available"
+
+    total_start = time.perf_counter()
+    timings: Dict[str, int] = {}
     
     # Get call context
     try:
+        t0 = time.perf_counter()
         context = get_call_context(call_sid, job_id)
+        timings["get_call_context_ms"] = _ms_since(t0)
         if not context.get("interaction"):
             print(f"⚠️ Could not get/create interaction for call {call_sid}, job_id={job_id}")
             return None, f"Could not get/create interaction for call {call_sid}"
@@ -163,10 +188,15 @@ def handle_conversation_turn(
     
     # If this is the opening turn (no user speech), generate opening message
     if not user_speech:
+        t0 = time.perf_counter()
         opening_message = generate_opening_message(signup_mode)
+        timings["generate_opening_message_ms"] = _ms_since(t0)
         
         # Save assistant opening turn
+        t0 = time.perf_counter()
         turn_sequence = get_next_turn_sequence(interaction_id)
+        timings["get_next_turn_sequence_opening_ms"] = _ms_since(t0)
+        t0 = time.perf_counter()
         save_turn(
             interaction_id=interaction_id,
             thread_id=thread_id,
@@ -175,10 +205,13 @@ def handle_conversation_turn(
             turn_sequence=turn_sequence,
             artifacts_json={"state": "intro", "signup_mode": signup_mode}
         )
+        timings["save_turn_opening_ms"] = _ms_since(t0)
         
         # Generate audio and return TwiML with Gather
         try:
+            t0 = time.perf_counter()
             audio_path = generate_tts(opening_message)
+            timings["tts_opening_ms"] = _ms_since(t0)
         except Exception as e:
             print(f"⚠️ TTS generation failed: {e}")
             import traceback
@@ -205,7 +238,20 @@ def handle_conversation_turn(
             turn_endpoint_url = f"{base_url}/voice/qualify?job_id={job_id}" if job_id else f"{base_url}/voice/qualify"
         
         try:
-            return _build_gather_response(resp, opening_message, audio_path, request_url_root, turn_endpoint_url), None
+            t0 = time.perf_counter()
+            twiml = _build_gather_response(resp, opening_message, audio_path, request_url_root, turn_endpoint_url)
+            timings["build_gather_response_opening_ms"] = _ms_since(t0)
+            timings["total_ms"] = _ms_since(total_start)
+            _log_timing("voice_qualify_turn", {
+                "call_sid": call_sid,
+                "job_id": job_id,
+                "interaction_id": interaction_id,
+                "is_opening": True,
+                "has_audio": bool(audio_path),
+                "signup_mode": signup_mode,
+                "timings_ms": timings,
+            })
+            return twiml, None
         except Exception as e:
             print(f"❌ Error building gather response: {e}")
             import traceback
@@ -216,7 +262,10 @@ def handle_conversation_turn(
             return resp, None
     
     # User turn: save user speech
+    t0 = time.perf_counter()
     turn_sequence = get_next_turn_sequence(interaction_id)
+    timings["get_next_turn_sequence_user_ms"] = _ms_since(t0)
+    t0 = time.perf_counter()
     save_turn(
         interaction_id=interaction_id,
         thread_id=thread_id,
@@ -228,20 +277,25 @@ def handle_conversation_turn(
             "call_sid": call_sid
         }
     )
+    timings["save_turn_user_ms"] = _ms_since(t0)
     
     # Get conversation history
+    t0 = time.perf_counter()
     conversation_turns = get_conversation_turns(interaction_id, limit=20)
+    timings["get_conversation_turns_ms"] = _ms_since(t0)
     
     # CRITICAL: Refresh existing_role from DB before generating response
     # This ensures we use the most up-to-date role (in case it was updated in a previous turn)
     if user_id:
         try:
+            t0 = time.perf_counter()
             role_resp = supabase_client.table("role_assignments")\
                 .select("role")\
                 .eq("user_id", user_id)\
                 .order("confidence", desc=True)\
                 .limit(1)\
                 .execute()
+            timings["refresh_role_ms"] = _ms_since(t0)
             
             if role_resp.data:
                 existing_role = role_resp.data[0].get("role")
@@ -250,12 +304,14 @@ def handle_conversation_turn(
             print(f"⚠️ Could not refresh role: {e}")
     
     # Generate next assistant response using OpenAI
+    t0 = time.perf_counter()
     ai_response = generate_qualification_response(
         conversation_turns=conversation_turns,
         signup_mode=signup_mode,
         existing_profile=existing_profile,
         existing_role=existing_role  # Use most recent role from DB
     )
+    timings["openai_generate_ms"] = _ms_since(t0)
     
     assistant_text = ai_response.get("assistant_text", "I didn't catch that. Could you repeat?")
     extracted_updates = ai_response.get("extracted_updates", {})
@@ -264,11 +320,13 @@ def handle_conversation_turn(
     
     # Apply extracted updates to DB
     if extracted_updates and user_id:
+        t0 = time.perf_counter()
         apply_results = apply_extracted_updates(
             user_id=user_id,
             extracted_updates=extracted_updates,
             interaction_id=interaction_id
         )
+        timings["apply_extracted_updates_ms"] = _ms_since(t0)
         print(f"📝 Applied DB updates: {apply_results}")
         
         # CRITICAL: If role was just updated, log it for next turn
@@ -278,7 +336,10 @@ def handle_conversation_turn(
             print(f"🎯 Role updated in this turn: {role_updates.get('role')} - will be used in next turn")
     
     # Save assistant turn
+    t0 = time.perf_counter()
     turn_sequence = get_next_turn_sequence(interaction_id)
+    timings["get_next_turn_sequence_assistant_ms"] = _ms_since(t0)
+    t0 = time.perf_counter()
     save_turn(
         interaction_id=interaction_id,
         thread_id=thread_id,
@@ -292,10 +353,13 @@ def handle_conversation_turn(
             "confidence": ai_response.get("confidence", 0.0)
         }
     )
+    timings["save_turn_assistant_ms"] = _ms_since(t0)
     
     # Generate audio
     try:
+        t0 = time.perf_counter()
         audio_path = generate_tts(assistant_text)
+        timings["tts_assistant_ms"] = _ms_since(t0)
     except Exception as e:
         print(f"⚠️ TTS generation failed: {e}")
         import traceback
@@ -326,8 +390,23 @@ def handle_conversation_turn(
             base_url = (request_url_root.rstrip('/') if request_url_root else '')
         turn_endpoint_url = f"{base_url}/voice/qualify?job_id={job_id}"
         
+        t0 = time.perf_counter()
         resp = _build_gather_response(resp, assistant_text, audio_path, request_url_root, turn_endpoint_url)
+        timings["build_gather_response_turn_ms"] = _ms_since(t0)
     
+    timings["total_ms"] = _ms_since(total_start)
+    _log_timing("voice_qualify_turn", {
+        "call_sid": call_sid,
+        "job_id": job_id,
+        "interaction_id": interaction_id,
+        "is_opening": False,
+        "has_audio": bool(audio_path),
+        "signup_mode": signup_mode,
+        "existing_role": existing_role,
+        "next_state": next_state,
+        "is_complete": is_complete,
+        "timings_ms": timings,
+    })
     return resp, None
 
 
