@@ -6,6 +6,16 @@ from typing import List, Dict, Optional, Any
 from config.clients import gpt_client, OPENAI_API_KEY
 import json
 import re
+import os
+import time
+
+
+def _timing_enabled() -> bool:
+    return os.getenv("VOICE_TIMING_LOG", "0").lower() in ("1", "true", "yes", "y")
+
+
+def _ms_since(start: float) -> int:
+    return int((time.perf_counter() - start) * 1000)
 
 
 # System prompt for TALENT (job seekers - people looking for opportunities)
@@ -15,25 +25,19 @@ Your role is to conduct a qualification call with an executive who is looking fo
 
 **User Type:** Job Seeker (Talent) - They are an executive looking for OPPORTUNITIES/ROLES/POSITIONS
 
-**CRITICAL: This is the TALENT flow - for executives seeking opportunities.**
-**DO NOT ask about hiring, companies they're hiring for, or roles they need to fill.**
-**ONLY ask about: their own career goals, what roles they want, where they want to work.**
-
-**Have a normal conversation but here are some example questions:**
-1. Welcome and confirm they're looking for opportunities (if not already known)
-2. Ask for their first name
-3. Ask about their target role (e.g., "What type of executive role are you looking for? CFO, CEO, CTO?")
-4. Ask about their industry focus (e.g., "What industry are you interested in? Fintech, insurance, SaaS?")
-5. Ask about location preference (e.g., "Where would you like to work? Ireland, UK, remote, hybrid?")
-6. Ask about availability (e.g., "Are you looking for fractional or full-time opportunities?")
-7. Thank them and confirm completion
+**Have a normal conversation, here are some example questions:**
+Ask for their name
+Ask about their career goals
+Ask what they are looking for in a new role
+Ask about their target role (e.g., "What type of executive role are you looking for? CFO, CEO, CTO?")
+Ask about their industry focus (e.g., "What industry are you interested in? Fintech, insurance, SaaS?")
+Ask about location preference (e.g., "Where would you like to work? Ireland, UK, remote, hybrid?")
+Ask about availability (e.g., "Are you looking for fractional or full-time opportunities?")
+Thank them and confirm completion
 
 **Guidelines:**
-- Keep responses concise (1-2 sentences max)
-- Ask one question at a time
 - Be natural and conversational
-- Extract structured data when possible (names, roles, industries, locations)
-- Mark conversation as complete when all key questions are answered
+- It's ok to have a sense of humour
 - Focus on understanding THEIR career goals and preferences
 - NEVER ask about hiring, companies, or roles they need to fill (that's the HIRER flow)
 
@@ -60,12 +64,9 @@ You MUST respond with valid JSON only, no other text. Use this exact structure:
 
 **CRITICAL RULES:**
 - role_assignments.role MUST always be "talent" for this flow - NEVER set it to "hirer"
-- ONLY ask questions about the executive's own career goals and preferences
 - NEVER ask about hiring, companies they're hiring for, or roles they need to fill
 - If the user mentions hiring or looking for talent, they may have answered the wrong question - gently redirect them
-- Once you determine they are TALENT, stick to TALENT questions only
 - Only include fields in extracted_updates if you extracted actual values from the conversation
-- Set is_complete=true when all questions are answered
 - next_state should indicate what question comes next
 """
 
@@ -81,22 +82,20 @@ Your role is to conduct a qualification call with a company representative who i
 **DO NOT ask about opportunities they're looking for, roles they want, or where they want to work.**
 **ONLY ask about: their hiring needs, what roles they need to fill, their company, their hiring requirements.**
 
-**Question Sequence (HIRER FLOW ONLY):**
-1. Welcome and confirm they're looking to hire (if not already known)
-2. Ask for their first name
-3. Ask about their company/organization name (e.g., "What's the name of your company or organization?")
-4. Ask what role they're hiring for (e.g., "What executive role are you looking to hire? CFO, CEO, CTO?")
-5. Ask about industry (e.g., "What industry is your company in? Fintech, insurance, SaaS?")
-6. Ask about location preference (e.g., "Where is this role based? Ireland, UK, remote, hybrid?")
-7. Ask about the type of engagement (e.g., "Are you looking for fractional or full-time?")
-8. Thank them and confirm completion
+**Have a normal conversation, here are some example questions:**
+Ask for their name
+Ask about their strategic goals
+Ask about their current challenges (e.g., "Where are you looking for extra support?")
+Ask their company/organization name (e.g., "What's the name of your company or organization?")
+Ask what role they're hiring for (e.g., "What executive role are you looking to hire?")
+Ask about industry (e.g., "What industry is your company in?")
+Ask about location preference (e.g., "Where is this role based?")
+Ask about the type of engagement (e.g., "Are you looking for fractional or full-time?")
 
 **Guidelines:**
-- Keep responses concise (1-2 sentences max)
-- Ask one question at a time
 - Be natural and conversational
+- Have a sense of humour
 - Extract structured data when possible (names, company names, roles, industries, locations)
-- Mark conversation as complete when all key questions are answered
 - Focus on understanding their HIRING needs and requirements
 - NEVER ask about opportunities they're looking for or roles they want (that's the TALENT flow)
 
@@ -319,6 +318,7 @@ When you detect their role from their response:
 6. Once role is set, NEVER switch back - the role_assignments.role you set will be used for all future turns"""
         
         # Build messages
+        t0_build = time.perf_counter()
         messages = [
             {"role": "system", "content": system_prompt}
         ]
@@ -326,6 +326,7 @@ When you detect their role from their response:
         # Add conversation history
         conversation_messages = get_conversation_context(conversation_turns)
         messages.extend(conversation_messages)
+        build_ms = _ms_since(t0_build)
         print(f"   - Total messages (system + conversation): {len(messages)}")
         if conversation_messages:
             print(f"   - Last user message: {conversation_messages[-1].get('content', '')[:50]}...")
@@ -340,7 +341,8 @@ When you detect their role from their response:
             # Ensure system prompt mentions JSON
             if "JSON" not in messages[0]["content"].upper():
                 messages[0]["content"] += "\n\nIMPORTANT: You must respond with valid JSON only, no other text."
-            
+
+            t0_openai = time.perf_counter()
             response = gpt_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=messages,
@@ -348,21 +350,26 @@ When you detect their role from their response:
                 max_tokens=300,
                 response_format={"type": "json_object"}  # Force JSON output
             )
+            openai_ms = _ms_since(t0_openai)
         except Exception as e:
             # Fallback if response_format not supported
             print(f"⚠️ JSON mode not available, using standard mode: {e}")
+            t0_openai = time.perf_counter()
             response = gpt_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=messages,
                 temperature=0.7,
                 max_tokens=300
             )
+            openai_ms = _ms_since(t0_openai)
         
         response_text = response.choices[0].message.content.strip()
         print(f"📝 OpenAI response received: {response_text[:200]}...")
         
         # Parse structured response
+        t0_parse = time.perf_counter()
         result = parse_structured_response(response_text)
+        parse_ms = _ms_since(t0_parse)
         
         # CRITICAL: If role was detected, ensure we enforce it going forward
         extracted_updates = result.get("extracted_updates", {})
@@ -377,6 +384,25 @@ When you detect their role from their response:
             result["detected_role"] = detected_role
         
         print(f"✅ Parsed response: assistant_text={result.get('assistant_text', '')[:50]}..., next_state={result.get('next_state')}, is_complete={result.get('is_complete')}, detected_role={detected_role}")
+
+        # Optional timing log (kept lightweight; full turn timing logged in conversation service)
+        if _timing_enabled():
+            try:
+                print(json.dumps({
+                    "event": "openai_qualification_timing",
+                    "signup_mode": signup_mode,
+                    "existing_role": existing_role,
+                    "user_type": user_type,
+                    "turns_in_context": len(conversation_turns or []),
+                    "messages_count": len(messages),
+                    "timings_ms": {
+                        "build_messages_ms": build_ms,
+                        "openai_api_ms": openai_ms,
+                        "parse_json_ms": parse_ms,
+                    }
+                }))
+            except Exception:
+                pass
         
         return result
         
