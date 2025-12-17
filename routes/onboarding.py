@@ -130,6 +130,116 @@ def set_admin():
         return bad(f"Error setting admin role: {str(e)}", 500)
 
 
+@onboarding_bp.route("/set-user-mode", methods=["POST"])
+@require_admin
+def set_user_mode():
+    """
+    Set a user's mode (talent|hirer) (admin-only).
+    
+    **ADMIN ONLY**: This endpoint requires authentication AND admin role.
+    Updates:
+    - user_preferences.default_mode + user_preferences.last_mode
+    - role_assignments (talent/hirer) so the voice qualification flow stays consistent
+    
+    Body (JSON, required): { "user_id": "uuid", "mode": "talent" | "hirer" }
+    """
+    try:
+        from datetime import datetime, timezone
+        admin_user_id = request.environ.get('authenticated_user_id')
+
+        data = request.get_json(silent=True) or {}
+        target_user_id = data.get("user_id")
+        mode = (data.get("mode") or "").strip().lower()
+
+        if not target_user_id:
+            return bad("user_id is required", 400)
+        if mode not in ("talent", "hirer"):
+            return bad("mode must be 'talent' or 'hirer'", 400)
+
+        print(f"🔐 Admin {admin_user_id} setting user_mode={mode} for user {target_user_id}")
+
+        # Upsert user_preferences row for the target user
+        prefs_existing = supabase_client.table("user_preferences")\
+            .select("user_id")\
+            .eq("user_id", target_user_id)\
+            .limit(1)\
+            .execute()
+
+        if prefs_existing.data:
+            supabase_client.table("user_preferences")\
+                .update({"default_mode": mode, "last_mode": mode})\
+                .eq("user_id", target_user_id)\
+                .execute()
+        else:
+            supabase_client.table("user_preferences")\
+                .insert({"user_id": target_user_id, "default_mode": mode, "last_mode": mode})\
+                .execute()
+
+        # Keep role_assignments aligned (only one of talent/hirer at a time)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        role_existing = supabase_client.table("role_assignments")\
+            .select("id, role")\
+            .eq("user_id", target_user_id)\
+            .in_("role", ["talent", "hirer"])\
+            .order("confidence", desc=True)\
+            .limit(1)\
+            .execute()
+
+        updated_role_id = None
+        if role_existing.data:
+            updated_role_id = role_existing.data[0]["id"]
+            supabase_client.table("role_assignments")\
+                .update({
+                    "role": mode,
+                    "confidence": 1.0,
+                    "evidence": {
+                        "source": "manual",
+                        "set_by": admin_user_id,
+                        "set_at": now_iso,
+                        "type": "mode_change"
+                    }
+                })\
+                .eq("id", updated_role_id)\
+                .execute()
+
+            # Remove any other stale talent/hirer rows to avoid ambiguity in downstream lookups
+            supabase_client.table("role_assignments")\
+                .delete()\
+                .eq("user_id", target_user_id)\
+                .in_("role", ["talent", "hirer"])\
+                .neq("id", updated_role_id)\
+                .execute()
+        else:
+            inserted = supabase_client.table("role_assignments")\
+                .insert({
+                    "user_id": target_user_id,
+                    "role": mode,
+                    "confidence": 1.0,
+                    "evidence": {
+                        "source": "manual",
+                        "set_by": admin_user_id,
+                        "set_at": now_iso,
+                        "type": "mode_change"
+                    },
+                    "created_at": now_iso
+                })\
+                .execute()
+            if inserted.data:
+                updated_role_id = inserted.data[0].get("id")
+
+        return ok({
+            "message": "User mode updated",
+            "user_id": target_user_id,
+            "mode": mode,
+            "role_assignment_id": updated_role_id
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error setting user mode: {e}")
+        return bad(f"Error setting user mode: {str(e)}", 500)
+
+
 @onboarding_bp.route("/conversations", methods=["GET"])
 @require_admin
 def get_conversations():
@@ -529,18 +639,59 @@ def list_users():
                             roles_map[user_id] = [r["role"] for r in role_result.data]
                     except Exception:
                         continue
+
+        # Fetch user mode from user_preferences for filtered users (last_mode > default_mode)
+        modes_map = {}
+        if filtered_user_ids:
+            try:
+                prefs_result = supabase_client.table("user_preferences")\
+                    .select("user_id, last_mode, default_mode")\
+                    .in_("user_id", filtered_user_ids)\
+                    .execute()
+
+                for row in (prefs_result.data or []):
+                    user_id = row.get("user_id")
+                    candidate = (row.get("last_mode") or row.get("default_mode") or "")
+                    candidate = str(candidate).strip().lower()
+                    if user_id and candidate in ("talent", "hirer"):
+                        modes_map[user_id] = candidate
+            except AttributeError:
+                # Fallback: query individually
+                for user_id in filtered_user_ids:
+                    try:
+                        prefs_result = supabase_client.table("user_preferences")\
+                            .select("last_mode, default_mode")\
+                            .eq("user_id", user_id)\
+                            .limit(1)\
+                            .execute()
+                        if prefs_result.data:
+                            row = prefs_result.data[0] or {}
+                            candidate = (row.get("last_mode") or row.get("default_mode") or "")
+                            candidate = str(candidate).strip().lower()
+                            if candidate in ("talent", "hirer"):
+                                modes_map[user_id] = candidate
+                    except Exception:
+                        continue
         
         # Transform data to match frontend format
         users = []
         for auth_user in filtered_auth_users:
             user_id = auth_user["id"]
+            roles = roles_map.get(user_id, []) or []
+            # Fallback to role_assignments if user_preferences missing
+            fallback_mode = None
+            if "hirer" in roles:
+                fallback_mode = "hirer"
+            elif "talent" in roles:
+                fallback_mode = "talent"
             users.append({
                 "id": user_id,
                 "email": auth_user.get("email"),
                 "phone": auth_user.get("phone"),
                 "created_at": auth_user.get("created_at"),
                 "last_sign_in_at": auth_user.get("last_sign_in_at"),
-                "roles": roles_map.get(user_id, [])
+                "roles": roles,
+                "user_mode": modes_map.get(user_id) or fallback_mode
             })
         
         return ok({
