@@ -358,14 +358,19 @@ def get_conversation_turns(interaction_id: str, limit: int = 20) -> List[Dict]:
         return []
     
     try:
+        # IMPORTANT: fetch the MOST RECENT turns for LLM context
+        # (ordering ASC + limit returns the oldest turns, which can make the model "restart")
         result = supabase_client.table("interaction_turns")\
-            .select("speaker, text, created_at, artifacts_json")\
+            .select("speaker, text, created_at, artifacts_json, turn_sequence")\
             .eq("interaction_id", interaction_id)\
-            .order("turn_sequence", desc=False)\
+            .order("turn_sequence", desc=True)\
             .limit(limit)\
             .execute()
-        
-        return result.data or []
+
+        turns = result.data or []
+        # Return in chronological order for chat context
+        turns.sort(key=lambda t: t.get("turn_sequence", 0))
+        return turns
     except Exception as e:
         print(f"⚠️ Failed to get conversation turns: {e}")
         return []

@@ -233,8 +233,22 @@ def handle_conversation_turn(
     
     resp = VoiceResponse()
     
-    # If this is the opening turn (no user speech), generate opening message
+    # Treat "no speech" carefully:
+    # - Initial call webhook has no SpeechResult -> opening message
+    # - Mid-call Gather timeout also produces no SpeechResult -> we must NOT restart
+    next_seq_peek = None
     if not user_speech:
+        try:
+            t0 = time.perf_counter()
+            next_seq_peek = get_next_turn_sequence(interaction_id)
+            timings["get_next_turn_sequence_peek_ms"] = _ms_since(t0)
+        except Exception:
+            next_seq_peek = None
+
+    # Opening only if there are no existing turns yet.
+    is_first_turn = (next_seq_peek == 1) if next_seq_peek is not None else False
+
+    if not user_speech and is_first_turn:
         t0 = time.perf_counter()
         opening_message = generate_opening_message(signup_mode)
         timings["generate_opening_message_ms"] = _ms_since(t0)
@@ -307,6 +321,78 @@ def handle_conversation_turn(
             resp.say("Hello, this is ExecFlex. We're calling to welcome you.", voice="alice", language="en-GB")
             resp.hangup()
             return resp, None
+
+    # No speech but NOT first turn -> Gather likely timed out, so reprompt instead of restarting.
+    if not user_speech and not is_first_turn:
+        t0 = time.perf_counter()
+        recent_turns = get_conversation_turns(interaction_id, limit=10)
+        timings["get_conversation_turns_no_input_ms"] = _ms_since(t0)
+
+        last_assistant_text = None
+        for t in reversed(recent_turns):
+            if t.get("speaker") == "assistant" and t.get("text"):
+                last_assistant_text = t["text"]
+                break
+
+        reprompt_text = (
+            "Sorry — I didn’t catch that. "
+            + (last_assistant_text if last_assistant_text else "Could you say that again?")
+        )
+
+        # Save assistant reprompt turn (useful for debugging + analytics)
+        try:
+            t0 = time.perf_counter()
+            turn_sequence = get_next_turn_sequence(interaction_id)
+            timings["get_next_turn_sequence_reprompt_ms"] = _ms_since(t0)
+            t0 = time.perf_counter()
+            save_turn(
+                interaction_id=interaction_id,
+                thread_id=thread_id,
+                speaker="assistant",
+                text=reprompt_text,
+                turn_sequence=turn_sequence,
+                artifacts_json={"state": "reprompt_no_input", "signup_mode": signup_mode}
+            )
+            timings["save_turn_reprompt_ms"] = _ms_since(t0)
+        except Exception as e:
+            print(f"⚠️ Could not save reprompt turn: {e}")
+
+        # Generate audio and return TwiML with Gather
+        try:
+            t0 = time.perf_counter()
+            audio_path = generate_tts(reprompt_text)
+            timings["tts_reprompt_ms"] = _ms_since(t0)
+        except Exception as e:
+            print(f"⚠️ TTS generation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            audio_path = ""
+
+        # Build turn endpoint URL
+        base_url = os.getenv("API_BASE_URL") or (request_url_root.rstrip('/') if request_url_root else None)
+        if not base_url or not base_url.startswith('http'):
+            base_url = os.getenv("RENDER_EXTERNAL_URL") or "https://execflex-backend-1.onrender.com"
+        if not base_url.startswith('http'):
+            base_url = (request_url_root.rstrip('/') if request_url_root else '')
+        turn_endpoint_url = f"{base_url}/voice/qualify?job_id={job_id}" if job_id else f"{base_url}/voice/qualify"
+
+        t0 = time.perf_counter()
+        resp = _build_gather_response(resp, reprompt_text, audio_path, request_url_root, turn_endpoint_url)
+        timings["build_gather_response_reprompt_ms"] = _ms_since(t0)
+
+        timings["total_ms"] = _ms_since(total_start)
+        _log_timing("voice_qualify_turn", {
+            "call_sid": call_sid,
+            "job_id": job_id,
+            "interaction_id": interaction_id,
+            "is_opening": False,
+            "no_input_reprompt": True,
+            "has_audio": bool(audio_path),
+            "signup_mode": signup_mode,
+            "existing_role": existing_role,
+            "timings_ms": timings,
+        })
+        return resp, None
     
     # User turn: save user speech
     t0 = time.perf_counter()
