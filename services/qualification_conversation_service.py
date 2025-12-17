@@ -64,6 +64,46 @@ def _user_wants_to_end_call(user_speech: Optional[str]) -> bool:
     return any(re.search(p, text) for p in patterns)
 
 
+def _looks_like_a_question(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    t = text.strip().lower()
+    if "?" in t:
+        return True
+    # Common endings that invite a response
+    return any(
+        phrase in t
+        for phrase in (
+            "anything else",
+            "any other",
+            "any questions",
+            "does that sound",
+            "is that ok",
+            "is that okay",
+            "would you like",
+            "can you",
+            "could you",
+        )
+    )
+
+
+def _final_goodbye_text(signup_mode: Optional[str]) -> str:
+    # Keep this short (voice UX) and avoid questions.
+    if signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
+        return "Thank you for your time. We’ll follow up with any executives that match what you’re looking for. Goodbye."
+    return "Thank you for your time. We’ll follow up with any opportunities that match your profile. Goodbye."
+
+
+def _sanitize_final_message(assistant_text: str, signup_mode: Optional[str]) -> str:
+    """
+    If the model marked is_complete=True but ended with a question, we must not hang up on a question.
+    Replace with a clean closing statement.
+    """
+    if _looks_like_a_question(assistant_text):
+        return _final_goodbye_text(signup_mode)
+    return assistant_text
+
+
 def get_call_context(call_sid: str, job_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Get context for a call (interaction, user, signup_mode, existing profile).
@@ -516,6 +556,7 @@ def handle_conversation_turn(
     timings["openai_generate_ms"] = _ms_since(t0)
     
     assistant_text = ai_response.get("assistant_text", "I didn't catch that. Could you repeat?")
+    model_assistant_text = assistant_text
     extracted_updates = ai_response.get("extracted_updates", {})
     is_complete = ai_response.get("is_complete", False)
     next_state = ai_response.get("next_state", "unknown")
@@ -537,6 +578,11 @@ def handle_conversation_turn(
         if role_updates.get("role") and role_updates.get("role") in ("talent", "hirer"):
             print(f"🎯 Role updated in this turn: {role_updates.get('role')} - will be used in next turn")
     
+    # If we're ending the call, always play a deterministic goodbye line.
+    # (We still keep the model's final text in artifacts for debugging/analytics.)
+    if is_complete:
+        assistant_text = _final_goodbye_text(signup_mode)
+
     # Save assistant turn
     t0 = time.perf_counter()
     turn_sequence = get_next_turn_sequence(interaction_id)
@@ -552,7 +598,8 @@ def handle_conversation_turn(
             "next_state": next_state,
             "is_complete": is_complete,
             "extracted_updates": extracted_updates,
-            "confidence": ai_response.get("confidence", 0.0)
+            "confidence": ai_response.get("confidence", 0.0),
+            "model_assistant_text": model_assistant_text
         }
     )
     timings["save_turn_assistant_ms"] = _ms_since(t0)
@@ -607,6 +654,7 @@ def handle_conversation_turn(
         "existing_role": existing_role,
         "next_state": next_state,
         "is_complete": is_complete,
+        "assistant_text_tail": (assistant_text[-80:] if isinstance(assistant_text, str) else None),
         "timings_ms": timings,
     })
     return resp, None
