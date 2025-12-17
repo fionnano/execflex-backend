@@ -5,6 +5,156 @@ from typing import Dict, Optional, List, Any
 from config.clients import supabase_client
 from datetime import datetime, timezone
 import uuid
+import re
+
+
+# Keep in sync with Supabase `industry_enum` (see `frontend/supabase/migrations/*convert_industries*`).
+_INDUSTRY_ENUM_VALUES: List[str] = [
+    "Technology",
+    "Financial Services",
+    "Healthcare",
+    "Manufacturing",
+    "Retail",
+    "Professional Services",
+    "Energy",
+    "Education",
+    "Government",
+    "Non-profit",
+    "Media",
+    "Telecommunications",
+    "Transportation",
+    "Real Estate",
+    "Agriculture",
+    "Other",
+]
+
+_INDUSTRY_CANONICAL_BY_KEY: Dict[str, str] = {v.strip().lower(): v for v in _INDUSTRY_ENUM_VALUES}
+
+# Common synonyms/variants from user speech + LLM extraction.
+_INDUSTRY_SYNONYMS: Dict[str, str] = {
+    # finance
+    "finance": "Financial Services",
+    "financial": "Financial Services",
+    "fintech": "Financial Services",
+    "fin tech": "Financial Services",
+    # technology
+    "tech": "Technology",
+    "saas": "Technology",
+    "software": "Technology",
+    "it": "Technology",
+    "ict": "Technology",
+    "information technology": "Technology",
+    # healthcare
+    "health": "Healthcare",
+    "medical": "Healthcare",
+    "pharma": "Healthcare",
+    "pharmaceutical": "Healthcare",
+    # manufacturing
+    "production": "Manufacturing",
+    "industrial": "Manufacturing",
+    # retail
+    "e-commerce": "Retail",
+    "ecommerce": "Retail",
+    "consumer goods": "Retail",
+    "cpg": "Retail",
+    # prof services
+    "consulting": "Professional Services",
+    "advisory": "Professional Services",
+    "services": "Professional Services",
+    "business services": "Professional Services",
+    "b2b services": "Professional Services",
+    "b2b": "Professional Services",
+    # energy
+    "utilities": "Energy",
+    "oil": "Energy",
+    "gas": "Energy",
+    "renewable energy": "Energy",
+    # education
+    "edtech": "Education",
+    "learning": "Education",
+    # government
+    "public sector": "Government",
+    "public service": "Government",
+    # non-profit
+    "nonprofit": "Non-profit",
+    "ngo": "Non-profit",
+    "charity": "Non-profit",
+    # media
+    "entertainment": "Media",
+    "publishing": "Media",
+    # telecoms
+    "telecom": "Telecommunications",
+    "telco": "Telecommunications",
+    # transportation
+    "logistics": "Transportation",
+    "shipping": "Transportation",
+    # real estate
+    "property": "Real Estate",
+    "construction": "Real Estate",
+    # agriculture
+    "farming": "Agriculture",
+    "agri": "Agriculture",
+}
+
+
+def _normalize_industry_value(value: Any) -> Optional[str]:
+    """
+    Normalize LLM/user-provided industry values to match `industry_enum` labels exactly.
+    Returns None if we can't confidently map it (so we skip the DB update rather than error).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+
+    key = re.sub(r"\s+", " ", value.strip().lower())
+    if not key:
+        return None
+
+    # Direct match against known enum labels (case-insensitive).
+    direct = _INDUSTRY_CANONICAL_BY_KEY.get(key)
+    if direct:
+        return direct
+
+    # Exact synonym match.
+    synonym = _INDUSTRY_SYNONYMS.get(key)
+    if synonym:
+        return synonym
+
+    # Heuristic substring match for common speech patterns like "technology business".
+    # Keep this conservative to avoid bad classifications.
+    if "technology" in key or "software" in key or "saas" in key:
+        return "Technology"
+    if "financial" in key or "fintech" in key:
+        return "Financial Services"
+    if "health" in key or "pharma" in key or "medical" in key:
+        return "Healthcare"
+    if "manufactur" in key or "industrial" in key:
+        return "Manufacturing"
+    if "retail" in key or "ecommerce" in key or "e-commerce" in key:
+        return "Retail"
+    if "consult" in key or "advis" in key or "professional service" in key:
+        return "Professional Services"
+    if "telecom" in key:
+        return "Telecommunications"
+    if "logistic" in key or "transport" in key or "shipping" in key:
+        return "Transportation"
+    if "real estate" in key or "property" in key or "construction" in key:
+        return "Real Estate"
+    if "agri" in key or "farm" in key:
+        return "Agriculture"
+    if "government" in key or "public sector" in key:
+        return "Government"
+    if "nonprofit" in key or "non-profit" in key or "ngo" in key or "charity" in key:
+        return "Non-profit"
+    if "media" in key or "entertain" in key or "publish" in key:
+        return "Media"
+    if "energy" in key or "utility" in key or "renewable" in key or "oil" in key or "gas" in key:
+        return "Energy"
+    if "education" in key or "edtech" in key:
+        return "Education"
+
+    return None
 
 
 def get_or_create_interaction_for_call(call_sid: str, job_id: Optional[str] = None) -> Optional[Dict]:
@@ -256,16 +406,29 @@ def apply_extracted_updates(
             # Handle industries (array field)
             if "industries" in profile_updates and profile_updates["industries"] is not None:
                 industries_value = profile_updates["industries"]
-                # Convert single string to array, or use array as-is
-                if isinstance(industries_value, str):
-                    # Single industry string - convert to array
-                    update_data["industries"] = [industries_value]
-                elif isinstance(industries_value, list):
-                    # Already an array
-                    update_data["industries"] = industries_value
+                # Convert to a list of candidate strings
+                if isinstance(industries_value, list):
+                    candidates = industries_value
                 else:
-                    # Try to convert to array
-                    update_data["industries"] = [str(industries_value)]
+                    candidates = [industries_value]
+
+                normalized: List[str] = []
+                for item in candidates:
+                    v = _normalize_industry_value(item)
+                    if v:
+                        normalized.append(v)
+
+                # Deduplicate while preserving order
+                deduped: List[str] = []
+                seen = set()
+                for v in normalized:
+                    if v not in seen:
+                        deduped.append(v)
+                        seen.add(v)
+
+                # Only write if we have at least one valid enum value.
+                if deduped:
+                    update_data["industries"] = deduped
             
             if update_data:
                 update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
