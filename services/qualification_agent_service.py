@@ -101,6 +101,7 @@ You MUST respond with valid JSON only, no other text. Use this exact structure:
 - Only include fields in extracted_updates if you extracted actual values from the conversation
 - next_state should indicate what question comes next
 - Set is_complete=true only when you have enough to match them (at least: name or first name, headline/target role, location, availability_type, and at least one industry, personal strategic goals, personal current career challenges).
+- Be polite and say goodbye when the conversation is complete. "Thank you for your time, we will get back to you with any opportunities that match your profile."
 """
 
 
@@ -177,6 +178,7 @@ You MUST respond with valid JSON only, no other text. Use this exact structure:
 - Set is_complete=true when all questions are answered
 - next_state should indicate what question comes next
 - Set is_complete=true only when you have enough to act (at least: organizations.name, role_postings.title, role_postings.location, role_postings.engagement_type, and an industry, organisations strategic goals, organisations current challenges).
+- Be polite and say goodbye when the conversation is complete. "Thank you for your time, we will get back to you with any opportunities that match your profile."
 """
 
 
