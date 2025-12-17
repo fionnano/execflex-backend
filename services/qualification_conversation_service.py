@@ -124,6 +124,26 @@ def get_call_context(call_sid: str, job_id: Optional[str] = None) -> Dict[str, A
                 existing_role = role_resp.data[0].get("role")
         except Exception as e:
             print(f"⚠️ Could not fetch profile/role: {e}")
+
+    # Backfill signup_mode for personalized opening message:
+    # Priority: job artifacts > existing_role > user_preferences
+    if not signup_mode and existing_role in ("talent", "hirer"):
+        signup_mode = existing_role
+
+    if not signup_mode and user_id:
+        try:
+            prefs_resp = supabase_client.table("user_preferences")\
+                .select("last_mode, default_mode")\
+                .eq("user_id", user_id)\
+                .limit(1)\
+                .execute()
+            if prefs_resp.data:
+                prefs = prefs_resp.data[0] or {}
+                candidate = (prefs.get("last_mode") or prefs.get("default_mode") or "").strip().lower()
+                if candidate in ("talent", "hirer"):
+                    signup_mode = candidate
+        except Exception as e:
+            print(f"⚠️ Could not fetch user_preferences for signup_mode: {e}")
     
     return {
         "interaction": interaction,

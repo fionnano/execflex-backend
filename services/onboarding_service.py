@@ -10,6 +10,21 @@ from config.app_config import TWILIO_PHONE_NUMBER
 from utils.response_helpers import ok, bad
 
 
+def _normalize_signup_mode(value: Optional[str]) -> Optional[str]:
+    """
+    Normalize any frontend/backend user-mode/user-type strings to 'talent' | 'hirer'.
+    Returns None if unknown.
+    """
+    if not value:
+        return None
+    v = str(value).strip().lower()
+    if v in ("talent", "job_seeker", "executive", "candidate"):
+        return "talent"
+    if v in ("hirer", "talent_seeker", "company", "client", "employer"):
+        return "hirer"
+    return None
+
+
 def initialize_user_onboarding(user_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Initialize onboarding for a new user (called by database trigger or admin).
@@ -34,6 +49,7 @@ def initialize_user_onboarding(user_id: Optional[str] = None) -> Dict[str, Any]:
         import requests
         
         user_phone = None
+        signup_mode: Optional[str] = None
         if user_id:
             try:
                 headers = {
@@ -47,6 +63,12 @@ def initialize_user_onboarding(user_id: Optional[str] = None) -> Dict[str, Any]:
                 if user_resp.status_code == 200:
                     user_data = user_resp.json()
                     user_phone = user_data.get("phone")
+                    # Try to infer signup_mode from auth metadata when present
+                    # Supabase returns user metadata in 'user_metadata'
+                    user_meta = user_data.get("user_metadata") or {}
+                    signup_mode = _normalize_signup_mode(
+                        user_meta.get("signup_mode") or user_meta.get("user_type")
+                    )
                     if user_phone and not user_phone.startswith("+"):
                         # Normalize to E.164 format
                         user_phone = "+" + user_phone.replace(" ", "").replace("-", "")
@@ -87,6 +109,36 @@ def initialize_user_onboarding(user_id: Optional[str] = None) -> Dict[str, Any]:
         }
         interaction_resp = supabase_client.table("interactions").insert(interaction_data).execute()
         interaction_id = interaction_resp.data[0]["id"] if interaction_resp.data else None
+
+        # Prefer user_mode from user_preferences for admin-triggered calls
+        # (This is what the Admin screen expects to drive the opening message + flow.)
+        if user_id and not signup_mode:
+            try:
+                prefs_resp = supabase_client.table("user_preferences")\
+                    .select("last_mode, default_mode")\
+                    .eq("user_id", user_id)\
+                    .limit(1)\
+                    .execute()
+                if prefs_resp.data:
+                    prefs = prefs_resp.data[0] or {}
+                    signup_mode = _normalize_signup_mode(prefs.get("last_mode") or prefs.get("default_mode"))
+            except Exception as e:
+                print(f"⚠️ Warning: Could not fetch user_preferences for signup_mode: {e}")
+
+        # Fallback: infer from role_assignments if still unknown
+        if user_id and not signup_mode:
+            try:
+                role_resp = supabase_client.table("role_assignments")\
+                    .select("role")\
+                    .eq("user_id", user_id)\
+                    .in_("role", ["talent", "hirer"])\
+                    .order("confidence", desc=True)\
+                    .limit(1)\
+                    .execute()
+                if role_resp.data:
+                    signup_mode = _normalize_signup_mode(role_resp.data[0].get("role"))
+            except Exception as e:
+                print(f"⚠️ Warning: Could not fetch role_assignments for signup_mode: {e}")
         
         # Create outbound call job with user's actual phone number
         job_data = {
@@ -98,6 +150,7 @@ def initialize_user_onboarding(user_id: Optional[str] = None) -> Dict[str, Any]:
             "dedupe_key": dedupe_key,
             "artifacts": {
                 "call_type": "qualification",
+                **({"signup_mode": signup_mode} if signup_mode else {}),
                 "created_at": now_iso
             },
             "created_at": now_iso,
@@ -121,9 +174,26 @@ def initialize_user_onboarding(user_id: Optional[str] = None) -> Dict[str, Any]:
                     .execute()
                 
                 if existing_job.data and len(existing_job.data) > 0:
-                    job_id = existing_job.data[0]["id"]
-                    thread_id = existing_job.data[0].get("thread_id")
-                    interaction_id = existing_job.data[0].get("interaction_id")
+                    existing = existing_job.data[0] or {}
+                    job_id = existing["id"]
+                    thread_id = existing.get("thread_id")
+                    interaction_id = existing.get("interaction_id")
+
+                    # If the existing job was created without signup_mode, backfill it
+                    # so the qualification agent can personalize the opening turn.
+                    try:
+                        existing_artifacts = existing.get("artifacts") or {}
+                        if signup_mode and not existing_artifacts.get("signup_mode"):
+                            supabase_client.table("outbound_call_jobs")\
+                                .update({
+                                    "artifacts": {**existing_artifacts, "signup_mode": signup_mode},
+                                    "updated_at": now_iso
+                                })\
+                                .eq("id", job_id)\
+                                .execute()
+                            print(f"✅ Backfilled signup_mode on existing job: job_id={job_id}, signup_mode={signup_mode}")
+                    except Exception as e:
+                        print(f"⚠️ Warning: Could not backfill signup_mode on existing job {job_id}: {e}")
                     print(f"✅ Using existing job: {job_id}")
                 else:
                     raise insert_error
