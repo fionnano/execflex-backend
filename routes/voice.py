@@ -17,6 +17,39 @@ from routes import voice_bp
 from config.clients import VoiceResponse
 
 
+def _append_stream_debug_event(job_id: str, event_name: str, metadata=None):
+    """Persist /voice/stream lifecycle events to outbound_call_jobs.artifacts."""
+    if not job_id:
+        return
+    try:
+        from config.clients import supabase_client
+        from datetime import datetime, timezone
+        if not supabase_client:
+            return
+        row = (
+            supabase_client.table("outbound_call_jobs")
+            .select("artifacts")
+            .eq("id", job_id)
+            .limit(1)
+            .execute()
+        )
+        if not row.data:
+            return
+        artifacts = (row.data[0] or {}).get("artifacts", {}) or {}
+        events = artifacts.get("debug_events", [])
+        if not isinstance(events, list):
+            events = []
+        events.append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "event": event_name,
+            "meta": metadata or {},
+        })
+        artifacts["debug_events"] = events[-40:]
+        supabase_client.table("outbound_call_jobs").update({"artifacts": artifacts}).eq("id", job_id).execute()
+    except Exception:
+        pass
+
+
 @voice_bp.route("/stream", methods=["POST", "GET"])
 def voice_stream():
     """
@@ -55,6 +88,7 @@ def voice_stream():
     job_id = request.values.get("job_id") or request.args.get("job_id")
 
     print(f"Realtime stream call received: call_sid={call_sid}, job_id={job_id}")
+    _append_stream_debug_event(job_id, "voice_stream_webhook_received", {"call_sid": call_sid})
 
     if not job_id:
         print(f"Missing job_id in stream call: call_sid={call_sid}")
@@ -73,6 +107,7 @@ def voice_stream():
         # Convert http(s) to wss
         ws_base = base_url.replace("https://", "wss://").replace("http://", "ws://")
         ws_url = f"{ws_base}/voice/ws?job_id={job_id}"
+        _append_stream_debug_event(job_id, "voice_stream_ws_url_built", {"ws_url": ws_url})
 
         # Create TwiML response with Media Streams
         resp = VoiceResponse()
@@ -85,12 +120,14 @@ def voice_stream():
         stream.parameter(name="call_sid", value=str(call_sid))
 
         print(f"Returning stream TwiML: ws_url={ws_url}")
+        _append_stream_debug_event(job_id, "voice_stream_twiml_returned")
         return Response(str(resp), mimetype="text/xml")
 
     except Exception as e:
         import traceback
         traceback.print_exc()
         print(f"Exception in voice_stream: {e}")
+        _append_stream_debug_event(job_id, "voice_stream_exception", {"error": str(e)})
         resp = VoiceResponse()
         resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
         resp.hangup()

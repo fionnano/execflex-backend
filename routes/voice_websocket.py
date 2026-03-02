@@ -22,6 +22,38 @@ from services.realtime_voice_bridge import (
     mulaw_to_pcm16,
 )
 
+def _append_job_debug_event(job_id: Optional[str], event_name: str, metadata: Optional[dict] = None):
+    """Persist lightweight websocket lifecycle events to outbound_call_jobs.artifacts."""
+    if not job_id:
+        return
+    try:
+        from config.clients import supabase_client
+        from datetime import datetime, timezone
+        if not supabase_client:
+            return
+        existing = (
+            supabase_client.table("outbound_call_jobs")
+            .select("artifacts")
+            .eq("id", job_id)
+            .limit(1)
+            .execute()
+        )
+        if not existing.data:
+            return
+        artifacts = (existing.data[0] or {}).get("artifacts", {}) or {}
+        events = artifacts.get("debug_events", [])
+        if not isinstance(events, list):
+            events = []
+        events.append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "event": event_name,
+            "meta": metadata or {},
+        })
+        artifacts["debug_events"] = events[-40:]
+        supabase_client.table("outbound_call_jobs").update({"artifacts": artifacts}).eq("id", job_id).execute()
+    except Exception as exc:
+        print(f"Failed to append debug event for job {job_id}: {exc}", flush=True)
+
 
 def init_voice_websocket(sock: Sock):
     """Initialize the WebSocket routes with the Flask-Sock instance."""
@@ -123,6 +155,10 @@ def init_voice_websocket(sock: Sock):
                     job_id = custom_params.get("job_id")
 
                     print(f"Stream started: stream_sid={stream_sid}, call_sid={call_sid}, job_id={job_id}", flush=True)
+                    _append_job_debug_event(job_id, "twilio_stream_start", {
+                        "stream_sid": stream_sid,
+                        "call_sid": call_sid,
+                    })
 
                     # Get call context from database
                     if job_id:
@@ -167,6 +203,10 @@ def init_voice_websocket(sock: Sock):
                         use_elevenlabs_output = _preflight_elevenlabs_ws(timeout_ms=1000)
                         if not use_elevenlabs_output:
                             print("ElevenLabs preflight failed, pinning call to OpenAI audio output", flush=True)
+                    _append_job_debug_event(job_id, "voice_routing_selected", {
+                        "elevenlabs_flag_enabled": bool(enabled),
+                        "use_elevenlabs_output": bool(use_elevenlabs_output),
+                    })
                     with state_lock:
                         bridge_state["use_elevenlabs_output"] = use_elevenlabs_output
                         bridge_state["assistant_text_parts"] = []
@@ -174,8 +214,10 @@ def init_voice_websocket(sock: Sock):
                     # Connect to OpenAI Realtime API
                     try:
                         print("Attempting to connect to OpenAI Realtime API...", flush=True)
+                        _append_job_debug_event(job_id, "openai_connect_attempt")
                         openai_ws = _connect_openai_sync(signup_mode, output_text_only=use_elevenlabs_output)
                         if openai_ws:
+                            _append_job_debug_event(job_id, "openai_connect_success")
                             print("OpenAI connection successful, starting response handler thread...", flush=True)
                             # Start background thread to handle OpenAI responses
                             response_thread = threading.Thread(
@@ -188,16 +230,19 @@ def init_voice_websocket(sock: Sock):
 
                             # Send initial greeting request
                             _send_greeting_request(openai_ws, signup_mode)
+                            _append_job_debug_event(job_id, "greeting_request_sent")
                             with state_lock:
                                 bridge_state["awaiting_response"] = True
                         else:
                             print("OpenAI connection returned None; ending stream.", flush=True)
+                            _append_job_debug_event(job_id, "openai_connect_none")
                             break
                     except Exception as e:
                         print(f"Error connecting to OpenAI: {e}", flush=True)
                         import traceback
                         traceback.print_exc()
                         print("Ending stream after OpenAI connection failure.", flush=True)
+                        _append_job_debug_event(job_id, "openai_connect_exception", {"error": str(e)})
                         break
 
                 elif event_type == "media":
@@ -261,6 +306,7 @@ def init_voice_websocket(sock: Sock):
 
                 elif event_type == "stop":
                     print(f"Stream stopped: stream_sid={stream_sid}, total messages received: {message_count}", flush=True)
+                    _append_job_debug_event(job_id, "twilio_stream_stop", {"message_count": message_count})
                     break
 
             print(f"Main Twilio loop exited normally after {message_count} messages", flush=True)
@@ -271,6 +317,7 @@ def init_voice_websocket(sock: Sock):
             traceback.print_exc()
         finally:
             print(f"Entering finally block, will close OpenAI connection. Total Twilio messages: {message_count}", flush=True)
+            _append_job_debug_event(job_id, "voice_ws_finally", {"message_count": message_count, "call_sid": call_sid})
             # Clean up
             if openai_ws:
                 try:
