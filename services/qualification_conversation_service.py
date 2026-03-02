@@ -4,15 +4,18 @@ Separated from provisioning/onboarding logic.
 """
 from typing import Dict, Optional, List, Any, Tuple
 from config.clients import VoiceResponse, Gather
+from concurrent.futures import ThreadPoolExecutor
+import threading
 from services.qualification_turn_service import (
     get_or_create_interaction_for_call,
     get_next_turn_sequence,
     save_turn,
     get_conversation_turns,
+    get_turn_by_sequence,
     apply_extracted_updates
 )
 from services.qualification_agent_service import generate_qualification_response
-from services.tts_service import generate_tts
+from services.tts_service import generate_tts, get_disk_cached_audio_path
 from config.clients import supabase_client
 import os
 import time
@@ -37,6 +40,187 @@ def _log_timing(event: str, payload: Dict[str, Any]) -> None:
         # Never break call flow due to logging issues
         pass
 
+
+_DEFERRED_EXECUTOR = ThreadPoolExecutor(max_workers=int(os.getenv("VOICE_DEFERRED_WORKERS", "4")))
+_DEFERRED_LOCK = threading.Lock()
+# (interaction_id, expected_assistant_seq) -> started_at_epoch_s
+_DEFERRED_IN_FLIGHT: Dict[Tuple[str, int], float] = {}
+
+
+def _build_base_url(request_url_root: Optional[str]) -> str:
+    base_url = (
+        os.getenv("API_BASE_URL")
+        or os.getenv("RENDER_EXTERNAL_URL")
+        or ((request_url_root.rstrip("/")) if request_url_root else None)
+        or "https://execflex-backend-1.onrender.com"
+    )
+    if not base_url.startswith("http"):
+        base_url = request_url_root.rstrip("/") if request_url_root else "https://execflex-backend-1.onrender.com"
+    return base_url
+
+
+def _start_deferred_generation(
+    *,
+    interaction_id: str,
+    thread_id: Optional[str],
+    user_id: Optional[str],
+    signup_mode: Optional[str],
+    existing_profile: Optional[Dict[str, Any]],
+    existing_role: Optional[str],
+    job_id: str,
+    call_sid: str,
+    expected_assistant_seq: int,
+) -> None:
+    """
+    Kick off OpenAI + DB updates + TTS in the background so we can immediately play a short ack line.
+    """
+    key = (interaction_id, expected_assistant_seq)
+    with _DEFERRED_LOCK:
+        if key in _DEFERRED_IN_FLIGHT:
+            return
+        _DEFERRED_IN_FLIGHT[key] = time.time()
+
+    def _work() -> None:
+        try:
+            # Build model context (includes the latest user turn we just saved)
+            conversation_turns = get_conversation_turns(interaction_id, limit=20)
+
+            # Refresh existing_role (same as synchronous path)
+            role_for_prompt = existing_role
+            if user_id:
+                try:
+                    role_resp = supabase_client.table("role_assignments")\
+                        .select("role")\
+                        .eq("user_id", user_id)\
+                        .order("confidence", desc=True)\
+                        .limit(1)\
+                        .execute()
+                    if role_resp.data:
+                        role_for_prompt = role_resp.data[0].get("role")
+                except Exception:
+                    pass
+
+            ai_response = generate_qualification_response(
+                conversation_turns=conversation_turns,
+                signup_mode=signup_mode,
+                existing_profile=existing_profile,
+                existing_role=role_for_prompt,
+            )
+
+            assistant_text = ai_response.get("assistant_text", "I didn't catch that. Could you repeat?")
+            model_assistant_text = assistant_text
+            extracted_updates = ai_response.get("extracted_updates", {})
+            is_complete = ai_response.get("is_complete", False)
+            next_state = ai_response.get("next_state", "unknown")
+
+            # Apply extracted updates to DB
+            if extracted_updates and user_id:
+                try:
+                    apply_extracted_updates(
+                        user_id=user_id,
+                        extracted_updates=extracted_updates,
+                        interaction_id=interaction_id,
+                    )
+                except Exception:
+                    pass
+
+            # Deterministic goodbye for complete calls (voice UX)
+            if is_complete:
+                assistant_text = _final_goodbye_text(signup_mode)
+
+            # Generate audio BEFORE inserting assistant turn so we can store audio_path in artifacts_json.
+            audio_path = ""
+            try:
+                audio_path = generate_tts(assistant_text)
+            except Exception:
+                audio_path = ""
+
+            # Insert assistant turn at the expected sequence
+            save_turn(
+                interaction_id=interaction_id,
+                thread_id=thread_id,
+                speaker="assistant",
+                text=assistant_text,
+                turn_sequence=expected_assistant_seq,
+                artifacts_json={
+                    "next_state": next_state,
+                    "is_complete": is_complete,
+                    "extracted_updates": extracted_updates,
+                    "confidence": ai_response.get("confidence", 0.0),
+                    "model_assistant_text": model_assistant_text,
+                    "audio_path": audio_path,
+                    "deferred": True,
+                    "deferred_for_call_sid": call_sid,
+                    "deferred_for_job_id": job_id,
+                },
+            )
+        except Exception as e:
+            print(f"⚠️ Deferred generation failed: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            with _DEFERRED_LOCK:
+                _DEFERRED_IN_FLIGHT.pop(key, None)
+
+    _DEFERRED_EXECUTOR.submit(_work)
+
+
+def handle_deferred_assistant_turn(
+    *,
+    call_sid: str,
+    job_id: str,
+    expected_seq: int,
+    request_url_root: Optional[str] = None,
+) -> Tuple[Optional[VoiceResponse], Optional[str]]:
+    """
+    Twilio redirect target: waits for the deferred assistant turn to exist, then plays it + gathers next input.
+    """
+    if not VoiceResponse or not Gather:
+        return None, "Voice features not available"
+
+    context = get_call_context(call_sid, job_id)
+    if not context.get("interaction"):
+        return None, "Could not get call context"
+
+    interaction_id = context["interaction_id"]
+    signup_mode = context.get("signup_mode")
+
+    resp = VoiceResponse()
+    turn = get_turn_by_sequence(interaction_id, int(expected_seq))
+    if not turn:
+        # Not ready yet: keep caller engaged briefly, then poll again.
+        wait_text = "Great — one moment while I pull that up."
+        base_url = _build_base_url(request_url_root)
+        rel = get_disk_cached_audio_path(wait_text)
+        if rel:
+            resp.play(f"{base_url}{rel}")
+        else:
+            resp.say(wait_text, voice="alice", language="en-GB")
+        try:
+            resp.pause(length=1)
+        except Exception:
+            pass
+        poll_url = f"{base_url}/voice/qualify/deferred?job_id={job_id}&expected_seq={expected_seq}"
+        resp.redirect(poll_url, method="POST")
+        return resp, None
+
+    assistant_text = (turn.get("text") or "").strip() or "Sorry — could you repeat that?"
+    artifacts = turn.get("artifacts_json") or {}
+    audio_path = artifacts.get("audio_path") or ""
+    is_complete = bool(artifacts.get("is_complete", False))
+
+    base_url = _build_base_url(request_url_root)
+    if is_complete:
+        if audio_path:
+            resp.play(f"{base_url}{audio_path}")
+        else:
+            resp.say(assistant_text, voice="alice", language="en-GB")
+        resp.hangup()
+        return resp, None
+
+    turn_endpoint_url = f"{base_url}/voice/qualify?job_id={job_id}"
+    resp = _build_gather_response(resp, assistant_text, audio_path, request_url_root, turn_endpoint_url)
+    return resp, None
 
 def _user_wants_to_end_call(user_speech: Optional[str]) -> bool:
     """
@@ -517,6 +701,49 @@ def handle_conversation_turn(
             "existing_role": existing_role,
             "next_state": next_state,
             "is_complete": is_complete,
+            "timings_ms": timings,
+        })
+        return resp, None
+
+    # Fast-ack optimization for the very first user reply after the opener.
+    # Idea: play a short acknowledgement immediately, while OpenAI+TTS run in the background.
+    # Then Twilio redirects to /voice/qualify/deferred to play the real next question once ready.
+    fast_ack_enabled = os.getenv("VOICE_FAST_ACK", "1").lower() in ("1", "true", "yes", "y")
+    if fast_ack_enabled and job_id and turn_sequence == 2:
+        try:
+            expected_assistant_seq = int(get_next_turn_sequence(interaction_id))
+        except Exception:
+            expected_assistant_seq = 3
+
+        _start_deferred_generation(
+            interaction_id=interaction_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            signup_mode=signup_mode,
+            existing_profile=existing_profile,
+            existing_role=existing_role,
+            job_id=str(job_id),
+            call_sid=call_sid,
+            expected_assistant_seq=expected_assistant_seq,
+        )
+
+        ack_text = "Great — let me just pull up your profile."
+        base_url = _build_base_url(request_url_root)
+        rel = get_disk_cached_audio_path(ack_text)
+        if rel:
+            resp.play(f"{base_url}{rel}")
+        else:
+            resp.say(ack_text, voice="alice", language="en-GB")
+
+        deferred_url = f"{base_url}/voice/qualify/deferred?job_id={job_id}&expected_seq={expected_assistant_seq}"
+        resp.redirect(deferred_url, method="POST")
+
+        timings["total_ms"] = _ms_since(total_start)
+        _log_timing("voice_qualify_fast_ack", {
+            "call_sid": call_sid,
+            "job_id": job_id,
+            "interaction_id": interaction_id,
+            "expected_assistant_seq": expected_assistant_seq,
             "timings_ms": timings,
         })
         return resp, None
