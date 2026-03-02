@@ -434,13 +434,13 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                 event_type = data.get("type")
 
                 # Log all event types for debugging (first 50 messages, then key events only)
-                if message_count <= 50 or event_type not in ("response.audio.delta",):
+                if message_count <= 50 or event_type not in ("response.audio.delta", "response.output_audio.delta"):
                     log(f"OpenAI event #{message_count}: {event_type}")
                     # Log full data for key events
-                    if event_type in ("error", "response.done", "session.updated", "response.created", "response.audio.done"):
+                    if event_type in ("error", "response.done", "session.updated", "response.created", "response.audio.done", "response.output_audio.done"):
                         log(f"  Full data: {json.dumps(data)[:800]}")
 
-                if event_type == "response.audio.delta":
+                if event_type in ("response.audio.delta", "response.output_audio.delta"):
                     # Streaming audio from OpenAI
                     audio_b64 = data.get("delta", "")
                     if audio_b64:
@@ -471,7 +471,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                             log(f"Error sending audio to Twilio: {type(e).__name__}: {e}")
                             # Don't break - Twilio might have disconnected but we can still process OpenAI events
 
-                elif event_type == "response.audio.done":
+                elif event_type in ("response.audio.done", "response.output_audio.done"):
                     # Response complete
                     metrics_service.record_response_complete(call_sid)
                     log(f"Response audio complete, sent {audio_chunks_sent} audio chunks total")
