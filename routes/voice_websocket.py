@@ -399,6 +399,7 @@ def _enable_post_greeting_barge_in(openai_ws):
     update_event = {
         "type": "session.update",
         "session": {
+            "type": "realtime",
             "audio": {
                 "input": {
                     "turn_detection": {
