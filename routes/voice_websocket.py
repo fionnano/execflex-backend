@@ -236,7 +236,22 @@ def _connect_openai_sync(signup_mode: Optional[str]):
         )
         print("OpenAI WebSocket connected successfully", flush=True)
 
-        # Configure the session
+        # Wait for session.created before sending any configuration
+        print("Waiting for session.created from OpenAI...", flush=True)
+        initial_message = ws.recv()
+        if initial_message:
+            initial_data = json.loads(initial_message)
+            print(f"OpenAI initial event: {initial_data.get('type')}", flush=True)
+            if initial_data.get("type") == "error":
+                print(f"OpenAI error on connect: {initial_data.get('error')}", flush=True)
+                ws.close()
+                return None
+        else:
+            print("No initial message from OpenAI", flush=True)
+            ws.close()
+            return None
+
+        # Now configure the session
         system_prompt = _get_system_prompt(signup_mode)
         session_config = {
             "type": "session.update",
@@ -260,7 +275,24 @@ def _connect_openai_sync(signup_mode: Optional[str]):
             }
         }
         ws.send(json.dumps(session_config))
-        print("OpenAI Realtime session configured", flush=True)
+        print("Session.update sent, waiting for session.updated...", flush=True)
+
+        # Wait for session.updated confirmation
+        update_message = ws.recv()
+        if update_message:
+            update_data = json.loads(update_message)
+            print(f"OpenAI update response: {update_data.get('type')}", flush=True)
+            if update_data.get("type") == "error":
+                print(f"OpenAI session update error: {update_data.get('error')}", flush=True)
+                ws.close()
+                return None
+            elif update_data.get("type") == "session.updated":
+                print("OpenAI Realtime session configured successfully", flush=True)
+        else:
+            print("No update confirmation from OpenAI", flush=True)
+            ws.close()
+            return None
+
         return ws
     except Exception as e:
         print(f"Failed to connect to OpenAI Realtime: {e}", flush=True)
