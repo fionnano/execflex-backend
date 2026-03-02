@@ -15,9 +15,6 @@ from flask_sock import Sock
 from config.app_config import validate_config, print_config_status, PORT
 from config.clients import supabase_client  # Initialize clients
 
-# Services initialization
-from services.tts_service import pre_cache_common_prompts
-
 # Rate limiting
 from utils.rate_limiting import create_limiter
 
@@ -70,11 +67,6 @@ from routes.voice_websocket import init_voice_websocket
 init_voice_websocket(sock)
 
 # Rate limiting can be applied to specific endpoints here if needed
-
-# Pre-cache common TTS prompts at startup (optional)
-# This can slow cold starts; enable only when desired.
-if os.getenv("TTS_PRECACHE", "0").lower() in ("1", "true", "yes", "y"):
-    pre_cache_common_prompts()
 
 # Debug: Print registered routes at startup
 with app.app_context():

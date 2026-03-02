@@ -11,11 +11,6 @@ backend/
 │   ├── app_config.py        # Environment variables & config
 │   └── clients.py           # External service clients (Supabase, Twilio, OpenAI)
 ├── services/                # Business logic services
-│   ├── tts_service.py       # Text-to-speech generation & caching
-│   ├── gpt_service.py       # GPT conversation rephrasing
-│   ├── qualification_agent_service.py
-│   ├── qualification_turn_service.py
-│   ├── qualification_conversation_service.py
 │   ├── realtime_voice_bridge.py
 │   ├── realtime_session_state.py
 │   ├── voice_metrics.py

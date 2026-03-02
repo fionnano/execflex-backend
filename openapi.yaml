@@ -306,7 +306,7 @@ paths:
         Called by Twilio when a user calls the ExecFlex phone number.
         
         **Note:** This endpoint is for inbound calls only. For outbound qualification calls,
-        see `/voice/qualify`.
+        see `/voice/stream`.
         
         **Note:** This is a webhook endpoint, called by Twilio, not directly by API clients.
       operationId: voiceIntro
@@ -345,27 +345,22 @@ paths:
         '503':
           description: Voice features not available
 
-  /voice/qualify:
+  /voice/stream:
     post:
       tags:
         - Voice
-      summary: Twilio webhook - Outbound qualification call handler
+      summary: Twilio webhook - Outbound realtime stream entrypoint
       description: |
-        Outbound qualification call endpoint. Called by Twilio when an outbound qualification call is answered.
-        
-        This endpoint handles all logic for qualification calls:
-        - OpenAI reasoning (with job seeker or talent seeker system prompts)
-        - Storing interaction + turns in database
-        - Converting text to speech with ElevenLabs
-        - Incremental DB updates (people_profiles, organizations, role_assignments)
-        
-        **Flow:**
-        1. Initial call: Twilio calls this endpoint when user answers → Returns opening message + Gather
-        2. Subsequent turns: Twilio calls this endpoint after Gather → Processes user speech, calls OpenAI, returns next message
-        
+        Outbound realtime streaming entrypoint. Called by Twilio when an outbound
+        onboarding call is answered. Returns TwiML with `<Connect><Stream>` so
+        Twilio can establish a bidirectional Media Streams session to `/voice/ws`.
+
+        Conversation logic runs over the WebSocket bridge (Twilio ↔ OpenAI Realtime
+        ↔ ElevenLabs streaming).
+
         **Note:** This is a webhook endpoint, called by Twilio, not directly by API clients.
         **Security:** Twilio signature verification required (X-Twilio-Signature header).
-      operationId: voiceQualify
+      operationId: voiceStream
       parameters:
         - name: job_id
           in: query
@@ -384,21 +379,14 @@ paths:
                 CallSid:
                   type: string
                   description: Twilio Call SID
-                  required: true
-                SpeechResult:
-                  type: string
-                  description: Recognized speech text from user (present only for subsequent turns)
-                Confidence:
-                  type: string
-                  description: Speech recognition confidence score (0.0-1.0)
       responses:
         '200':
-          description: TwiML response for next turn or call termination
+          description: TwiML response with `<Connect><Stream>` directive
           content:
             application/xml:
               schema:
                 type: string
-                description: TwiML XML with next message, Gather (if continuing), or Hangup (if complete)
+                description: TwiML XML
         '400':
           description: Missing job_id
         '403':
@@ -408,9 +396,9 @@ paths:
     get:
       tags:
         - Voice
-      summary: Twilio webhook - Outbound qualification call handler (GET)
+      summary: Twilio webhook - Outbound realtime stream entrypoint (GET)
       description: Alternative GET handler
-      operationId: voiceQualifyGet
+      operationId: voiceStreamGet
       parameters:
         - name: job_id
           in: query
@@ -438,7 +426,7 @@ paths:
         Called by Twilio after Gather collects user speech during inbound calls.
         
         **Note:** This endpoint is for inbound calls only. For outbound qualification calls,
-        see `/voice/qualify`.
+        see `/voice/stream`.
       operationId: voiceTurn
       parameters:
         - name: step

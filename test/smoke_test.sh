@@ -185,8 +185,8 @@ test_endpoint "Request Introduction" "POST" "/request-intro" \
 # ========================================
 # Voice Endpoints (Twilio webhooks - no auth; 403 when signature missing in prod is OK)
 # ========================================
-test_endpoint "Voice Qualify (GET)" "GET" "/voice/qualify" "" "200,403"
-test_endpoint "Voice Qualify (POST)" "POST" "/voice/qualify" "CallSid=CAtest&job_id=test-job" "200,403" "false" "form"
+test_endpoint "Voice Stream (GET)" "GET" "/voice/stream" "" "200,403"
+test_endpoint "Voice Stream (POST)" "POST" "/voice/stream" "CallSid=CAtest&job_id=test-job" "200,403" "false" "form"
 test_endpoint "Voice Inbound (GET)" "GET" "/voice/inbound" "" "200,403"
 test_endpoint "Voice Status (GET)" "GET" "/voice/status" "" "200,403"
 

@@ -889,9 +889,9 @@ def delete_user():
 
 # DEPRECATED ENDPOINTS REMOVED:
 # All conversation handling is unified:
-# - Outbound: /voice/qualify (handles entire outbound qualification conversation)
+# - Outbound: /voice/stream (realtime streaming via /voice/ws)
 # - Status: /voice/status (handles all call status updates)
-# The worker uses /voice/qualify and /voice/status directly
+# The worker uses /voice/stream and /voice/status directly
 
 @onboarding_bp.route("/status", methods=["POST"])
 def onboarding_status():

@@ -2,23 +2,19 @@
 Voice/telephony routes for Ai-dan (outbound qualification calls).
 
 This module handles Twilio webhook endpoints for voice conversations:
-- /voice/qualify: Main endpoint for outbound qualification calls (handles entire conversation)
 - /voice/stream: Returns TwiML with Media Streams for realtime streaming calls
 - /voice/inbound: Turn handler for future inbound calls
 - /voice/status: Status callback webhook for all calls
 
 Architecture:
 - Outbound calls (realtime): Worker creates call → /voice/stream returns <Stream> TwiML → WebSocket bridge handles conversation
-- Outbound calls (legacy): Worker creates call → Twilio calls /voice/qualify → Conversation service handles turns
 - Status updates: Twilio automatically calls /voice/status on status changes
-- All conversation logic is in services/qualification_conversation_service.py or realtime_voice_bridge.py
 """
 import traceback
 import os
 from flask import request, Response
 from routes import voice_bp
 from config.clients import VoiceResponse
-from services.qualification_conversation_service import handle_conversation_turn, handle_deferred_assistant_turn
 
 
 @voice_bp.route("/stream", methods=["POST", "GET"])
@@ -101,174 +97,6 @@ def voice_stream():
         return Response(str(resp), mimetype="text/xml")
 
 
-@voice_bp.route("/qualify", methods=["POST", "GET"])
-def voice_qualify():
-    """
-    Outbound qualification call endpoint - PRIMARY ENDPOINT FOR QUALIFICATION CALLS.
-    
-    This is the main entry point for all outbound qualification conversations.
-    Called by Twilio when:
-    1. Initial call: User answers the phone → Returns opening message + Gather
-    2. Subsequent turns: After Gather collects user speech → Processes response, calls OpenAI, returns next message
-    
-    Conversation Flow:
-    - Opening turn: No SpeechResult → generate_opening_message() → TTS → TwiML with Gather
-    - User turn: SpeechResult present → save user turn → get conversation history → OpenAI → extract data → save assistant turn → TTS → TwiML
-    - Completion: When is_complete=True → play final message → hangup
-    
-    All conversation logic is delegated to:
-    - services/qualification_conversation_service.py: Turn handling, opening messages, closing
-    - services/qualification_agent_service.py: OpenAI prompts, question sequences, data extraction
-    - services/qualification_turn_service.py: Database operations (saving turns, applying updates)
-    
-    Query params:
-        job_id: Job ID from outbound_call_jobs table (required) - links call to user/signup
-        SpeechResult: User's spoken response (for subsequent turns, empty on initial call)
-        CallSid: Twilio call identifier (automatically provided)
-        Confidence: Speech recognition confidence score
-    
-    Security:
-    - Twilio signature verification (bypasses in dev mode)
-    - Returns 403 if signature invalid in production
-    
-    Returns:
-        TwiML Response (text/xml) with either:
-        - Opening message + Gather (initial call)
-        - Next question + Gather (subsequent turns)
-        - Final message + Hangup (conversation complete)
-    """
-    if not VoiceResponse:
-        return Response("Voice features not available", mimetype="text/plain"), 503
-    
-    # Verify Twilio signature (RequestValidator handles request.url automatically)
-    from utils.twilio_helpers import verify_twilio_signature
-    import os
-    app_env = os.getenv("APP_ENV", "prod").lower()
-    
-    if not verify_twilio_signature():
-        if app_env != "dev":
-            print("❌ Invalid Twilio signature in production mode")
-            return Response("Invalid signature", status=403), 403
-        else:
-            print("⚠️ Twilio signature verification failed, but continuing (dev mode)")
-    
-    call_sid = request.values.get("CallSid") or request.args.get("CallSid") or "unknown"
-    job_id = request.values.get("job_id") or request.args.get("job_id")
-    user_speech = (request.values.get("SpeechResult") or "").strip()
-    speech_confidence = request.values.get("Confidence", "0")
-    
-    print(f"📞 Qualification call received: call_sid={call_sid}, job_id={job_id}, has_speech={bool(user_speech)}")
-    print(f"📞 Request method: {request.method}, URL: {request.url}")
-    print(f"📞 Request args: {dict(request.args)}")
-    print(f"📞 Request values: {dict(request.values)}")
-    
-    if not job_id:
-        print(f"⚠️ Missing job_id in qualification call: call_sid={call_sid}")
-        resp = VoiceResponse()
-        resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
-        resp.hangup()
-        return Response(str(resp), mimetype="text/xml")
-    
-    try:
-        # Handle conversation turn (works for both initial call and subsequent turns)
-        # If user_speech is empty, it's the opening turn
-        resp, error = handle_conversation_turn(
-            call_sid=call_sid,
-            user_speech=user_speech if user_speech else None,
-            speech_confidence=speech_confidence,
-            job_id=job_id,
-            request_url_root=request.url_root
-        )
-        
-        if error:
-            print(f"⚠️ Error in qualification call: {error}")
-            resp = VoiceResponse()
-            resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
-            resp.hangup()
-            return Response(str(resp), mimetype="text/xml")
-        
-        if not resp:
-            print(f"❌ handle_conversation_turn returned None response (error was also None)")
-            resp = VoiceResponse()
-            resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
-            resp.hangup()
-            return Response(str(resp), mimetype="text/xml")
-        
-        # Ensure we have valid TwiML
-        twiml_str = str(resp)
-        if not twiml_str or len(twiml_str.strip()) == 0:
-            print(f"❌ Empty TwiML response generated")
-            resp = VoiceResponse()
-            resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
-            resp.hangup()
-            return Response(str(resp), mimetype="text/xml")
-        
-        return Response(twiml_str, mimetype="text/xml")
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"❌ Exception in voice_qualify: {e}")
-        resp = VoiceResponse()
-        resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
-        resp.hangup()
-        return Response(str(resp), mimetype="text/xml")
-
-
-@voice_bp.route("/qualify/deferred", methods=["POST", "GET"])
-def voice_qualify_deferred():
-    """
-    Deferred turn endpoint for outbound qualification calls.
-
-    Used by the "fast ack" optimization: we immediately play a short acknowledgement,
-    then redirect here while the next OpenAI+TTS response is generated in the background.
-    """
-    if not VoiceResponse:
-        return Response("Voice features not available", mimetype="text/plain"), 503
-
-    from utils.twilio_helpers import verify_twilio_signature
-    import os
-    app_env = os.getenv("APP_ENV", "prod").lower()
-
-    if not verify_twilio_signature():
-        if app_env != "dev":
-            print("❌ Invalid Twilio signature in production mode (deferred)")
-            return Response("Invalid signature", status=403), 403
-        else:
-            print("⚠️ Twilio signature verification failed, but continuing (dev mode) (deferred)")
-
-    call_sid = request.values.get("CallSid") or request.args.get("CallSid") or "unknown"
-    job_id = request.values.get("job_id") or request.args.get("job_id")
-    expected_seq = request.values.get("expected_seq") or request.args.get("expected_seq")
-
-    if not job_id or not expected_seq:
-        resp = VoiceResponse()
-        resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
-        resp.hangup()
-        return Response(str(resp), mimetype="text/xml")
-
-    try:
-        resp, error = handle_deferred_assistant_turn(
-            call_sid=call_sid,
-            job_id=str(job_id),
-            expected_seq=int(expected_seq),
-            request_url_root=request.url_root,
-        )
-        if error or not resp:
-            resp = VoiceResponse()
-            resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
-            resp.hangup()
-            return Response(str(resp), mimetype="text/xml")
-        return Response(str(resp), mimetype="text/xml")
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"❌ Exception in voice_qualify_deferred: {e}")
-        resp = VoiceResponse()
-        resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
-        resp.hangup()
-        return Response(str(resp), mimetype="text/xml")
-
-
 @voice_bp.route("/inbound", methods=["POST", "GET"])
 def voice_inbound():
     """
@@ -277,7 +105,7 @@ def voice_inbound():
     Called by Twilio after Gather collects user speech during inbound calls.
     This endpoint is reserved for future inbound call functionality.
     
-    For outbound qualification calls, see /voice/qualify.
+    For outbound qualification calls, see /voice/stream.
     """
     if not VoiceResponse:
         return Response("Voice features not available", mimetype="text/plain"), 503
