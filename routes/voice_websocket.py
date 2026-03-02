@@ -452,7 +452,6 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
         session_config = {
             "type": "session.update",
             "session": {
-                "type": "realtime",
                 "model": realtime_model,
                 "instructions": system_prompt,
                 "output_modalities": ["text"] if output_text_only else ["audio"],
@@ -579,7 +578,6 @@ def _enable_post_greeting_barge_in(openai_ws):
     update_event = {
         "type": "session.update",
         "session": {
-            "type": "realtime",
             "audio": {
                 "input": {
                     "turn_detection": {
@@ -837,7 +835,6 @@ def _fallback_to_openai_audio_mode(openai_ws, assistant_text: str, bridge_state,
     session_update = {
         "type": "session.update",
         "session": {
-            "type": "realtime",
             "output_modalities": ["audio"],
             "audio": {
                 "output": {
