@@ -32,7 +32,26 @@ COMMON_PROMPTS = [
     "Perfect. What's the best email address for me to send the introduction to?",
     "Great. I've emailed the introduction. Goodbye.",
     "Sorry, I didn't catch that. Let's try again quickly."
+
+    # Fast-ack / deferred polling lines (optional; only generated at startup if TTS_PRECACHE=1)
+    ,"Great — let me just pull up your profile."
+    ,"Great — one moment while I pull that up."
 ]
+
+def get_disk_cached_audio_path(text: str) -> str:
+    """
+    Return the deterministic cached audio path *only if* the mp3 exists on disk.
+    This avoids triggering an ElevenLabs API call.
+    """
+    if not text or not ELEVEN_VOICE_ID:
+        return ""
+    cache_key = f"{ELEVEN_VOICE_ID}:{text}".encode("utf-8")
+    digest = hashlib.sha256(cache_key).hexdigest()[:32]
+    filename = f"{digest}.mp3"
+    filepath = CACHE_DIR / filename
+    if filepath.exists():
+        return f"/static/audio/{filename}"
+    return ""
 
 
 def generate_tts(text: str) -> str:
