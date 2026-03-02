@@ -49,6 +49,7 @@ def init_voice_websocket(sock: Sock):
         interaction_id: Optional[str] = None
         signup_mode: Optional[str] = None
         openai_ws = None
+        forwarded_audio_frames = 0
 
         try:
             session_manager = get_session_manager()
@@ -187,6 +188,12 @@ def init_voice_websocket(sock: Sock):
                                 "audio": base64.b64encode(pcm_24k).decode("utf-8")
                             }
                             openai_ws.send(json.dumps(audio_event))
+                            forwarded_audio_frames += 1
+                            if forwarded_audio_frames <= 5 or forwarded_audio_frames % 500 == 0:
+                                print(
+                                    f"Forwarded audio frame #{forwarded_audio_frames} to OpenAI",
+                                    flush=True,
+                                )
                         except Exception as e:
                             print(f"Error forwarding audio to OpenAI: {e}")
 
@@ -305,7 +312,8 @@ def _connect_openai_sync(signup_mode: Optional[str]):
                             "type": "server_vad",
                             "threshold": 0.5,
                             "prefix_padding_ms": 300,
-                            "silence_duration_ms": 500
+                            "silence_duration_ms": 500,
+                            "create_response": True
                         }
                     }
                 }
@@ -478,6 +486,9 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     # User stopped speaking - record timing
                     metrics_service.record_user_speech_end(call_sid)
                     log("User stopped speaking")
+
+                elif event_type == "input_audio_buffer.speech_started":
+                    log("User started speaking")
 
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     # Got transcript of user speech
