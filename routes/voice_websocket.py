@@ -57,6 +57,7 @@ def init_voice_websocket(sock: Sock):
             "manual_vad_active": False,
             "manual_last_voice_ms": 0.0,
             "manual_last_trigger_ms": 0.0,
+            "end_call_requested": False,
         }
 
         try:
@@ -92,6 +93,11 @@ def init_voice_websocket(sock: Sock):
                     continue
 
                 event_type = data.get("event")
+
+                with state_lock:
+                    if bridge_state.get("end_call_requested"):
+                        print("End-call requested; exiting Twilio receive loop", flush=True)
+                        break
 
                 # Log non-media events and periodic media count
                 if event_type != "media":
@@ -205,9 +211,9 @@ def init_voice_websocket(sock: Sock):
                             mulaw_audio = base64.b64decode(payload)
                             pcm_8k = mulaw_to_pcm16(mulaw_audio)
                             rms = _pcm16_rms(pcm_8k)
-                            voice_threshold = 900.0
-                            silence_gap_ms = 850.0
-                            trigger_cooldown_ms = 1200.0
+                            voice_threshold = 1000.0
+                            silence_gap_ms = 1200.0
+                            trigger_cooldown_ms = 1500.0
 
                             with state_lock:
                                 greeting_completed = bridge_state["greeting_completed"]
@@ -348,6 +354,28 @@ def _connect_openai_sync(signup_mode: Optional[str]):
                 "model": realtime_model,
                 "instructions": system_prompt,
                 "output_modalities": ["audio"],
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "end_call",
+                        "description": (
+                            "Signal that this phone conversation is complete and should be terminated now. "
+                            "Call this exactly once after your final goodbye."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "reason": {
+                                    "type": "string",
+                                    "enum": ["completed", "user_requested_end", "no_interest", "voicemail", "other"],
+                                },
+                                "summary": {"type": "string"},
+                            },
+                            "required": ["reason"],
+                        },
+                    }
+                ],
+                "tool_choice": "auto",
                 "audio": {
                     "input": {
                         "format": {
@@ -357,8 +385,8 @@ def _connect_openai_sync(signup_mode: Optional[str]):
                             "type": "server_vad",
                             "threshold": 0.5,
                             "prefix_padding_ms": 300,
-                            "silence_duration_ms": 500,
-                            "idle_timeout_ms": 6000,
+                            "silence_duration_ms": 900,
+                            "idle_timeout_ms": 8000,
                             "create_response": True,
                             "interrupt_response": True
                         }
@@ -436,6 +464,8 @@ IMPORTANT RULES:
 - If the user wants to end the call, thank them politely and close
 - After 8-10 minutes or when enough info is gathered, begin closing the conversation
 - Be natural and conversational, not robotic
+- When the call has clearly concluded, call the end_call tool exactly once.
+- Do not repeat goodbye lines in a loop.
 """
 
 
@@ -459,8 +489,8 @@ def _enable_post_greeting_barge_in(openai_ws):
                         "type": "server_vad",
                         "threshold": 0.5,
                         "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500,
-                        "idle_timeout_ms": 6000,
+                        "silence_duration_ms": 900,
+                        "idle_timeout_ms": 8000,
                         "create_response": True,
                         "interrupt_response": True
                     }
@@ -483,6 +513,45 @@ def _pcm16_rms(pcm16_data: bytes) -> float:
     for s in samples:
         energy += float(s) * float(s)
     return (energy / float(sample_count)) ** 0.5
+
+
+def _request_call_hangup(call_sid: Optional[str]) -> bool:
+    """End a Twilio call immediately by CallSid."""
+    if not call_sid:
+        return False
+    try:
+        from config.clients import twilio_client
+        if not twilio_client:
+            print("Twilio client unavailable; cannot hang up call", flush=True)
+            return False
+        twilio_client.calls(call_sid).update(status="completed")
+        print(f"Requested Twilio hangup for call_sid={call_sid}", flush=True)
+        return True
+    except Exception as e:
+        print(f"Failed to request Twilio hangup for {call_sid}: {e}", flush=True)
+        return False
+
+
+def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock, log_fn):
+    """Detect end_call function invocation and trigger hangup once."""
+    if (item or {}).get("type") != "function_call":
+        return
+    if (item or {}).get("name") != "end_call":
+        return
+
+    args_raw = item.get("arguments") or "{}"
+    try:
+        args = json.loads(args_raw) if isinstance(args_raw, str) else (args_raw or {})
+    except Exception:
+        args = {"raw_arguments": args_raw}
+
+    with state_lock:
+        if bridge_state.get("end_call_requested"):
+            return
+        bridge_state["end_call_requested"] = True
+
+    log_fn(f"end_call tool invoked with args: {args}")
+    _request_call_hangup(call_sid)
 
 
 def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, metrics_service, bridge_state, state_lock):
@@ -534,7 +603,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                 if message_count <= 50 or event_type != "response.output_audio.delta":
                     log(f"OpenAI event #{message_count}: {event_type}")
                     # Log full data for key events
-                    if event_type in ("error", "response.done", "session.updated", "response.created", "response.output_audio.done"):
+                    if event_type in ("error", "response.done", "session.updated", "response.created", "response.output_audio.done", "response.output_item.done"):
                         log(f"  Full data: {json.dumps(data)[:800]}")
 
                 if event_type == "response.output_audio.delta":
@@ -593,6 +662,10 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                         f"role={item.get('role')}, id={item.get('id')}"
                     )
 
+                elif event_type == "response.output_item.done":
+                    item = data.get("item", {}) or {}
+                    _handle_end_call_signal(item, call_sid, bridge_state, state_lock, log)
+
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     # Got transcript of user speech
                     transcript = data.get("transcript", "")
@@ -611,6 +684,10 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     exit_reason = f"openai_error: {error.get('type', 'unknown')}"
 
                 elif event_type == "response.done":
+                    response = data.get("response", {}) or {}
+                    for output_item in response.get("output", []) or []:
+                        _handle_end_call_signal(output_item, call_sid, bridge_state, state_lock, log)
+
                     with state_lock:
                         bridge_state["awaiting_response"] = False
                         bridge_state["saw_openai_speech_event"] = False
