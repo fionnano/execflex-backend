@@ -215,7 +215,11 @@ def init_voice_websocket(sock: Sock):
                     try:
                         print("Attempting to connect to OpenAI Realtime API...", flush=True)
                         _append_job_debug_event(job_id, "openai_connect_attempt")
-                        openai_ws = _connect_openai_sync(signup_mode, output_text_only=use_elevenlabs_output)
+                        openai_ws = _connect_openai_sync(
+                            signup_mode,
+                            output_text_only=use_elevenlabs_output,
+                            job_id=job_id,
+                        )
                         if openai_ws:
                             _append_job_debug_event(job_id, "openai_connect_success")
                             print("OpenAI connection successful, starting response handler thread...", flush=True)
@@ -357,7 +361,7 @@ def _start_keepalive_thread(ws, interval=20):
     return keepalive_thread
 
 
-def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = False):
+def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = False, job_id: Optional[str] = None):
     """Connect to OpenAI Realtime API (synchronous wrapper)."""
     import os
     import websocket
@@ -371,7 +375,8 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
     realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "ash")
     url = f"wss://api.openai.com/v1/realtime?model={realtime_model}"
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}"
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "OpenAI-Beta": "realtime=v1",
     }
 
     print(f"Connecting to OpenAI Realtime API...", flush=True)
@@ -394,18 +399,27 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
         # Keep TCP/WebSocket connection alive without mutating conversation state.
         _start_keepalive_thread(ws, interval=20)
 
-        # Wait for session.created before sending any configuration
+        # Wait for session.created (or early error) before sending any configuration.
         print("Waiting for session.created from OpenAI...", flush=True)
-        initial_message = ws.recv()
-        if initial_message:
+        saw_session_created = False
+        for _ in range(20):
+            initial_message = ws.recv()
+            if not initial_message:
+                continue
             initial_data = json.loads(initial_message)
-            print(f"OpenAI initial event: {initial_data.get('type')}", flush=True)
-            if initial_data.get("type") == "error":
+            event_type = initial_data.get("type")
+            print(f"OpenAI initial event: {event_type}", flush=True)
+            if event_type == "error":
                 print(f"OpenAI error on connect: {initial_data.get('error')}", flush=True)
+                _append_job_debug_event(job_id, "openai_connect_error", {"stage": "connect", "error": initial_data.get("error")})
                 ws.close()
                 return None
-        else:
-            print("No initial message from OpenAI", flush=True)
+            if event_type == "session.created":
+                saw_session_created = True
+                break
+        if not saw_session_created:
+            print("Did not receive session.created from OpenAI", flush=True)
+            _append_job_debug_event(job_id, "openai_connect_error", {"stage": "session_created_timeout"})
             ws.close()
             return None
 
@@ -473,25 +487,34 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
         ws.send(json.dumps(session_config))
         print("Session.update sent, waiting for session.updated...", flush=True)
 
-        # Wait for session.updated confirmation
-        update_message = ws.recv()
-        if update_message:
+        # Wait for session.updated confirmation (ignore non-terminal events).
+        saw_session_updated = False
+        for _ in range(30):
+            update_message = ws.recv()
+            if not update_message:
+                continue
             update_data = json.loads(update_message)
-            print(f"OpenAI update response: {update_data.get('type')}", flush=True)
-            if update_data.get("type") == "error":
+            event_type = update_data.get("type")
+            print(f"OpenAI update response: {event_type}", flush=True)
+            if event_type == "error":
                 print(f"OpenAI session update error: {update_data.get('error')}", flush=True)
+                _append_job_debug_event(job_id, "openai_connect_error", {"stage": "session_update", "error": update_data.get("error")})
                 ws.close()
                 return None
-            elif update_data.get("type") == "session.updated":
+            if event_type == "session.updated":
+                saw_session_updated = True
                 print("OpenAI Realtime session configured successfully", flush=True)
-        else:
-            print("No update confirmation from OpenAI", flush=True)
+                break
+        if not saw_session_updated:
+            print("No session.updated confirmation from OpenAI", flush=True)
+            _append_job_debug_event(job_id, "openai_connect_error", {"stage": "session_update_timeout"})
             ws.close()
             return None
 
         return ws
     except Exception as e:
         print(f"Failed to connect to OpenAI Realtime: {e}", flush=True)
+        _append_job_debug_event(job_id, "openai_connect_error", {"stage": "exception", "error": str(e)})
         import traceback
         traceback.print_exc()
         return None
