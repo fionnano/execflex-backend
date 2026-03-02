@@ -447,8 +447,10 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
         session_config = {
             "type": "session.update",
             "session": {
+                "type": "realtime",
                 "model": realtime_model,
                 "instructions": system_prompt,
+                "output_modalities": ["text"] if output_text_only else ["audio"],
                 "tools": [
                     {
                         "type": "function",
@@ -474,24 +476,29 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
                 "input_audio_transcription": {
                     "model": "gpt-4o-mini-transcribe"
                 },
-                "input_audio_format": "g711_ulaw",
-                "output_audio_format": "g711_ulaw",
-                "voice": realtime_voice,
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 900,
-                    "idle_timeout_ms": 8000,
-                    "create_response": True,
-                    "interrupt_response": True
-                }
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcmu"},
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": 0.5,
+                            "prefix_padding_ms": 300,
+                            "silence_duration_ms": 900,
+                            "idle_timeout_ms": 8000,
+                            "create_response": True,
+                            "interrupt_response": True
+                        }
+                    },
+                    "output": {
+                        "format": {"type": "audio/pcmu"},
+                        "voice": realtime_voice
+                    }
+                },
             }
         }
+
         ws.send(json.dumps(session_config))
         print("Session.update sent, waiting for session.updated...", flush=True)
-
-        # Wait for session.updated confirmation (ignore non-terminal events).
         saw_session_updated = False
         for _ in range(30):
             update_message = ws.recv()
@@ -501,17 +508,18 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
             event_type = update_data.get("type")
             print(f"OpenAI update response: {event_type}", flush=True)
             if event_type == "error":
-                print(f"OpenAI session update error: {update_data.get('error')}", flush=True)
-                _append_job_debug_event(job_id, "openai_connect_error", {"stage": "session_update", "error": update_data.get("error")})
-                ws.close()
-                return None
+                _append_job_debug_event(
+                    job_id,
+                    "openai_connect_error",
+                    {"stage": "session_update", "error": update_data.get("error")},
+                )
+                break
             if event_type == "session.updated":
                 saw_session_updated = True
                 print("OpenAI Realtime session configured successfully", flush=True)
                 break
         if not saw_session_updated:
             print("No session.updated confirmation from OpenAI", flush=True)
-            _append_job_debug_event(job_id, "openai_connect_error", {"stage": "session_update_timeout"})
             ws.close()
             return None
 
@@ -583,15 +591,20 @@ def _enable_post_greeting_barge_in(openai_ws):
     update_event = {
         "type": "session.update",
         "session": {
-            "turn_detection": {
-                "type": "server_vad",
-                "threshold": 0.5,
-                "prefix_padding_ms": 300,
-                "silence_duration_ms": 900,
-                "idle_timeout_ms": 8000,
-                "create_response": True,
-                "interrupt_response": True
-            }
+            "type": "realtime",
+            "audio": {
+                "input": {
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 900,
+                        "idle_timeout_ms": 8000,
+                        "create_response": True,
+                        "interrupt_response": True
+                    }
+                }
+            },
         }
     }
     openai_ws.send(json.dumps(update_event))
@@ -836,8 +849,13 @@ def _fallback_to_openai_audio_mode(openai_ws, assistant_text: str, bridge_state,
     session_update = {
         "type": "session.update",
         "session": {
-            "voice": realtime_voice,
-            "output_audio_format": "g711_ulaw",
+            "type": "realtime",
+            "audio": {
+                "output": {
+                    "format": {"type": "audio/pcmu"},
+                    "voice": realtime_voice,
+                }
+            }
         },
     }
     try:
