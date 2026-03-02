@@ -339,36 +339,48 @@ IMPORTANT RULES:
 def _send_greeting_request(openai_ws, signup_mode: Optional[str]):
     """Send initial greeting request to OpenAI."""
     if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
-        greeting_instruction = (
-            "Greet the caller warmly. Say: Hi, this is Ai-dan from ExecFlex. "
+        greeting_text = (
+            "Hi, this is Ai-dan from ExecFlex. "
             "I noticed you just signed up looking for executive opportunities. "
             "Have I caught you at a bad time?"
         )
     elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
-        greeting_instruction = (
-            "Greet the caller warmly. Say: Hello, this is Ai-dan from ExecFlex. "
+        greeting_text = (
+            "Hello, this is Ai-dan from ExecFlex. "
             "I noticed you just signed up looking for executive talent for your organization. "
             "Have I caught you at a bad time?"
         )
     else:
-        greeting_instruction = (
-            "Greet the caller warmly. Say: Hello, this is Ai-dan from ExecFlex. "
+        greeting_text = (
+            "Hello, this is Ai-dan from ExecFlex. "
             "I noticed you just signed up. Are you looking to hire executive talent, "
             "or are you an executive looking for opportunities?"
         )
 
-    # Use response.create with instructions to trigger the greeting
-    # This tells OpenAI to generate audio immediately without waiting for user input
-    create_response = {
-        "type": "response.create",
-        "response": {
-            "modalities": ["text", "audio"],
-            "instructions": greeting_instruction
+    # Create a user message that prompts the assistant to speak
+    # This is a workaround - we create a "user" message asking the assistant to greet
+    user_prompt = {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": f"[System: The call just connected. Greet the caller now.] Say exactly this: {greeting_text}"
+                }
+            ]
         }
     }
-    print(f"Sending greeting request to OpenAI: {greeting_instruction[:60]}...", flush=True)
+    print(f"Sending user prompt to OpenAI: {greeting_text[:50]}...", flush=True)
+    openai_ws.send(json.dumps(user_prompt))
+
+    # Now trigger a response - OpenAI should generate audio based on the prompt
+    create_response = {
+        "type": "response.create"
+    }
     openai_ws.send(json.dumps(create_response))
-    print("Greeting response.create sent to OpenAI", flush=True)
+    print("Response.create sent to OpenAI (should generate audio)", flush=True)
 
 
 def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, metrics_service):
