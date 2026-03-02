@@ -3,19 +3,102 @@ Voice/telephony routes for Ai-dan (outbound qualification calls).
 
 This module handles Twilio webhook endpoints for voice conversations:
 - /voice/qualify: Main endpoint for outbound qualification calls (handles entire conversation)
+- /voice/stream: Returns TwiML with Media Streams for realtime streaming calls
 - /voice/inbound: Turn handler for future inbound calls
 - /voice/status: Status callback webhook for all calls
 
 Architecture:
-- Outbound calls: Worker creates call → Twilio calls /voice/qualify → Conversation service handles turns
+- Outbound calls (realtime): Worker creates call → /voice/stream returns <Stream> TwiML → WebSocket bridge handles conversation
+- Outbound calls (legacy): Worker creates call → Twilio calls /voice/qualify → Conversation service handles turns
 - Status updates: Twilio automatically calls /voice/status on status changes
-- All conversation logic is in services/qualification_conversation_service.py
+- All conversation logic is in services/qualification_conversation_service.py or realtime_voice_bridge.py
 """
 import traceback
+import os
 from flask import request, Response
 from routes import voice_bp
 from config.clients import VoiceResponse
-from services.qualification_conversation_service import handle_conversation_turn
+from services.qualification_conversation_service import handle_conversation_turn, handle_deferred_assistant_turn
+
+
+@voice_bp.route("/stream", methods=["POST", "GET"])
+def voice_stream():
+    """
+    Realtime streaming voice endpoint - Returns TwiML to start Media Streams.
+
+    This is the entry point for realtime streaming calls. When Twilio calls this endpoint,
+    it returns TwiML that:
+    1. Plays a brief connection message
+    2. Starts a bidirectional Media Stream WebSocket connection to /voice/ws
+
+    The actual conversation is handled by the WebSocket endpoint which bridges
+    Twilio Media Streams with OpenAI Realtime API and ElevenLabs TTS.
+
+    Query params:
+        job_id: Job ID from outbound_call_jobs table (required)
+        CallSid: Twilio call identifier (automatically provided)
+
+    Returns:
+        TwiML Response with <Connect><Stream> directive
+    """
+    if not VoiceResponse:
+        return Response("Voice features not available", mimetype="text/plain"), 503
+
+    # Verify Twilio signature
+    from utils.twilio_helpers import verify_twilio_signature
+    app_env = os.getenv("APP_ENV", "prod").lower()
+
+    if not verify_twilio_signature():
+        if app_env != "dev":
+            print("Invalid Twilio signature in production mode (stream)")
+            return Response("Invalid signature", status=403), 403
+        else:
+            print("Twilio signature verification failed, but continuing (dev mode) (stream)")
+
+    call_sid = request.values.get("CallSid") or request.args.get("CallSid") or "unknown"
+    job_id = request.values.get("job_id") or request.args.get("job_id")
+
+    print(f"Realtime stream call received: call_sid={call_sid}, job_id={job_id}")
+
+    if not job_id:
+        print(f"Missing job_id in stream call: call_sid={call_sid}")
+        resp = VoiceResponse()
+        resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
+        resp.hangup()
+        return Response(str(resp), mimetype="text/xml")
+
+    try:
+        # Build WebSocket URL for Media Streams
+        base_url = (
+            os.getenv("API_BASE_URL") or
+            os.getenv("RENDER_EXTERNAL_URL") or
+            "https://execflex-backend-1.onrender.com"
+        )
+        # Convert http(s) to wss
+        ws_base = base_url.replace("https://", "wss://").replace("http://", "ws://")
+        ws_url = f"{ws_base}/voice/ws?job_id={job_id}"
+
+        # Create TwiML response with Media Streams
+        resp = VoiceResponse()
+
+        # Start the stream - Twilio will connect to our WebSocket endpoint
+        connect = resp.connect()
+        stream = connect.stream(url=ws_url, name="realtime-stream")
+        # Pass job_id as a custom parameter
+        stream.parameter(name="job_id", value=str(job_id))
+        stream.parameter(name="call_sid", value=str(call_sid))
+
+        print(f"Returning stream TwiML: ws_url={ws_url}")
+        return Response(str(resp), mimetype="text/xml")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"Exception in voice_stream: {e}")
+        resp = VoiceResponse()
+        resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
+        resp.hangup()
+        return Response(str(resp), mimetype="text/xml")
 
 
 @voice_bp.route("/qualify", methods=["POST", "GET"])
@@ -125,6 +208,61 @@ def voice_qualify():
         import traceback
         traceback.print_exc()
         print(f"❌ Exception in voice_qualify: {e}")
+        resp = VoiceResponse()
+        resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
+        resp.hangup()
+        return Response(str(resp), mimetype="text/xml")
+
+
+@voice_bp.route("/qualify/deferred", methods=["POST", "GET"])
+def voice_qualify_deferred():
+    """
+    Deferred turn endpoint for outbound qualification calls.
+
+    Used by the "fast ack" optimization: we immediately play a short acknowledgement,
+    then redirect here while the next OpenAI+TTS response is generated in the background.
+    """
+    if not VoiceResponse:
+        return Response("Voice features not available", mimetype="text/plain"), 503
+
+    from utils.twilio_helpers import verify_twilio_signature
+    import os
+    app_env = os.getenv("APP_ENV", "prod").lower()
+
+    if not verify_twilio_signature():
+        if app_env != "dev":
+            print("❌ Invalid Twilio signature in production mode (deferred)")
+            return Response("Invalid signature", status=403), 403
+        else:
+            print("⚠️ Twilio signature verification failed, but continuing (dev mode) (deferred)")
+
+    call_sid = request.values.get("CallSid") or request.args.get("CallSid") or "unknown"
+    job_id = request.values.get("job_id") or request.args.get("job_id")
+    expected_seq = request.values.get("expected_seq") or request.args.get("expected_seq")
+
+    if not job_id or not expected_seq:
+        resp = VoiceResponse()
+        resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
+        resp.hangup()
+        return Response(str(resp), mimetype="text/xml")
+
+    try:
+        resp, error = handle_deferred_assistant_turn(
+            call_sid=call_sid,
+            job_id=str(job_id),
+            expected_seq=int(expected_seq),
+            request_url_root=request.url_root,
+        )
+        if error or not resp:
+            resp = VoiceResponse()
+            resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
+            resp.hangup()
+            return Response(str(resp), mimetype="text/xml")
+        return Response(str(resp), mimetype="text/xml")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Exception in voice_qualify_deferred: {e}")
         resp = VoiceResponse()
         resp.say("Sorry, there was an error. Goodbye.", voice="alice", language="en-GB")
         resp.hangup()

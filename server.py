@@ -9,6 +9,7 @@ See routes/ directory for endpoint implementations.
 import os
 from flask import Flask
 from flask_cors import CORS
+from flask_sock import Sock
 
 # Configuration
 from config.app_config import validate_config, print_config_status, PORT
@@ -36,6 +37,10 @@ print_config_status()
 
 # Create Flask app
 app = Flask(__name__, static_folder="static")
+
+# Initialize WebSocket support for realtime voice streaming
+sock = Sock(app)
+
 # Configure CORS to allow requests from frontend domain
 # Flask-CORS will automatically handle OPTIONS preflight requests
 CORS(app, resources={
@@ -59,6 +64,10 @@ app.register_blueprint(roles_bp)
 app.register_blueprint(introductions_bp)
 app.register_blueprint(voice_bp)
 app.register_blueprint(onboarding_bp)
+
+# Initialize WebSocket routes for realtime voice streaming
+from routes.voice_websocket import init_voice_websocket
+init_voice_websocket(sock)
 
 # Rate limiting can be applied to specific endpoints here if needed
 

@@ -277,14 +277,21 @@ def process_queued_jobs(limit: int = 10) -> int:
                 
                 # Initiate Twilio call
                 # Construct URL manually (url_for requires app context which we don't have in worker)
-                # Use /voice/qualify endpoint for outbound qualification calls
+                # Use /voice/stream for realtime streaming calls (hard cutover)
+                # Fall back to /voice/qualify if VOICE_REALTIME_ENABLED=0
                 # Priority: API_BASE_URL > RENDER_EXTERNAL_URL > default Render URL
                 base_url = (
-                    os.getenv("API_BASE_URL") or 
-                    os.getenv("RENDER_EXTERNAL_URL") or 
+                    os.getenv("API_BASE_URL") or
+                    os.getenv("RENDER_EXTERNAL_URL") or
                     "https://execflex-backend-1.onrender.com"
                 )
-                twiml_url = f"{base_url}/voice/qualify?job_id={job_id}"
+
+                # Use realtime streaming by default (hard cutover as per spec)
+                use_realtime = os.getenv("VOICE_REALTIME_ENABLED", "1").lower() in ("1", "true", "yes", "y")
+                if use_realtime:
+                    twiml_url = f"{base_url}/voice/stream?job_id={job_id}"
+                else:
+                    twiml_url = f"{base_url}/voice/qualify?job_id={job_id}"
                 
                 call = twilio_client.calls.create(
                     to=phone,
@@ -320,7 +327,8 @@ def process_queued_jobs(limit: int = 10) -> int:
                 # The interaction was created at enqueue time with initial state
                 # Call status will be tracked via the job record and status callbacks
                 
-                print(f"✅ Initiated onboarding call: job_id={job_id}, call_sid={call_sid}, phone={phone}")
+                mode_str = "realtime" if use_realtime else "legacy"
+                print(f"✅ Initiated onboarding call ({mode_str}): job_id={job_id}, call_sid={call_sid}, phone={phone}")
                 processed += 1
                 
             except Exception as e:
