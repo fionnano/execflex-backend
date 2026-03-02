@@ -185,18 +185,22 @@ def _connect_openai_sync(signup_mode: Optional[str]):
         print("OpenAI API key not configured")
         return None
 
-    url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+    # Use the correct model name for OpenAI Realtime API
+    url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01"
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "OpenAI-Beta": "realtime=v1"
     }
 
+    print(f"Connecting to OpenAI Realtime API...")
     try:
         ws = websocket.create_connection(
             url,
             header=[f"{k}: {v}" for k, v in headers.items()],
-            sslopt={"cert_reqs": ssl.CERT_REQUIRED}
+            sslopt={"cert_reqs": ssl.CERT_REQUIRED},
+            timeout=30
         )
+        print("OpenAI WebSocket connected successfully")
 
         # Configure the session
         system_prompt = _get_system_prompt(signup_mode)
@@ -290,22 +294,32 @@ def _send_greeting_request(openai_ws, signup_mode: Optional[str]):
             "instructions": f"Say exactly this greeting, naturally and warmly: '{greeting}'"
         }
     }
+    print(f"Sending greeting request to OpenAI: {greeting[:50]}...")
     openai_ws.send(json.dumps(create_response))
+    print("Greeting request sent to OpenAI")
 
 
 def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, metrics_service):
     """Handle responses from OpenAI in a background thread."""
+    print(f"OpenAI response handler started for call {call_sid}")
     first_audio_recorded = False
+    message_count = 0
 
     try:
         while True:
             try:
                 message = openai_ws.recv()
                 if not message:
+                    print(f"OpenAI WebSocket returned empty message, exiting handler")
                     break
 
+                message_count += 1
                 data = json.loads(message)
                 event_type = data.get("type")
+
+                # Log all event types for debugging (first 10 messages)
+                if message_count <= 10:
+                    print(f"OpenAI event #{message_count}: {event_type}")
 
                 if event_type == "response.audio.delta":
                     # Streaming audio from OpenAI
@@ -359,11 +373,17 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     )
 
             except Exception as e:
+                import traceback
                 print(f"Error handling OpenAI message: {e}")
+                traceback.print_exc()
                 break
 
     except Exception as e:
+        import traceback
         print(f"OpenAI response handler error: {e}")
+        traceback.print_exc()
+    finally:
+        print(f"OpenAI response handler exiting for call {call_sid}, processed {message_count} messages")
 
 
 def _send_fallback_greeting(twilio_ws, stream_sid: str, signup_mode: Optional[str]):
