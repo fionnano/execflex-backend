@@ -313,6 +313,7 @@ def _connect_openai_sync(signup_mode: Optional[str]):
         session_config = {
             "type": "session.update",
             "session": {
+                "type": "speech_to_speech",  # Required for GA API
                 "modalities": ["text", "audio"],
                 "instructions": system_prompt,
                 "voice": "alloy",
