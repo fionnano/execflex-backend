@@ -292,16 +292,29 @@ def _send_greeting_request(openai_ws, signup_mode: Optional[str]):
             "looking for opportunities?"
         )
 
-    create_response = {
-        "type": "response.create",
-        "response": {
-            "modalities": ["audio", "text"],
-            "instructions": f"Say exactly this greeting, naturally and warmly: '{greeting}'"
+    # First, add the greeting as a conversation item
+    conversation_item = {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": f"Please greet the caller by saying: {greeting}"
+                }
+            ]
         }
     }
-    print(f"Sending greeting request to OpenAI: {greeting[:50]}...")
+    print(f"Sending conversation item to OpenAI: {greeting[:50]}...")
+    openai_ws.send(json.dumps(conversation_item))
+
+    # Then request a response
+    create_response = {
+        "type": "response.create"
+    }
     openai_ws.send(json.dumps(create_response))
-    print("Greeting request sent to OpenAI")
+    print("Response request sent to OpenAI")
 
 
 def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, metrics_service):
@@ -322,9 +335,12 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                 data = json.loads(message)
                 event_type = data.get("type")
 
-                # Log all event types for debugging (first 10 messages)
-                if message_count <= 10:
+                # Log all event types for debugging (first 20 messages)
+                if message_count <= 20:
                     print(f"OpenAI event #{message_count}: {event_type}")
+                    # Log full data for key events
+                    if event_type in ("error", "response.done", "session.updated"):
+                        print(f"  Full data: {json.dumps(data)[:500]}")
 
                 if event_type == "response.audio.delta":
                     # Streaming audio from OpenAI
