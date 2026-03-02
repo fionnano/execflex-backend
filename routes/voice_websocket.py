@@ -267,11 +267,12 @@ def _connect_openai_sync(signup_mode: Optional[str]):
         print("OpenAI API key not configured", flush=True)
         return None
 
-    # Use the full GPT-4o Realtime model with audio support
-    url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+    # Use the GA Realtime model
+    # GA model: gpt-realtime (or gpt-realtime-2025-08-28 for specific version)
+    # Preview model: gpt-4o-realtime-preview-2024-12-17
+    url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "OpenAI-Beta": "realtime=v1"
+        "Authorization": f"Bearer {OPENAI_API_KEY}"
     }
 
     print(f"Connecting to OpenAI Realtime API...", flush=True)
