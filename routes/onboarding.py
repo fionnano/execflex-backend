@@ -9,6 +9,7 @@ from routes import onboarding_bp
 from utils.response_helpers import ok, bad
 from utils.auth_helpers import require_admin, get_authenticated_user_id
 from services.onboarding_service import initialize_user_onboarding, process_queued_jobs
+from services.platform_config_service import get_bool_config, set_bool_config
 from config.clients import twilio_client, supabase_client
 from config.app_config import TWILIO_PHONE_NUMBER, SUPABASE_URL, SUPABASE_KEY
 
@@ -238,6 +239,54 @@ def set_user_mode():
         traceback.print_exc()
         print(f"❌ Error setting user mode: {e}")
         return bad(f"Error setting user mode: {str(e)}", 500)
+
+
+@onboarding_bp.route("/config", methods=["GET"])
+@require_admin
+def get_platform_config():
+    """Read admin-managed configuration values."""
+    enabled, updated_at, updated_by = get_bool_config("elevenlabs_output_enabled", default=False)
+    return ok({
+        "configuration": {
+            "elevenlabs_output_enabled": enabled,
+            "updated_at": updated_at,
+            "updated_by": updated_by,
+        }
+    })
+
+
+@onboarding_bp.route("/config", methods=["POST"])
+@require_admin
+def set_platform_config():
+    """Update admin-managed configuration values."""
+    try:
+        admin_user_id = request.environ.get('authenticated_user_id')
+        data = request.get_json(silent=True) or {}
+
+        if "elevenlabs_output_enabled" not in data:
+            return bad("elevenlabs_output_enabled is required", 400)
+        enabled = data.get("elevenlabs_output_enabled")
+        if not isinstance(enabled, bool):
+            return bad("elevenlabs_output_enabled must be a boolean", 400)
+
+        row = set_bool_config(
+            key="elevenlabs_output_enabled",
+            value=enabled,
+            updated_by=admin_user_id,
+            description="Enable OpenAI text output routed through ElevenLabs realtime TTS for new streaming calls",
+        )
+        return ok({
+            "configuration": {
+                "elevenlabs_output_enabled": bool(row.get("value", enabled)),
+                "updated_at": row.get("updated_at"),
+                "updated_by": row.get("updated_by"),
+            }
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error updating platform config: {e}")
+        return bad(f"Error updating platform config: {str(e)}", 500)
 
 
 @onboarding_bp.route("/conversations", methods=["GET"])

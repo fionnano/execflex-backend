@@ -7,13 +7,15 @@ import base64
 import threading
 import time
 import struct
+import os
 from typing import Optional
 from flask_sock import Sock
 from simple_websocket import Server as SimpleWebSocket
 
 from services.realtime_session_state import get_session_manager, CallPhase
 from services.voice_metrics import get_metrics_service
-from config.app_config import OPENAI_API_KEY
+from services.platform_config_service import get_bool_config
+from config.app_config import OPENAI_API_KEY, ELEVEN_API_KEY, ELEVEN_VOICE_ID
 
 # Import the bridge components
 from services.realtime_voice_bridge import (
@@ -60,6 +62,8 @@ def init_voice_websocket(sock: Sock):
             "end_call_requested": False,
             "next_transcript_turn_sequence": 1,
             "last_transcript_key": None,
+            "use_elevenlabs_output": False,
+            "assistant_text_parts": [],
         }
 
         try:
@@ -157,10 +161,20 @@ def init_voice_websocket(sock: Sock):
                             import traceback
                             traceback.print_exc()
 
+                    use_elevenlabs_output = False
+                    enabled, _, _ = get_bool_config("elevenlabs_output_enabled", default=False)
+                    if enabled:
+                        use_elevenlabs_output = _preflight_elevenlabs_ws(timeout_ms=1000)
+                        if not use_elevenlabs_output:
+                            print("ElevenLabs preflight failed, pinning call to OpenAI audio output", flush=True)
+                    with state_lock:
+                        bridge_state["use_elevenlabs_output"] = use_elevenlabs_output
+                        bridge_state["assistant_text_parts"] = []
+
                     # Connect to OpenAI Realtime API
                     try:
                         print("Attempting to connect to OpenAI Realtime API...", flush=True)
-                        openai_ws = _connect_openai_sync(signup_mode)
+                        openai_ws = _connect_openai_sync(signup_mode, output_text_only=use_elevenlabs_output)
                         if openai_ws:
                             print("OpenAI connection successful, starting response handler thread...", flush=True)
                             # Start background thread to handle OpenAI responses
@@ -296,7 +310,7 @@ def _start_keepalive_thread(ws, interval=20):
     return keepalive_thread
 
 
-def _connect_openai_sync(signup_mode: Optional[str]):
+def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = False):
     """Connect to OpenAI Realtime API (synchronous wrapper)."""
     import os
     import websocket
@@ -350,13 +364,37 @@ def _connect_openai_sync(signup_mode: Optional[str]):
 
         # Now configure the session
         system_prompt = _get_system_prompt(signup_mode)
+        audio_config = {
+            "input": {
+                "format": {
+                    "type": "audio/pcmu"
+                },
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.5,
+                    "prefix_padding_ms": 300,
+                    "silence_duration_ms": 900,
+                    "idle_timeout_ms": 8000,
+                    "create_response": True,
+                    "interrupt_response": True
+                }
+            }
+        }
+        if not output_text_only:
+            audio_config["output"] = {
+                "format": {
+                    "type": "audio/pcmu"
+                },
+                "voice": realtime_voice
+            }
+
         session_config = {
             "type": "session.update",
             "session": {
                 "type": "realtime",
                 "model": realtime_model,
                 "instructions": system_prompt,
-                "output_modalities": ["audio"],
+                "output_modalities": ["text"] if output_text_only else ["audio"],
                 "tools": [
                     {
                         "type": "function",
@@ -382,28 +420,7 @@ def _connect_openai_sync(signup_mode: Optional[str]):
                 "input_audio_transcription": {
                     "model": "gpt-4o-mini-transcribe"
                 },
-                "audio": {
-                    "input": {
-                        "format": {
-                            "type": "audio/pcmu"
-                        },
-                        "turn_detection": {
-                            "type": "server_vad",
-                            "threshold": 0.5,
-                            "prefix_padding_ms": 300,
-                            "silence_duration_ms": 900,
-                            "idle_timeout_ms": 8000,
-                            "create_response": True,
-                            "interrupt_response": True
-                        }
-                    },
-                    "output": {
-                        "format": {
-                            "type": "audio/pcmu"
-                        },
-                        "voice": realtime_voice
-                    }
-                }
+                "audio": audio_config
             }
         }
         ws.send(json.dumps(session_config))
@@ -542,6 +559,27 @@ def _request_call_hangup(call_sid: Optional[str]) -> bool:
         return False
 
 
+def _request_call_hangup_with_message(call_sid: Optional[str], message: str) -> bool:
+    """End a Twilio call with a short spoken message."""
+    if not call_sid:
+        return False
+    try:
+        from config.clients import twilio_client
+        if not twilio_client:
+            return False
+        safe_message = (message or "").replace("&", " and ").replace("<", "").replace(">", "")
+        twiml = (
+            f"<Response><Say voice=\"alice\" language=\"en-GB\">{safe_message}</Say>"
+            "<Hangup/></Response>"
+        )
+        twilio_client.calls(call_sid).update(twiml=twiml)
+        print(f"Requested Twilio hangup-with-message for call_sid={call_sid}", flush=True)
+        return True
+    except Exception as e:
+        print(f"Failed hangup-with-message for {call_sid}: {e}", flush=True)
+        return False
+
+
 def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock, log_fn):
     """Detect end_call function invocation and trigger hangup once."""
     if (item or {}).get("type") != "function_call":
@@ -562,6 +600,153 @@ def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock,
 
     log_fn(f"end_call tool invoked with args: {args}")
     _request_call_hangup(call_sid)
+
+
+def _preflight_elevenlabs_ws(timeout_ms: int = 1000) -> bool:
+    """Quick call-start check for ElevenLabs websocket availability."""
+    if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
+        return False
+    try:
+        import websocket
+        ws_url = (
+            f"wss://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream-input"
+            "?model_id=eleven_turbo_v2_5&output_format=ulaw_8000"
+        )
+        timeout_s = max(timeout_ms, 100) / 1000.0
+        ws = websocket.create_connection(
+            ws_url,
+            timeout=timeout_s,
+            header=[f"xi-api-key: {ELEVEN_API_KEY}"],
+        )
+        ws.close()
+        return True
+    except Exception as exc:
+        print(f"ElevenLabs preflight failed: {exc}", flush=True)
+        return False
+
+
+def _extract_assistant_text(response_payload: dict, fallback_parts: list[str]) -> str:
+    """Extract assistant text from OpenAI response.done payload."""
+    joined = "".join(fallback_parts or []).strip()
+    if joined:
+        return joined
+    response = (response_payload or {}).get("response", {}) or {}
+    for output_item in response.get("output", []) or []:
+        if not isinstance(output_item, dict):
+            continue
+        for content_item in output_item.get("content", []) or []:
+            if not isinstance(content_item, dict):
+                continue
+            text = content_item.get("text") or content_item.get("transcript")
+            if text:
+                return str(text).strip()
+    return ""
+
+
+def _stream_text_via_elevenlabs_to_twilio(
+    *,
+    text: str,
+    twilio_ws,
+    stream_sid: str,
+    call_sid: str,
+    metrics_service,
+    log_fn,
+) -> bool:
+    """Synthesize assistant text with ElevenLabs and stream audio chunks to Twilio."""
+    if not text:
+        return True
+    if not ELEVEN_API_KEY or not ELEVEN_VOICE_ID:
+        log_fn("ElevenLabs credentials missing")
+        return False
+
+    import websocket
+
+    ws_url = (
+        f"wss://api.elevenlabs.io/v1/text-to-speech/{ELEVEN_VOICE_ID}/stream-input"
+        "?model_id=eleven_turbo_v2_5&output_format=ulaw_8000"
+    )
+
+    max_attempts = 2
+    first_chunk_timeout_s = 1.2
+    total_timeout_s = 15.0
+
+    for attempt in range(1, max_attempts + 1):
+        eleven_ws = None
+        first_audio_recorded = False
+        audio_chunks_sent = 0
+        started_at = time.monotonic()
+        first_chunk_deadline = started_at + first_chunk_timeout_s
+        try:
+            eleven_ws = websocket.create_connection(
+                ws_url,
+                timeout=8,
+                header=[f"xi-api-key: {ELEVEN_API_KEY}"],
+            )
+            eleven_ws.settimeout(1.0)
+            eleven_ws.send(json.dumps({
+                "text": " ",
+                "voice_settings": {
+                    "stability": 0.35,
+                    "similarity_boost": 0.9,
+                },
+            }))
+            eleven_ws.send(json.dumps({
+                "text": text,
+                "try_trigger_generation": True,
+            }))
+            eleven_ws.send(json.dumps({"text": ""}))
+
+            while True:
+                now = time.monotonic()
+                if now - started_at > total_timeout_s:
+                    raise TimeoutError("ElevenLabs stream exceeded total timeout")
+                if not first_audio_recorded and now > first_chunk_deadline:
+                    raise TimeoutError("ElevenLabs first audio chunk timeout")
+
+                try:
+                    raw = eleven_ws.recv()
+                except websocket.WebSocketTimeoutException:
+                    continue
+                if not raw:
+                    break
+                payload = json.loads(raw)
+                if payload.get("error"):
+                    raise RuntimeError(f"ElevenLabs error: {payload.get('error')}")
+
+                audio_b64 = payload.get("audio")
+                if audio_b64:
+                    if not first_audio_recorded:
+                        metrics_service.record_first_audio(call_sid)
+                        first_audio_recorded = True
+                    twilio_ws.send(json.dumps({
+                        "event": "media",
+                        "streamSid": stream_sid,
+                        "media": {"payload": audio_b64},
+                    }))
+                    audio_chunks_sent += 1
+                if payload.get("isFinal"):
+                    break
+
+            metrics_service.record_response_complete(call_sid)
+            log_fn(
+                f"ElevenLabs response complete (attempt {attempt}), sent {audio_chunks_sent} audio chunks"
+            )
+            return True
+        except Exception as exc:
+            log_fn(
+                f"ElevenLabs streaming attempt {attempt}/{max_attempts} failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            if attempt >= max_attempts:
+                return False
+        finally:
+            if eleven_ws:
+                try:
+                    eleven_ws.close()
+                except Exception:
+                    pass
+
+    return False
 
 
 def _persist_transcript_turn(interaction_id: Optional[str], speaker: str, text: str, turn_sequence: int, raw_payload: dict) -> None:
@@ -632,6 +817,9 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
     audio_chunks_sent = 0
     exit_reason = "unknown"
     greeting_completed = False
+    use_elevenlabs_output = False
+    with state_lock:
+        use_elevenlabs_output = bool(bridge_state.get("use_elevenlabs_output"))
 
     try:
         while True:
@@ -653,7 +841,17 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     if event_type in ("error", "response.done", "session.updated", "response.created", "response.output_audio.done", "response.output_item.done", "response.output_audio_transcript.done"):
                         log(f"  Full data: {json.dumps(data)[:800]}")
 
+                if event_type == "response.output_text.delta" or event_type == "response.text.delta":
+                    delta_text = data.get("delta")
+                    if delta_text:
+                        with state_lock:
+                            parts = bridge_state.get("assistant_text_parts")
+                            if isinstance(parts, list):
+                                parts.append(str(delta_text))
+
                 if event_type == "response.output_audio.delta":
+                    if use_elevenlabs_output:
+                        continue
                     # Streaming audio from OpenAI
                     audio_b64 = data.get("delta", "")
                     if audio_b64:
@@ -682,6 +880,8 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                             # Don't break - Twilio might have disconnected but we can still process OpenAI events
 
                 elif event_type == "response.output_audio.done":
+                    if use_elevenlabs_output:
+                        continue
                     # Response complete
                     metrics_service.record_response_complete(call_sid)
                     log(f"Response audio complete, sent {audio_chunks_sent} audio chunks total")
@@ -727,6 +927,8 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     )
 
                 elif event_type == "response.output_audio_transcript.done":
+                    if use_elevenlabs_output:
+                        continue
                     # Final assistant transcript for this response.
                     transcript = data.get("transcript", "")
                     _store_transcript_turn(
@@ -753,6 +955,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
 
                 elif event_type == "response.done":
                     response = data.get("response", {}) or {}
+                    fallback_assistant_text = ""
                     for output_item in response.get("output", []) or []:
                         _handle_end_call_signal(output_item, call_sid, bridge_state, state_lock, log)
                         # Fallback transcript extraction from response payload.
@@ -765,16 +968,51 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                                 or content_item.get("text")
                             )
                             if transcript_text:
-                                _store_transcript_turn(
-                                    interaction_id=interaction_id,
-                                    speaker="assistant",
-                                    text=transcript_text,
-                                    raw_payload=data,
-                                    bridge_state=bridge_state,
-                                    state_lock=state_lock,
-                                    log_fn=log,
-                                )
+                                fallback_assistant_text = str(transcript_text).strip()
+                                if not use_elevenlabs_output:
+                                    _store_transcript_turn(
+                                        interaction_id=interaction_id,
+                                        speaker="assistant",
+                                        text=fallback_assistant_text,
+                                        raw_payload=data,
+                                        bridge_state=bridge_state,
+                                        state_lock=state_lock,
+                                        log_fn=log,
+                                    )
                                 break
+
+                    if use_elevenlabs_output:
+                        with state_lock:
+                            text_parts = list(bridge_state.get("assistant_text_parts") or [])
+                            bridge_state["assistant_text_parts"] = []
+                        assistant_text = _extract_assistant_text(data, text_parts) or fallback_assistant_text
+                        if assistant_text:
+                            _store_transcript_turn(
+                                interaction_id=interaction_id,
+                                speaker="assistant",
+                                text=assistant_text,
+                                raw_payload=data,
+                                bridge_state=bridge_state,
+                                state_lock=state_lock,
+                                log_fn=log,
+                            )
+                        ok = _stream_text_via_elevenlabs_to_twilio(
+                            text=assistant_text,
+                            twilio_ws=twilio_ws,
+                            stream_sid=stream_sid,
+                            call_sid=call_sid,
+                            metrics_service=metrics_service,
+                            log_fn=log,
+                        )
+                        if not ok:
+                            with state_lock:
+                                bridge_state["end_call_requested"] = True
+                            _request_call_hangup_with_message(
+                                call_sid,
+                                "Sorry, we are having a temporary voice issue. Please try again shortly. Goodbye.",
+                            )
+                            exit_reason = "elevenlabs_stream_failure"
+                            break
 
                     with state_lock:
                         bridge_state["awaiting_response"] = False
@@ -795,6 +1033,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                 elif event_type == "response.created":
                     with state_lock:
                         bridge_state["awaiting_response"] = True
+                        bridge_state["assistant_text_parts"] = []
 
             except websocket.WebSocketConnectionClosedException as e:
                 exit_reason = f"websocket_closed: {e}"
