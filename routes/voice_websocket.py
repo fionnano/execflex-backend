@@ -394,6 +394,28 @@ def _send_greeting_request(openai_ws, signup_mode: Optional[str]):
     print("Response.create sent to OpenAI", flush=True)
 
 
+def _enable_post_greeting_barge_in(openai_ws):
+    """Enable explicit barge-in behavior after greeting completes."""
+    update_event = {
+        "type": "session.update",
+        "session": {
+            "audio": {
+                "input": {
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500,
+                        "create_response": True,
+                        "interrupt_response": True
+                    }
+                }
+            }
+        }
+    }
+    openai_ws.send(json.dumps(update_event))
+
+
 def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, metrics_service):
     """Handle responses from OpenAI in a background thread."""
     import sys
@@ -424,6 +446,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
     message_count = 0
     audio_chunks_sent = 0
     exit_reason = "unknown"
+    greeting_completed = False
 
     try:
         while True:
@@ -506,6 +529,16 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                         metadata=error
                     )
                     exit_reason = f"openai_error: {error.get('type', 'unknown')}"
+
+                elif event_type == "response.done":
+                    # Flip to explicit post-greeting turn behavior.
+                    if not greeting_completed:
+                        greeting_completed = True
+                        try:
+                            _enable_post_greeting_barge_in(openai_ws)
+                            log("Post-greeting barge-in mode enabled")
+                        except Exception as e:
+                            log(f"Failed to enable post-greeting barge-in mode: {type(e).__name__}: {e}")
 
             except websocket.WebSocketConnectionClosedException as e:
                 exit_reason = f"websocket_closed: {e}"
