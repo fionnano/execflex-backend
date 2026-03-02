@@ -222,6 +222,29 @@ def init_voice_websocket(sock: Sock):
             print(f"WebSocket connection fully cleaned up for call_sid={call_sid}", flush=True)
 
 
+def _start_ping_thread(ws, interval=20):
+    """Start a background thread to send WebSocket pings to keep connection alive."""
+    import time
+
+    def ping_loop():
+        while True:
+            try:
+                time.sleep(interval)
+                if ws.connected:
+                    ws.ping()
+                    print(f"Sent WebSocket ping to OpenAI", flush=True)
+                else:
+                    print("WebSocket disconnected, stopping ping thread", flush=True)
+                    break
+            except Exception as e:
+                print(f"Ping thread error: {e}", flush=True)
+                break
+
+    ping_thread = threading.Thread(target=ping_loop, daemon=True)
+    ping_thread.start()
+    return ping_thread
+
+
 def _connect_openai_sync(signup_mode: Optional[str]):
     """Connect to OpenAI Realtime API (synchronous wrapper)."""
     import websocket
@@ -240,13 +263,21 @@ def _connect_openai_sync(signup_mode: Optional[str]):
 
     print(f"Connecting to OpenAI Realtime API...", flush=True)
     try:
+        import socket
+
+        # Create connection with keepalive options
         ws = websocket.create_connection(
             url,
             header=[f"{k}: {v}" for k, v in headers.items()],
             sslopt={"cert_reqs": ssl.CERT_REQUIRED},
-            timeout=30
+            timeout=60,  # Increase timeout
+            skip_utf8_validation=True,  # For binary audio data
+            sockopt=[(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]  # Enable TCP keepalive
         )
         print("OpenAI WebSocket connected successfully", flush=True)
+
+        # Start ping thread to keep connection alive (every 5 seconds)
+        _start_ping_thread(ws, interval=5)
 
         # Wait for session.created before sending any configuration
         print("Waiting for session.created from OpenAI...", flush=True)
