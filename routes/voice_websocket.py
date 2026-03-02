@@ -376,22 +376,41 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
     url = f"wss://api.openai.com/v1/realtime?model={realtime_model}"
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "OpenAI-Beta": "realtime=v1",
     }
 
     print(f"Connecting to OpenAI Realtime API...", flush=True)
     try:
         import socket
 
-        # Create connection with keepalive options
-        ws = websocket.create_connection(
-            url,
-            header=[f"{k}: {v}" for k, v in headers.items()],
-            sslopt={"cert_reqs": ssl.CERT_REQUIRED},
-            timeout=20,
-            skip_utf8_validation=True,  # For binary audio data
-            sockopt=[(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]  # Enable TCP keepalive
-        )
+        # Create connection with retries for transient upstream handshake errors.
+        ws = None
+        connect_err = None
+        max_connect_attempts = 3
+        for attempt in range(1, max_connect_attempts + 1):
+            try:
+                ws = websocket.create_connection(
+                    url,
+                    header=[f"{k}: {v}" for k, v in headers.items()],
+                    sslopt={"cert_reqs": ssl.CERT_REQUIRED},
+                    timeout=20,
+                    skip_utf8_validation=True,  # For binary audio data
+                    sockopt=[(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)],  # Enable TCP keepalive
+                )
+                if attempt > 1:
+                    _append_job_debug_event(job_id, "openai_connect_retry_success", {"attempt": attempt})
+                break
+            except Exception as connect_exc:
+                connect_err = connect_exc
+                _append_job_debug_event(
+                    job_id,
+                    "openai_connect_retry_error",
+                    {"attempt": attempt, "error": str(connect_exc)},
+                )
+                if attempt >= max_connect_attempts:
+                    raise
+                time.sleep(0.4 * attempt)
+        if ws is None:
+            raise RuntimeError(f"OpenAI connect failed after retries: {connect_err}")
         print("OpenAI WebSocket connected successfully", flush=True)
         # Avoid socket read timeouts during natural conversation pauses.
         ws.settimeout(None)
