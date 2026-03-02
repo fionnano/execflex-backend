@@ -37,10 +37,12 @@ def init_voice_websocket(sock: Sock):
         and sends TTS audio back to Twilio.
         """
         import sys
-        print("=" * 50, file=sys.stderr)
-        print("WEBSOCKET HANDLER ENTERED", file=sys.stderr)
-        print("=" * 50, file=sys.stderr)
-        print("WebSocket connection opened for voice streaming")
+        import traceback as tb
+        print("=" * 50, file=sys.stderr, flush=True)
+        print("WEBSOCKET HANDLER ENTERED", file=sys.stderr, flush=True)
+        print("=" * 50, file=sys.stderr, flush=True)
+        sys.stdout.flush()
+        print("WebSocket connection opened for voice streaming", flush=True)
 
         # State for this connection
         call_sid: Optional[str] = None
@@ -49,17 +51,30 @@ def init_voice_websocket(sock: Sock):
         interaction_id: Optional[str] = None
         signup_mode: Optional[str] = None
         openai_ws = None
-        session_manager = get_session_manager()
-        metrics_service = get_metrics_service()
+
+        try:
+            session_manager = get_session_manager()
+            metrics_service = get_metrics_service()
+            print("Session and metrics managers initialized", flush=True)
+        except Exception as e:
+            print(f"ERROR initializing managers: {e}", file=sys.stderr, flush=True)
+            tb.print_exc()
+            return
 
         # Audio buffer for collecting frames
         audio_buffer = bytearray()
+        message_count = 0
 
         try:
+            print("Entering main receive loop...", flush=True)
             while True:
                 # Receive message from Twilio
+                print(f"Waiting for message #{message_count + 1}...", flush=True)
                 message = ws.receive()
+                message_count += 1
+                print(f"Received message #{message_count}: {len(message) if message else 'None'} bytes", flush=True)
                 if message is None:
+                    print("Received None message, breaking loop", flush=True)
                     break
 
                 try:
