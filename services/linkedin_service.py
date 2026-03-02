@@ -226,6 +226,9 @@ def map_linkedin_to_profile(linkedin_data: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dict with mapped field values
     """
+    # Log raw LinkedIn data for debugging
+    print(f"📥 Raw LinkedIn userinfo data: {json.dumps(linkedin_data, indent=2)}")
+
     # LinkedIn userinfo endpoint returns:
     # - sub: LinkedIn member ID
     # - name: Full name
@@ -246,15 +249,22 @@ def map_linkedin_to_profile(linkedin_data: Dict[str, Any]) -> Dict[str, Any]:
 
     if linkedin_data.get("picture"):
         mapped["headshot_url"] = linkedin_data["picture"]
+        print(f"✅ Mapped headshot_url: {linkedin_data['picture']}")
 
-    # LinkedIn member ID
+    # LinkedIn member ID and profile URL
     if linkedin_data.get("sub"):
         mapped["linkedin_member_id"] = linkedin_data["sub"]
+        # Construct profile URL from member ID
+        # Note: This creates a URL like https://www.linkedin.com/in/member_id
+        # It will redirect to the user's actual vanity URL
+        mapped["linkedin_profile_url"] = f"https://www.linkedin.com/in/{linkedin_data['sub']}"
+        print(f"✅ Mapped linkedin_profile_url: {mapped['linkedin_profile_url']}")
 
     # Note: LinkedIn's basic scopes don't provide headline, location, skills, or industries
     # Those would require additional API calls with different scopes
     # For MVP, we get what's available and ask for the rest in the completion form
 
+    print(f"📤 Mapped profile data: {mapped}")
     return mapped
 
 
