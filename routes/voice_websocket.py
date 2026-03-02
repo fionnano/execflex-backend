@@ -69,10 +69,9 @@ def init_voice_websocket(sock: Sock):
             print("Entering main receive loop...", flush=True)
             while True:
                 # Receive message from Twilio
-                print(f"Waiting for message #{message_count + 1}...", flush=True)
                 message = ws.receive()
                 message_count += 1
-                print(f"Received message #{message_count}: {len(message) if message else 'None'} bytes", flush=True)
+
                 if message is None:
                     print("Received None message, breaking loop", flush=True)
                     break
@@ -84,8 +83,12 @@ def init_voice_websocket(sock: Sock):
 
                 event_type = data.get("event")
 
+                # Log non-media events (media events are too frequent)
+                if event_type != "media":
+                    print(f"[MSG #{message_count}] Twilio event: {event_type}", flush=True)
+
                 if event_type == "connected":
-                    print(f"Twilio Media Stream connected: {data.get('protocol')}")
+                    print(f"Twilio Media Stream connected: {data.get('protocol')}", flush=True)
 
                 elif event_type == "start":
                     # Extract stream metadata
@@ -95,7 +98,7 @@ def init_voice_websocket(sock: Sock):
                     custom_params = start_data.get("customParameters", {})
                     job_id = custom_params.get("job_id")
 
-                    print(f"Stream started: stream_sid={stream_sid}, call_sid={call_sid}, job_id={job_id}")
+                    print(f"Stream started: stream_sid={stream_sid}, call_sid={call_sid}, job_id={job_id}", flush=True)
 
                     # Get call context from database
                     if job_id:
@@ -130,23 +133,34 @@ def init_voice_websocket(sock: Sock):
                                     interaction_id=interaction_id
                                 )
                         except Exception as e:
-                            print(f"Error getting job context: {e}")
+                            print(f"Error getting job context: {e}", flush=True)
+                            import traceback
+                            traceback.print_exc()
 
                     # Connect to OpenAI Realtime API
                     try:
+                        print("Attempting to connect to OpenAI Realtime API...", flush=True)
                         openai_ws = _connect_openai_sync(signup_mode)
                         if openai_ws:
+                            print("OpenAI connection successful, starting response handler thread...", flush=True)
                             # Start background thread to handle OpenAI responses
-                            threading.Thread(
+                            response_thread = threading.Thread(
                                 target=_handle_openai_responses,
                                 args=(openai_ws, ws, stream_sid, call_sid, metrics_service),
                                 daemon=True
-                            ).start()
+                            )
+                            response_thread.start()
+                            print(f"Response handler thread started: {response_thread.name}", flush=True)
 
                             # Send initial greeting request
                             _send_greeting_request(openai_ws, signup_mode)
+                        else:
+                            print("OpenAI connection returned None!", flush=True)
+                            _send_fallback_greeting(ws, stream_sid, signup_mode)
                     except Exception as e:
-                        print(f"Error connecting to OpenAI: {e}")
+                        print(f"Error connecting to OpenAI: {e}", flush=True)
+                        import traceback
+                        traceback.print_exc()
                         # Fallback: send a simple greeting using TTS
                         _send_fallback_greeting(ws, stream_sid, signup_mode)
 
@@ -202,7 +216,7 @@ def _connect_openai_sync(signup_mode: Optional[str]):
     import ssl
 
     if not OPENAI_API_KEY:
-        print("OpenAI API key not configured")
+        print("OpenAI API key not configured", flush=True)
         return None
 
     # Use the correct model name for OpenAI Realtime API
@@ -212,7 +226,7 @@ def _connect_openai_sync(signup_mode: Optional[str]):
         "OpenAI-Beta": "realtime=v1"
     }
 
-    print(f"Connecting to OpenAI Realtime API...")
+    print(f"Connecting to OpenAI Realtime API...", flush=True)
     try:
         ws = websocket.create_connection(
             url,
@@ -220,7 +234,7 @@ def _connect_openai_sync(signup_mode: Optional[str]):
             sslopt={"cert_reqs": ssl.CERT_REQUIRED},
             timeout=30
         )
-        print("OpenAI WebSocket connected successfully")
+        print("OpenAI WebSocket connected successfully", flush=True)
 
         # Configure the session
         system_prompt = _get_system_prompt(signup_mode)
@@ -246,10 +260,12 @@ def _connect_openai_sync(signup_mode: Optional[str]):
             }
         }
         ws.send(json.dumps(session_config))
-        print("OpenAI Realtime session configured")
+        print("OpenAI Realtime session configured", flush=True)
         return ws
     except Exception as e:
-        print(f"Failed to connect to OpenAI Realtime: {e}")
+        print(f"Failed to connect to OpenAI Realtime: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -291,71 +307,63 @@ IMPORTANT RULES:
 def _send_greeting_request(openai_ws, signup_mode: Optional[str]):
     """Send initial greeting request to OpenAI."""
     if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
-        greeting = (
-            "Hi, this is Ai-dan from ExecFlex. I noticed you just logged in "
-            "looking for executive opportunities. Have I caught you at a bad time?"
+        greeting_instruction = (
+            "Greet the caller warmly. Say: Hi, this is Ai-dan from ExecFlex. "
+            "I noticed you just signed up looking for executive opportunities. "
+            "Have I caught you at a bad time?"
         )
     elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
-        greeting = (
-            "Hello, this is Ai-dan from ExecFlex. I noticed you just logged in "
-            "looking for executive talent for your organization. Have I caught you at a bad time?"
+        greeting_instruction = (
+            "Greet the caller warmly. Say: Hello, this is Ai-dan from ExecFlex. "
+            "I noticed you just signed up looking for executive talent for your organization. "
+            "Have I caught you at a bad time?"
         )
     else:
-        greeting = (
-            "Hello, this is Ai-dan from ExecFlex. I noticed you just logged in. "
-            "Are you looking to hire executive talent, or are you an executive "
-            "looking for opportunities?"
+        greeting_instruction = (
+            "Greet the caller warmly. Say: Hello, this is Ai-dan from ExecFlex. "
+            "I noticed you just signed up. Are you looking to hire executive talent, "
+            "or are you an executive looking for opportunities?"
         )
 
-    # First, add the greeting as a conversation item
-    conversation_item = {
-        "type": "conversation.item.create",
-        "item": {
-            "type": "message",
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_text",
-                    "text": f"Please greet the caller by saying: {greeting}"
-                }
-            ]
+    # Use response.create with instructions to trigger the greeting
+    # This tells OpenAI to generate audio immediately without waiting for user input
+    create_response = {
+        "type": "response.create",
+        "response": {
+            "modalities": ["text", "audio"],
+            "instructions": greeting_instruction
         }
     }
-    print(f"Sending conversation item to OpenAI: {greeting[:50]}...")
-    openai_ws.send(json.dumps(conversation_item))
-
-    # Then request a response
-    create_response = {
-        "type": "response.create"
-    }
+    print(f"Sending greeting request to OpenAI: {greeting_instruction[:60]}...", flush=True)
     openai_ws.send(json.dumps(create_response))
-    print("Response request sent to OpenAI")
+    print("Greeting response.create sent to OpenAI", flush=True)
 
 
 def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, metrics_service):
     """Handle responses from OpenAI in a background thread."""
-    print(f"OpenAI response handler started for call {call_sid}")
+    print(f"OpenAI response handler started for call {call_sid}", flush=True)
     first_audio_recorded = False
     message_count = 0
+    audio_chunks_sent = 0
 
     try:
         while True:
             try:
                 message = openai_ws.recv()
                 if not message:
-                    print(f"OpenAI WebSocket returned empty message, exiting handler")
+                    print(f"OpenAI WebSocket returned empty message, exiting handler", flush=True)
                     break
 
                 message_count += 1
                 data = json.loads(message)
                 event_type = data.get("type")
 
-                # Log all event types for debugging (first 20 messages)
-                if message_count <= 20:
-                    print(f"OpenAI event #{message_count}: {event_type}")
+                # Log all event types for debugging (first 30 messages, then key events only)
+                if message_count <= 30 or event_type not in ("response.audio.delta",):
+                    print(f"OpenAI event #{message_count}: {event_type}", flush=True)
                     # Log full data for key events
-                    if event_type in ("error", "response.done", "session.updated"):
-                        print(f"  Full data: {json.dumps(data)[:500]}")
+                    if event_type in ("error", "response.done", "session.updated", "response.created"):
+                        print(f"  Full data: {json.dumps(data)[:500]}", flush=True)
 
                 if event_type == "response.audio.delta":
                     # Streaming audio from OpenAI
@@ -365,6 +373,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                         if not first_audio_recorded:
                             metrics_service.record_first_audio(call_sid)
                             first_audio_recorded = True
+                            print(f"First audio chunk received from OpenAI!", flush=True)
 
                         # Convert and send to Twilio
                         try:
@@ -380,26 +389,31 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                                 }
                             }
                             twilio_ws.send(json.dumps(media_event))
+                            audio_chunks_sent += 1
+                            if audio_chunks_sent <= 5 or audio_chunks_sent % 50 == 0:
+                                print(f"Sent audio chunk #{audio_chunks_sent} to Twilio", flush=True)
                         except Exception as e:
-                            print(f"Error sending audio to Twilio: {e}")
+                            print(f"Error sending audio to Twilio: {e}", flush=True)
 
                 elif event_type == "response.audio.done":
                     # Response complete
                     metrics_service.record_response_complete(call_sid)
+                    print(f"Response audio complete, sent {audio_chunks_sent} audio chunks total", flush=True)
                     first_audio_recorded = False  # Reset for next turn
 
                 elif event_type == "input_audio_buffer.speech_stopped":
                     # User stopped speaking - record timing
                     metrics_service.record_user_speech_end(call_sid)
+                    print("User stopped speaking", flush=True)
 
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     # Got transcript of user speech
                     transcript = data.get("transcript", "")
-                    print(f"User said: {transcript}")
+                    print(f"User said: {transcript}", flush=True)
 
                 elif event_type == "error":
                     error = data.get("error", {})
-                    print(f"OpenAI error: {error}")
+                    print(f"OpenAI error: {error}", flush=True)
                     metrics_service.record_event(
                         call_sid,
                         "openai_error",
@@ -410,16 +424,16 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
 
             except Exception as e:
                 import traceback
-                print(f"Error handling OpenAI message: {e}")
+                print(f"Error handling OpenAI message: {e}", flush=True)
                 traceback.print_exc()
                 break
 
     except Exception as e:
         import traceback
-        print(f"OpenAI response handler error: {e}")
+        print(f"OpenAI response handler error: {e}", flush=True)
         traceback.print_exc()
     finally:
-        print(f"OpenAI response handler exiting for call {call_sid}, processed {message_count} messages")
+        print(f"OpenAI response handler exiting for call {call_sid}, processed {message_count} messages, sent {audio_chunks_sent} audio chunks", flush=True)
 
 
 def _send_fallback_greeting(twilio_ws, stream_sid: str, signup_mode: Optional[str]):
