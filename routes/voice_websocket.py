@@ -14,7 +14,7 @@ from simple_websocket import Server as SimpleWebSocket
 
 from services.realtime_session_state import get_session_manager, CallPhase
 from services.voice_metrics import get_metrics_service
-from services.platform_config_service import get_bool_config, get_number_config
+from services.platform_config_service import get_bool_config, get_number_config, get_string_config
 from config.app_config import OPENAI_API_KEY, ELEVEN_API_KEY, ELEVEN_VOICE_ID
 
 # Import the bridge components
@@ -568,25 +568,19 @@ def _connect_openai_sync(
         return None
 
 
-def _get_system_prompt(signup_mode: Optional[str]) -> str:
-    """Get the system prompt for the qualification call."""
-    if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
-        mode_context = "The user is an executive looking for job opportunities."
-        greeting = "Hi, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive opportunities. Have I caught you at a bad time?"
-    elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
-        mode_context = "The user is looking to hire executive talent for their organization."
-        greeting = "Hello, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive talent for your organization. Have I caught you at a bad time?"
-    else:
-        mode_context = "Determine whether the user is looking to hire executives or is an executive seeking opportunities."
-        greeting = "Hello, this is A I Dan from ExecFlex. I noticed you just signed up. Are you looking to hire executive talent, or are you an executive looking for opportunities?"
-
-    return f"""You are Ai-dan, a friendly voice assistant for ExecFlex, a platform connecting companies with executive talent.
-
-{mode_context}
-
-IMPORTANT: Start the conversation IMMEDIATELY by saying: "{greeting}"
-
-CONVERSATION STYLE:
+DEFAULT_TALENT_GREETING = (
+    "Hi, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive opportunities. "
+    "Have I caught you at a bad time?"
+)
+DEFAULT_COMPANY_GREETING = (
+    "Hello, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive talent for your organization. "
+    "Have I caught you at a bad time?"
+)
+DEFAULT_FALLBACK_GREETING = (
+    "Hello, this is A I Dan from ExecFlex. I noticed you just signed up. "
+    "Are you looking to hire executive talent, or are you an executive looking for opportunities?"
+)
+DEFAULT_GENERAL_SYSTEM_PROMPT = """CONVERSATION STYLE:
 - Be warm, professional, and concise
 - Ask ONE question at a time
 - Keep responses under 20 seconds when spoken (about 50-70 words max)
@@ -610,7 +604,33 @@ IMPORTANT RULES:
 - When the call has clearly concluded, call the end_call tool exactly once.
 - Do not repeat goodbye lines in a loop.
 - Use Mirroring if they dont seem quite finished. Repeat back the last few words of what they said without embellishment in an upward tone.
-- Use Labelling of the potential emption, if they express an opinion or feeling. e.g. 'That sounds like it was exciting!'
+- Use Labelling of the potential emption, if they express an opinion or feeling. e.g. 'That sounds like it was exciting!'"""
+
+
+def _get_system_prompt(signup_mode: Optional[str]) -> str:
+    """Get the system prompt for the qualification call."""
+    talent_greeting, _, _ = get_string_config("voice_prompt_talent_greeting", DEFAULT_TALENT_GREETING)
+    company_greeting, _, _ = get_string_config("voice_prompt_company_greeting", DEFAULT_COMPANY_GREETING)
+    fallback_greeting, _, _ = get_string_config("voice_prompt_fallback_greeting", DEFAULT_FALLBACK_GREETING)
+    general_prompt, _, _ = get_string_config("voice_prompt_general_system", DEFAULT_GENERAL_SYSTEM_PROMPT)
+
+    if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
+        mode_context = "The user is an executive looking for job opportunities."
+        greeting = talent_greeting
+    elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
+        mode_context = "The user is looking to hire executive talent for their organization."
+        greeting = company_greeting
+    else:
+        mode_context = "Determine whether the user is looking to hire executives or is an executive seeking opportunities."
+        greeting = fallback_greeting
+
+    return f"""You are Ai-dan, a friendly voice assistant for ExecFlex, a platform connecting companies with executive talent.
+
+{mode_context}
+
+IMPORTANT: Start the conversation IMMEDIATELY by saying: "{greeting}"
+
+{general_prompt}
 """
 
 

@@ -14,6 +14,8 @@ from services.platform_config_service import (
     set_bool_config,
     get_number_config,
     set_number_config,
+    get_string_config,
+    set_string_config,
 )
 from config.clients import twilio_client, supabase_client
 from config.app_config import TWILIO_PHONE_NUMBER, SUPABASE_URL, SUPABASE_KEY
@@ -263,6 +265,22 @@ def get_platform_config():
     vad_idle_timeout_ms, vad_idle_updated_at, vad_idle_updated_by = get_number_config(
         "voice_vad_idle_timeout_ms", default=8000
     )
+    talent_greeting, talent_prompt_updated_at, talent_prompt_updated_by = get_string_config(
+        "voice_prompt_talent_greeting",
+        "Hi, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive opportunities. Have I caught you at a bad time?",
+    )
+    company_greeting, company_prompt_updated_at, company_prompt_updated_by = get_string_config(
+        "voice_prompt_company_greeting",
+        "Hello, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive talent for your organization. Have I caught you at a bad time?",
+    )
+    fallback_greeting, fallback_prompt_updated_at, fallback_prompt_updated_by = get_string_config(
+        "voice_prompt_fallback_greeting",
+        "Hello, this is A I Dan from ExecFlex. I noticed you just signed up. Are you looking to hire executive talent, or are you an executive looking for opportunities?",
+    )
+    general_prompt, general_prompt_updated_at, general_prompt_updated_by = get_string_config(
+        "voice_prompt_general_system",
+        "CONVERSATION STYLE:\n- Be warm, professional, and concise\n- Ask ONE question at a time\n- Keep responses under 20 seconds when spoken (about 50-70 words max)\n- Listen actively and acknowledge what the user says\n- Don't repeat questions that have been answered\n\nCONVERSATION GOALS:\n1. Confirm their intent (hiring vs job seeking)\n2. Understand their motivation (why ExecFlex, why now)\n3. Learn about role preferences (titles, industries)\n4. Understand location and availability preferences\n5. Identify any constraints or deal-breakers\n6. Be witty.\n7. To progress up the levels of conversation from cliche, to facts, to opinions, to feelings, to needs/identity (dreams)\n\nIMPORTANT RULES:\n- Never ask for information already provided\n- If the user wants to end the call, thank them politely and close\n- After 8-10 minutes or when enough info is gathered, begin closing the conversation\n- Be natural and conversational, not robotic\n- When the call has clearly concluded, call the end_call tool exactly once.\n- Do not repeat goodbye lines in a loop.\n- Use Mirroring if they dont seem quite finished. Repeat back the last few words of what they said without embellishment in an upward tone.\n- Use Labelling of the potential emption, if they express an opinion or feeling. e.g. 'That sounds like it was exciting!'",
+    )
     return ok({
         "configuration": {
             "elevenlabs_output_enabled": enabled,
@@ -270,10 +288,36 @@ def get_platform_config():
             "voice_vad_prefix_padding_ms": int(vad_prefix_padding_ms),
             "voice_vad_silence_duration_ms": int(vad_silence_duration_ms),
             "voice_vad_idle_timeout_ms": int(vad_idle_timeout_ms),
+            "voice_prompt_talent_greeting": talent_greeting,
+            "voice_prompt_company_greeting": company_greeting,
+            "voice_prompt_fallback_greeting": fallback_greeting,
+            "voice_prompt_general_system": general_prompt,
             "updated_at": max(
-                [x for x in [updated_at, vad_threshold_updated_at, vad_prefix_updated_at, vad_silence_updated_at, vad_idle_updated_at] if x] or [None]
+                [
+                    x for x in [
+                        updated_at,
+                        vad_threshold_updated_at,
+                        vad_prefix_updated_at,
+                        vad_silence_updated_at,
+                        vad_idle_updated_at,
+                        talent_prompt_updated_at,
+                        company_prompt_updated_at,
+                        fallback_prompt_updated_at,
+                        general_prompt_updated_at,
+                    ] if x
+                ] or [None]
             ),
-            "updated_by": updated_by or vad_threshold_updated_by or vad_prefix_updated_by or vad_silence_updated_by or vad_idle_updated_by,
+            "updated_by": (
+                updated_by
+                or vad_threshold_updated_by
+                or vad_prefix_updated_by
+                or vad_silence_updated_by
+                or vad_idle_updated_by
+                or talent_prompt_updated_by
+                or company_prompt_updated_by
+                or fallback_prompt_updated_by
+                or general_prompt_updated_by
+            ),
         }
     })
 
@@ -291,6 +335,10 @@ def set_platform_config():
             "voice_vad_prefix_padding_ms",
             "voice_vad_silence_duration_ms",
             "voice_vad_idle_timeout_ms",
+            "voice_prompt_talent_greeting",
+            "voice_prompt_company_greeting",
+            "voice_prompt_fallback_greeting",
+            "voice_prompt_general_system",
         }
         provided = [k for k in allowed_keys if k in data]
         if not provided:
@@ -317,6 +365,25 @@ def set_platform_config():
             voice_vad_prefix_padding_ms = _validate_number("voice_vad_prefix_padding_ms", 0, 2000, integer=True)
             voice_vad_silence_duration_ms = _validate_number("voice_vad_silence_duration_ms", 200, 4000, integer=True)
             voice_vad_idle_timeout_ms = _validate_number("voice_vad_idle_timeout_ms", 1000, 15000, integer=True)
+        except ValueError as validation_err:
+            return bad(str(validation_err), 400)
+
+        def _validate_string(name: str, min_len: int, max_len: int):
+            if name not in data:
+                return None
+            value = data.get(name)
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a string")
+            trimmed = value.strip()
+            if len(trimmed) < min_len or len(trimmed) > max_len:
+                raise ValueError(f"{name} must be between {min_len} and {max_len} characters")
+            return trimmed
+
+        try:
+            voice_prompt_talent_greeting = _validate_string("voice_prompt_talent_greeting", 10, 500)
+            voice_prompt_company_greeting = _validate_string("voice_prompt_company_greeting", 10, 500)
+            voice_prompt_fallback_greeting = _validate_string("voice_prompt_fallback_greeting", 10, 500)
+            voice_prompt_general_system = _validate_string("voice_prompt_general_system", 50, 12000)
         except ValueError as validation_err:
             return bad(str(validation_err), 400)
 
@@ -355,12 +422,56 @@ def set_platform_config():
                 updated_by=admin_user_id,
                 description="OpenAI Realtime server_vad idle timeout in milliseconds for outbound voice calls",
             )
+        if voice_prompt_talent_greeting is not None:
+            set_string_config(
+                key="voice_prompt_talent_greeting",
+                value=voice_prompt_talent_greeting,
+                updated_by=admin_user_id,
+                description="Greeting used for outbound calls when signup_mode is talent/job_seeker/executive/candidate",
+            )
+        if voice_prompt_company_greeting is not None:
+            set_string_config(
+                key="voice_prompt_company_greeting",
+                value=voice_prompt_company_greeting,
+                updated_by=admin_user_id,
+                description="Greeting used for outbound calls when signup_mode is hirer/talent_seeker/company/client/employer",
+            )
+        if voice_prompt_fallback_greeting is not None:
+            set_string_config(
+                key="voice_prompt_fallback_greeting",
+                value=voice_prompt_fallback_greeting,
+                updated_by=admin_user_id,
+                description="Greeting used for outbound calls when signup_mode is unknown",
+            )
+        if voice_prompt_general_system is not None:
+            set_string_config(
+                key="voice_prompt_general_system",
+                value=voice_prompt_general_system,
+                updated_by=admin_user_id,
+                description="General outbound call system prompt body appended after mode context and greeting",
+            )
 
         enabled, updated_at, updated_by = get_bool_config("elevenlabs_output_enabled", default=False)
         vad_threshold, _, _ = get_number_config("voice_vad_threshold", default=0.5)
         vad_prefix_padding_ms, _, _ = get_number_config("voice_vad_prefix_padding_ms", default=300)
         vad_silence_duration_ms, _, _ = get_number_config("voice_vad_silence_duration_ms", default=900)
         vad_idle_timeout_ms, _, _ = get_number_config("voice_vad_idle_timeout_ms", default=8000)
+        talent_greeting, _, _ = get_string_config(
+            "voice_prompt_talent_greeting",
+            "Hi, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive opportunities. Have I caught you at a bad time?",
+        )
+        company_greeting, _, _ = get_string_config(
+            "voice_prompt_company_greeting",
+            "Hello, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive talent for your organization. Have I caught you at a bad time?",
+        )
+        fallback_greeting, _, _ = get_string_config(
+            "voice_prompt_fallback_greeting",
+            "Hello, this is A I Dan from ExecFlex. I noticed you just signed up. Are you looking to hire executive talent, or are you an executive looking for opportunities?",
+        )
+        general_prompt, _, _ = get_string_config(
+            "voice_prompt_general_system",
+            "CONVERSATION STYLE:\n- Be warm, professional, and concise\n- Ask ONE question at a time\n- Keep responses under 20 seconds when spoken (about 50-70 words max)\n- Listen actively and acknowledge what the user says\n- Don't repeat questions that have been answered\n\nCONVERSATION GOALS:\n1. Confirm their intent (hiring vs job seeking)\n2. Understand their motivation (why ExecFlex, why now)\n3. Learn about role preferences (titles, industries)\n4. Understand location and availability preferences\n5. Identify any constraints or deal-breakers\n6. Be witty.\n7. To progress up the levels of conversation from cliche, to facts, to opinions, to feelings, to needs/identity (dreams)\n\nIMPORTANT RULES:\n- Never ask for information already provided\n- If the user wants to end the call, thank them politely and close\n- After 8-10 minutes or when enough info is gathered, begin closing the conversation\n- Be natural and conversational, not robotic\n- When the call has clearly concluded, call the end_call tool exactly once.\n- Do not repeat goodbye lines in a loop.\n- Use Mirroring if they dont seem quite finished. Repeat back the last few words of what they said without embellishment in an upward tone.\n- Use Labelling of the potential emption, if they express an opinion or feeling. e.g. 'That sounds like it was exciting!'",
+        )
         return ok({
             "configuration": {
                 "elevenlabs_output_enabled": enabled,
@@ -368,6 +479,10 @@ def set_platform_config():
                 "voice_vad_prefix_padding_ms": int(vad_prefix_padding_ms),
                 "voice_vad_silence_duration_ms": int(vad_silence_duration_ms),
                 "voice_vad_idle_timeout_ms": int(vad_idle_timeout_ms),
+                "voice_prompt_talent_greeting": talent_greeting,
+                "voice_prompt_company_greeting": company_greeting,
+                "voice_prompt_fallback_greeting": fallback_greeting,
+                "voice_prompt_general_system": general_prompt,
                 "updated_at": updated_at,
                 "updated_by": updated_by,
             }
