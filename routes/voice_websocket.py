@@ -18,9 +18,6 @@ from config.app_config import OPENAI_API_KEY
 # Import the bridge components
 from services.realtime_voice_bridge import (
     mulaw_to_pcm16,
-    pcm16_to_mulaw,
-    resample_8k_to_24k,
-    resample_24k_to_8k
 )
 
 
@@ -188,17 +185,11 @@ def init_voice_websocket(sock: Sock):
 
                     if payload and openai_ws:
                         try:
-                            # Decode mulaw audio from Twilio
-                            mulaw_audio = base64.b64decode(payload)
-
-                            # Convert to PCM16 and resample for OpenAI
-                            pcm_8k = mulaw_to_pcm16(mulaw_audio)
-                            pcm_24k = resample_8k_to_24k(pcm_8k)
-
-                            # Send to OpenAI
+                            # Forward Twilio μ-law payload directly to OpenAI.
+                            # Session is configured with audio/pcmu input format.
                             audio_event = {
                                 "type": "input_audio_buffer.append",
-                                "audio": base64.b64encode(pcm_24k).decode("utf-8")
+                                "audio": payload
                             }
                             openai_ws.send(json.dumps(audio_event))
                             forwarded_audio_frames += 1
@@ -211,6 +202,8 @@ def init_voice_websocket(sock: Sock):
                             # Deterministic fallback: if OpenAI VAD isn't emitting speech events,
                             # use Twilio audio activity + silence gap to force commit/create.
                             now_ms = time.monotonic() * 1000.0
+                            mulaw_audio = base64.b64decode(payload)
+                            pcm_8k = mulaw_to_pcm16(mulaw_audio)
                             rms = _pcm16_rms(pcm_8k)
                             voice_threshold = 900.0
                             silence_gap_ms = 850.0
@@ -358,22 +351,21 @@ def _connect_openai_sync(signup_mode: Optional[str]):
                 "audio": {
                     "input": {
                         "format": {
-                            "type": "audio/pcm",
-                            "rate": 24000
+                            "type": "audio/pcmu"
                         },
                         "turn_detection": {
                             "type": "server_vad",
                             "threshold": 0.5,
                             "prefix_padding_ms": 300,
                             "silence_duration_ms": 500,
+                            "idle_timeout_ms": 6000,
                             "create_response": True,
                             "interrupt_response": True
                         }
                     },
                     "output": {
                         "format": {
-                            "type": "audio/pcm",
-                            "rate": 24000
+                            "type": "audio/pcmu"
                         },
                         "voice": "alloy"
                     }
@@ -468,6 +460,7 @@ def _enable_post_greeting_barge_in(openai_ws):
                         "threshold": 0.5,
                         "prefix_padding_ms": 300,
                         "silence_duration_ms": 500,
+                        "idle_timeout_ms": 6000,
                         "create_response": True,
                         "interrupt_response": True
                     }
@@ -554,17 +547,14 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                             first_audio_recorded = True
                             log(f"First audio chunk received from OpenAI!")
 
-                        # Convert and send to Twilio
+                        # OpenAI is configured to output audio/pcmu.
+                        # Twilio media payload expects base64 μ-law bytes, so pass through.
                         try:
-                            pcm_24k = base64.b64decode(audio_b64)
-                            pcm_8k = resample_24k_to_8k(pcm_24k)
-                            mulaw_audio = pcm16_to_mulaw(pcm_8k)
-
                             media_event = {
                                 "event": "media",
                                 "streamSid": stream_sid,
                                 "media": {
-                                    "payload": base64.b64encode(mulaw_audio).decode("utf-8")
+                                    "payload": audio_b64
                                 }
                             }
                             twilio_ws.send(json.dumps(media_event))
@@ -595,6 +585,13 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
 
                 elif event_type == "input_audio_buffer.committed":
                     log("Input audio buffer committed")
+
+                elif event_type == "conversation.item.created":
+                    item = data.get("item", {}) or {}
+                    log(
+                        f"Conversation item created: type={item.get('type')}, "
+                        f"role={item.get('role')}, id={item.get('id')}"
+                    )
 
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     # Got transcript of user speech
