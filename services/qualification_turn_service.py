@@ -376,6 +376,27 @@ def get_conversation_turns(interaction_id: str, limit: int = 20) -> List[Dict]:
         return []
 
 
+def get_turn_by_sequence(interaction_id: str, turn_sequence: int) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a single interaction_turn by sequence (used for deferred playback).
+    """
+    if not supabase_client:
+        return None
+    try:
+        result = supabase_client.table("interaction_turns")\
+            .select("id, speaker, text, created_at, artifacts_json, turn_sequence")\
+            .eq("interaction_id", interaction_id)\
+            .eq("turn_sequence", turn_sequence)\
+            .limit(1)\
+            .execute()
+        if result.data:
+            return result.data[0]
+        return None
+    except Exception as e:
+        print(f"⚠️ Failed to get turn by sequence: {e}")
+        return None
+
+
 def apply_extracted_updates(
     user_id: Optional[str],
     extracted_updates: Dict[str, Any],
