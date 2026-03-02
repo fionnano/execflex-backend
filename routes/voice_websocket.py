@@ -383,12 +383,7 @@ IMPORTANT RULES:
 
 def _send_greeting_request(openai_ws, signup_mode: Optional[str]):
     """Send initial greeting request to OpenAI."""
-    create_response = {
-        "type": "response.create",
-        "response": {
-            "modalities": ["audio", "text"]
-        }
-    }
+    create_response = {"type": "response.create"}
     print(f"Sending response.create to trigger greeting (signup_mode={signup_mode})", flush=True)
     openai_ws.send(json.dumps(create_response))
     print("Response.create sent to OpenAI", flush=True)
