@@ -8,6 +8,7 @@ import threading
 import time
 import struct
 import os
+import re
 from typing import Optional
 from flask_sock import Sock
 from simple_websocket import Server as SimpleWebSocket
@@ -53,6 +54,23 @@ def _append_job_debug_event(job_id: Optional[str], event_name: str, metadata: Op
         supabase_client.table("outbound_call_jobs").update({"artifacts": artifacts}).eq("id", job_id).execute()
     except Exception as exc:
         print(f"Failed to append debug event for job {job_id}: {exc}", flush=True)
+
+
+def _render_prompt_template(template: str, variables: dict) -> str:
+    """Render {var_name} placeholders with known variables only."""
+    if not template:
+        return template
+
+    if not isinstance(variables, dict):
+        variables = {}
+
+    def _replace(match):
+        key = match.group(1)
+        if key in variables and variables[key] is not None:
+            return str(variables[key])
+        return match.group(0)
+
+    return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _replace, template)
 
 
 def _load_vad_config(job_id: Optional[str]) -> dict:
@@ -115,6 +133,7 @@ def init_voice_websocket(sock: Sock):
             "last_transcript_key": None,
             "use_elevenlabs_output": False,
             "assistant_text_parts": [],
+            "prompt_vars": {},
             "vad_config": {
                 "type": "server_vad",
                 "threshold": 0.5,
@@ -181,6 +200,7 @@ def init_voice_websocket(sock: Sock):
                     call_sid = start_data.get("callSid")
                     custom_params = start_data.get("customParameters", {})
                     job_id = custom_params.get("job_id")
+                    prompt_vars = {}
 
                     print(f"Stream started: stream_sid={stream_sid}, call_sid={call_sid}, job_id={job_id}", flush=True)
                     _append_job_debug_event(job_id, "twilio_stream_start", {
@@ -203,6 +223,27 @@ def init_voice_websocket(sock: Sock):
                                 interaction_id = job.get("interaction_id")
                                 artifacts = job.get("artifacts", {}) or {}
                                 signup_mode = artifacts.get("signup_mode")
+                                prompt_vars = {}
+                                user_name = None
+                                first_name = None
+                                try:
+                                    profile_resp = supabase_client.table("people_profiles")\
+                                        .select("first_name, last_name")\
+                                        .eq("user_id", job.get("user_id"))\
+                                        .limit(1)\
+                                        .execute()
+                                    if profile_resp.data:
+                                        profile = profile_resp.data[0] or {}
+                                        first_name = (profile.get("first_name") or "").strip() or None
+                                        last_name = (profile.get("last_name") or "").strip()
+                                        if first_name or last_name:
+                                            user_name = f"{first_name or ''} {last_name or ''}".strip()
+                                except Exception as profile_exc:
+                                    print(f"Failed loading profile for prompt variables: {profile_exc}", flush=True)
+                                if user_name:
+                                    prompt_vars["user_name"] = user_name
+                                if first_name:
+                                    prompt_vars["first_name"] = first_name
 
                                 # Create session
                                 session = session_manager.create_session(
@@ -239,6 +280,7 @@ def init_voice_websocket(sock: Sock):
                         bridge_state["use_elevenlabs_output"] = use_elevenlabs_output
                         bridge_state["assistant_text_parts"] = []
                         bridge_state["vad_config"] = _load_vad_config(job_id)
+                        bridge_state["prompt_vars"] = prompt_vars
 
                     # Connect to OpenAI Realtime API
                     try:
@@ -249,6 +291,7 @@ def init_voice_websocket(sock: Sock):
                             output_text_only=use_elevenlabs_output,
                             job_id=job_id,
                             vad_config=bridge_state.get("vad_config"),
+                            prompt_vars=bridge_state.get("prompt_vars"),
                         )
                         if openai_ws:
                             _append_job_debug_event(job_id, "openai_connect_success")
@@ -396,6 +439,7 @@ def _connect_openai_sync(
     output_text_only: bool = False,
     job_id: Optional[str] = None,
     vad_config: Optional[dict] = None,
+    prompt_vars: Optional[dict] = None,
 ):
     """Connect to OpenAI Realtime API (synchronous wrapper)."""
     import os
@@ -487,7 +531,7 @@ def _connect_openai_sync(
             return None
 
         # Now configure the session
-        system_prompt = _get_system_prompt(signup_mode)
+        system_prompt = _get_system_prompt(signup_mode, prompt_vars)
         session_config = {
             "type": "session.update",
             "session": {
@@ -607,7 +651,7 @@ IMPORTANT RULES:
 - Use Labelling of the potential emption, if they express an opinion or feeling. e.g. 'That sounds like it was exciting!'"""
 
 
-def _get_system_prompt(signup_mode: Optional[str]) -> str:
+def _get_system_prompt(signup_mode: Optional[str], prompt_vars: Optional[dict] = None) -> str:
     """Get the system prompt for the qualification call."""
     talent_greeting, _, _ = get_string_config("voice_prompt_talent_greeting", DEFAULT_TALENT_GREETING)
     company_greeting, _, _ = get_string_config("voice_prompt_company_greeting", DEFAULT_COMPANY_GREETING)
@@ -623,6 +667,8 @@ def _get_system_prompt(signup_mode: Optional[str]) -> str:
     else:
         mode_context = "Determine whether the user is looking to hire executives or is an executive seeking opportunities."
         greeting = fallback_greeting
+    greeting = _render_prompt_template(greeting, prompt_vars or {})
+    general_prompt = _render_prompt_template(general_prompt, prompt_vars or {})
 
     return f"""You are Ai-dan, a friendly voice assistant for ExecFlex, a platform connecting companies with executive talent.
 
