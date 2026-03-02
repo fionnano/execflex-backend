@@ -596,6 +596,18 @@ def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock,
     with state_lock:
         if bridge_state.get("end_call_requested"):
             return
+        turn_count = int(bridge_state.get("next_transcript_turn_sequence", 1))
+
+    # Guardrail: ignore accidental early end_call tool invocations.
+    reason = (args.get("reason") or "").strip().lower() if isinstance(args, dict) else ""
+    allow_early_reasons = {"user_requested_end", "no_interest", "voicemail"}
+    if turn_count <= 2 and reason not in allow_early_reasons:
+        log_fn(f"Ignoring early end_call signal (turn_count={turn_count}, reason={reason or 'unknown'})")
+        return
+
+    with state_lock:
+        if bridge_state.get("end_call_requested"):
+            return
         bridge_state["end_call_requested"] = True
 
     log_fn(f"end_call tool invoked with args: {args}")
@@ -848,6 +860,13 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                             parts = bridge_state.get("assistant_text_parts")
                             if isinstance(parts, list):
                                 parts.append(str(delta_text))
+                elif event_type == "response.output_text.done" or event_type == "response.text.done":
+                    done_text = data.get("text") or data.get("transcript") or data.get("delta")
+                    if done_text:
+                        with state_lock:
+                            parts = bridge_state.get("assistant_text_parts")
+                            if isinstance(parts, list):
+                                parts.append(str(done_text))
 
                 if event_type == "response.output_audio.delta":
                     if use_elevenlabs_output:
@@ -967,7 +986,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                                 content_item.get("transcript")
                                 or content_item.get("text")
                             )
-                            if transcript_text:
+                            if transcript_text and not fallback_assistant_text:
                                 fallback_assistant_text = str(transcript_text).strip()
                                 if not use_elevenlabs_output:
                                     _store_transcript_turn(
