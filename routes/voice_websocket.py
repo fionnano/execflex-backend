@@ -11,11 +11,10 @@ from simple_websocket import Server as SimpleWebSocket
 
 from services.realtime_session_state import get_session_manager, CallPhase
 from services.voice_metrics import get_metrics_service
-from config.app_config import OPENAI_API_KEY, ELEVEN_API_KEY, ELEVEN_VOICE_ID
+from config.app_config import OPENAI_API_KEY
 
 # Import the bridge components
 from services.realtime_voice_bridge import (
-    BridgeConfig,
     mulaw_to_pcm16,
     pcm16_to_mulaw,
     resample_8k_to_24k,
@@ -33,7 +32,7 @@ def init_voice_websocket(sock: Sock):
         Handle Twilio Media Streams WebSocket connection.
 
         This endpoint receives audio from Twilio, processes it through OpenAI Realtime API,
-        and sends TTS audio back to Twilio.
+        and streams assistant audio back to Twilio.
         """
         import sys
         import traceback as tb
@@ -60,8 +59,6 @@ def init_voice_websocket(sock: Sock):
             tb.print_exc()
             return
 
-        # Audio buffer for collecting frames
-        audio_buffer = bytearray()
         message_count = 0
 
         try:
@@ -161,14 +158,14 @@ def init_voice_websocket(sock: Sock):
                             # Send initial greeting request
                             _send_greeting_request(openai_ws, signup_mode)
                         else:
-                            print("OpenAI connection returned None!", flush=True)
-                            _send_fallback_greeting(ws, stream_sid, signup_mode)
+                            print("OpenAI connection returned None; ending stream.", flush=True)
+                            break
                     except Exception as e:
                         print(f"Error connecting to OpenAI: {e}", flush=True)
                         import traceback
                         traceback.print_exc()
-                        # Fallback: send a simple greeting using TTS
-                        _send_fallback_greeting(ws, stream_sid, signup_mode)
+                        print("Ending stream after OpenAI connection failure.", flush=True)
+                        break
 
                 elif event_type == "media":
                     # Process incoming audio from Twilio
@@ -434,13 +431,13 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                 event_type = data.get("type")
 
                 # Log all event types for debugging (first 50 messages, then key events only)
-                if message_count <= 50 or event_type not in ("response.audio.delta", "response.output_audio.delta"):
+                if message_count <= 50 or event_type != "response.output_audio.delta":
                     log(f"OpenAI event #{message_count}: {event_type}")
                     # Log full data for key events
-                    if event_type in ("error", "response.done", "session.updated", "response.created", "response.audio.done", "response.output_audio.done"):
+                    if event_type in ("error", "response.done", "session.updated", "response.created", "response.output_audio.done"):
                         log(f"  Full data: {json.dumps(data)[:800]}")
 
-                if event_type in ("response.audio.delta", "response.output_audio.delta"):
+                if event_type == "response.output_audio.delta":
                     # Streaming audio from OpenAI
                     audio_b64 = data.get("delta", "")
                     if audio_b64:
@@ -471,7 +468,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                             log(f"Error sending audio to Twilio: {type(e).__name__}: {e}")
                             # Don't break - Twilio might have disconnected but we can still process OpenAI events
 
-                elif event_type in ("response.audio.done", "response.output_audio.done"):
+                elif event_type == "response.output_audio.done":
                     # Response complete
                     metrics_service.record_response_complete(call_sid)
                     log(f"Response audio complete, sent {audio_chunks_sent} audio chunks total")
@@ -525,16 +522,3 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
         log(f"  Processed {message_count} messages, sent {audio_chunks_sent} audio chunks")
 
 
-def _send_fallback_greeting(twilio_ws, stream_sid: str, signup_mode: Optional[str]):
-    """Send a fallback greeting using pre-generated TTS (when OpenAI fails)."""
-    # For fallback, we'll mark the stream to send clear event and let the call fall back to /voice/qualify
-    try:
-        # Send mark to indicate we should end the stream
-        mark_event = {
-            "event": "mark",
-            "streamSid": stream_sid,
-            "mark": {"name": "fallback"}
-        }
-        twilio_ws.send(json.dumps(mark_event))
-    except Exception as e:
-        print(f"Error sending fallback mark: {e}")
