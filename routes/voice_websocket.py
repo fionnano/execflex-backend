@@ -58,6 +58,8 @@ def init_voice_websocket(sock: Sock):
             "manual_last_voice_ms": 0.0,
             "manual_last_trigger_ms": 0.0,
             "end_call_requested": False,
+            "next_transcript_turn_sequence": 1,
+            "last_transcript_key": None,
         }
 
         try:
@@ -164,7 +166,7 @@ def init_voice_websocket(sock: Sock):
                             # Start background thread to handle OpenAI responses
                             response_thread = threading.Thread(
                                 target=_handle_openai_responses,
-                                args=(openai_ws, ws, stream_sid, call_sid, metrics_service, bridge_state, state_lock),
+                                args=(openai_ws, ws, stream_sid, call_sid, interaction_id, metrics_service, bridge_state, state_lock),
                                 daemon=True
                             )
                             response_thread.start()
@@ -377,6 +379,9 @@ def _connect_openai_sync(signup_mode: Optional[str]):
                     }
                 ],
                 "tool_choice": "auto",
+                "input_audio_transcription": {
+                    "model": "gpt-4o-mini-transcribe"
+                },
                 "audio": {
                     "input": {
                         "format": {
@@ -432,13 +437,13 @@ def _get_system_prompt(signup_mode: Optional[str]) -> str:
     """Get the system prompt for the qualification call."""
     if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
         mode_context = "The user is an executive looking for job opportunities."
-        greeting = "Hi, this is Ai-dan from ExecFlex. I noticed you just signed up looking for executive opportunities. Have I caught you at a bad time?"
+        greeting = "Hi, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive opportunities. Have I caught you at a bad time?"
     elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
         mode_context = "The user is looking to hire executive talent for their organization."
-        greeting = "Hello, this is Ai-dan from ExecFlex. I noticed you just signed up looking for executive talent for your organization. Have I caught you at a bad time?"
+        greeting = "Hello, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive talent for your organization. Have I caught you at a bad time?"
     else:
         mode_context = "Determine whether the user is looking to hire executives or is an executive seeking opportunities."
-        greeting = "Hello, this is Ai-dan from ExecFlex. I noticed you just signed up. Are you looking to hire executive talent, or are you an executive looking for opportunities?"
+        greeting = "Hello, this is A I Dan from ExecFlex. I noticed you just signed up. Are you looking to hire executive talent, or are you an executive looking for opportunities?"
 
     return f"""You are Ai-dan, a friendly voice assistant for ExecFlex, a platform connecting companies with executive talent.
 
@@ -459,6 +464,8 @@ CONVERSATION GOALS:
 3. Learn about role preferences (titles, industries)
 4. Understand location and availability preferences
 5. Identify any constraints or deal-breakers
+6. Be witty.
+7. To progress up the levels of conversation from cliche, to facts, to opinions, to feelings, to needs/identity (dreams)
 
 IMPORTANT RULES:
 - Never ask for information already provided
@@ -467,6 +474,8 @@ IMPORTANT RULES:
 - Be natural and conversational, not robotic
 - When the call has clearly concluded, call the end_call tool exactly once.
 - Do not repeat goodbye lines in a loop.
+- Use Mirroring if they dont seem quite finished. Repeat back the last few words of what they said without embellishment in an upward tone.
+- Use Labelling of the potential emption, if they express an opinion or feeling. e.g. 'That sounds like it was exciting!'
 """
 
 
@@ -555,7 +564,44 @@ def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock,
     _request_call_hangup(call_sid)
 
 
-def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, metrics_service, bridge_state, state_lock):
+def _persist_transcript_turn(interaction_id: Optional[str], speaker: str, text: str, turn_sequence: int, raw_payload: dict) -> None:
+    """Persist a transcript turn row for realtime voice calls."""
+    if not interaction_id or not text:
+        return
+    try:
+        from config.clients import supabase_client
+        supabase_client.table("interaction_turns").insert({
+            "interaction_id": interaction_id,
+            "speaker": speaker,
+            "text": text,
+            "turn_sequence": turn_sequence,
+            "raw_payload": raw_payload or {},
+        }).execute()
+    except Exception as e:
+        print(
+            f"Failed to persist transcript turn interaction_id={interaction_id} "
+            f"speaker={speaker} turn_sequence={turn_sequence}: {e}",
+            flush=True,
+        )
+
+
+def _store_transcript_turn(interaction_id: Optional[str], speaker: str, text: str, raw_payload: dict, bridge_state, state_lock, log_fn):
+    """Allocate next turn sequence and persist transcript turn."""
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return
+    with state_lock:
+        dedupe_key = f"{speaker}:{clean_text}"
+        if bridge_state.get("last_transcript_key") == dedupe_key:
+            return
+        turn_sequence = bridge_state.get("next_transcript_turn_sequence", 1)
+        bridge_state["next_transcript_turn_sequence"] = turn_sequence + 1
+        bridge_state["last_transcript_key"] = dedupe_key
+    _persist_transcript_turn(interaction_id, speaker, clean_text, turn_sequence, raw_payload)
+    log_fn(f"Transcript captured [{speaker} #{turn_sequence}]: {clean_text}")
+
+
+def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, interaction_id: Optional[str], metrics_service, bridge_state, state_lock):
     """Handle responses from OpenAI in a background thread."""
     import sys
     import websocket
@@ -604,7 +650,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                 if message_count <= 50 or event_type != "response.output_audio.delta":
                     log(f"OpenAI event #{message_count}: {event_type}")
                     # Log full data for key events
-                    if event_type in ("error", "response.done", "session.updated", "response.created", "response.output_audio.done", "response.output_item.done"):
+                    if event_type in ("error", "response.done", "session.updated", "response.created", "response.output_audio.done", "response.output_item.done", "response.output_audio_transcript.done"):
                         log(f"  Full data: {json.dumps(data)[:800]}")
 
                 if event_type == "response.output_audio.delta":
@@ -670,7 +716,28 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     # Got transcript of user speech
                     transcript = data.get("transcript", "")
-                    log(f"User said: {transcript}")
+                    _store_transcript_turn(
+                        interaction_id=interaction_id,
+                        speaker="user",
+                        text=transcript,
+                        raw_payload=data,
+                        bridge_state=bridge_state,
+                        state_lock=state_lock,
+                        log_fn=log,
+                    )
+
+                elif event_type == "response.output_audio_transcript.done":
+                    # Final assistant transcript for this response.
+                    transcript = data.get("transcript", "")
+                    _store_transcript_turn(
+                        interaction_id=interaction_id,
+                        speaker="assistant",
+                        text=transcript,
+                        raw_payload=data,
+                        bridge_state=bridge_state,
+                        state_lock=state_lock,
+                        log_fn=log,
+                    )
 
                 elif event_type == "error":
                     error = data.get("error", {})
@@ -688,6 +755,26 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     response = data.get("response", {}) or {}
                     for output_item in response.get("output", []) or []:
                         _handle_end_call_signal(output_item, call_sid, bridge_state, state_lock, log)
+                        # Fallback transcript extraction from response payload.
+                        content_items = output_item.get("content", []) if isinstance(output_item, dict) else []
+                        for content_item in content_items:
+                            if not isinstance(content_item, dict):
+                                continue
+                            transcript_text = (
+                                content_item.get("transcript")
+                                or content_item.get("text")
+                            )
+                            if transcript_text:
+                                _store_transcript_turn(
+                                    interaction_id=interaction_id,
+                                    speaker="assistant",
+                                    text=transcript_text,
+                                    raw_payload=data,
+                                    bridge_state=bridge_state,
+                                    state_lock=state_lock,
+                                    log_fn=log,
+                                )
+                                break
 
                     with state_lock:
                         bridge_state["awaiting_response"] = False
