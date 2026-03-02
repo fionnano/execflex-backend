@@ -473,12 +473,12 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
                     }
                 ],
                 "tool_choice": "auto",
-                "input_audio_transcription": {
-                    "model": "gpt-4o-mini-transcribe"
-                },
                 "audio": {
                     "input": {
                         "format": {"type": "audio/pcmu"},
+                        "transcription": {
+                            "model": "gpt-4o-mini-transcribe"
+                        },
                         "turn_detection": {
                             "type": "server_vad",
                             "threshold": 0.5,
