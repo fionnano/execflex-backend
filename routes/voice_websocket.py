@@ -425,30 +425,6 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
 
         # Now configure the session
         system_prompt = _get_system_prompt(signup_mode)
-        audio_config = {
-            "input": {
-                "format": {
-                    "type": "audio/pcmu"
-                },
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 900,
-                    "idle_timeout_ms": 8000,
-                    "create_response": True,
-                    "interrupt_response": True
-                }
-            }
-        }
-        if not output_text_only:
-            audio_config["output"] = {
-                "format": {
-                    "type": "audio/pcmu"
-                },
-                "voice": realtime_voice
-            }
-
         session_config = {
             "type": "session.update",
             "session": {
@@ -479,7 +455,18 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
                 "input_audio_transcription": {
                     "model": "gpt-4o-mini-transcribe"
                 },
-                "audio": audio_config
+                "input_audio_format": "g711_ulaw",
+                "output_audio_format": "g711_ulaw",
+                "voice": realtime_voice,
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.5,
+                    "prefix_padding_ms": 300,
+                    "silence_duration_ms": 900,
+                    "idle_timeout_ms": 8000,
+                    "create_response": True,
+                    "interrupt_response": True
+                }
             }
         }
         ws.send(json.dumps(session_config))
@@ -577,18 +564,14 @@ def _enable_post_greeting_barge_in(openai_ws):
     update_event = {
         "type": "session.update",
         "session": {
-            "audio": {
-                "input": {
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.5,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 900,
-                        "idle_timeout_ms": 8000,
-                        "create_response": True,
-                        "interrupt_response": True
-                    }
-                }
+            "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": 900,
+                "idle_timeout_ms": 8000,
+                "create_response": True,
+                "interrupt_response": True
             }
         }
     }
@@ -834,12 +817,8 @@ def _fallback_to_openai_audio_mode(openai_ws, assistant_text: str, bridge_state,
     session_update = {
         "type": "session.update",
         "session": {
-            "audio": {
-                "output": {
-                    "format": {"type": "audio/pcmu"},
-                    "voice": realtime_voice,
-                }
-            },
+            "voice": realtime_voice,
+            "output_audio_format": "g711_ulaw",
         },
     }
     try:
