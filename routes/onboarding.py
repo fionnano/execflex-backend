@@ -9,7 +9,12 @@ from routes import onboarding_bp
 from utils.response_helpers import ok, bad
 from utils.auth_helpers import require_admin, get_authenticated_user_id
 from services.onboarding_service import initialize_user_onboarding, process_queued_jobs
-from services.platform_config_service import get_bool_config, set_bool_config
+from services.platform_config_service import (
+    get_bool_config,
+    set_bool_config,
+    get_number_config,
+    set_number_config,
+)
 from config.clients import twilio_client, supabase_client
 from config.app_config import TWILIO_PHONE_NUMBER, SUPABASE_URL, SUPABASE_KEY
 
@@ -246,11 +251,29 @@ def set_user_mode():
 def get_platform_config():
     """Read admin-managed configuration values."""
     enabled, updated_at, updated_by = get_bool_config("elevenlabs_output_enabled", default=False)
+    vad_threshold, vad_threshold_updated_at, vad_threshold_updated_by = get_number_config(
+        "voice_vad_threshold", default=0.5
+    )
+    vad_prefix_padding_ms, vad_prefix_updated_at, vad_prefix_updated_by = get_number_config(
+        "voice_vad_prefix_padding_ms", default=300
+    )
+    vad_silence_duration_ms, vad_silence_updated_at, vad_silence_updated_by = get_number_config(
+        "voice_vad_silence_duration_ms", default=900
+    )
+    vad_idle_timeout_ms, vad_idle_updated_at, vad_idle_updated_by = get_number_config(
+        "voice_vad_idle_timeout_ms", default=8000
+    )
     return ok({
         "configuration": {
             "elevenlabs_output_enabled": enabled,
-            "updated_at": updated_at,
-            "updated_by": updated_by,
+            "voice_vad_threshold": vad_threshold,
+            "voice_vad_prefix_padding_ms": int(vad_prefix_padding_ms),
+            "voice_vad_silence_duration_ms": int(vad_silence_duration_ms),
+            "voice_vad_idle_timeout_ms": int(vad_idle_timeout_ms),
+            "updated_at": max(
+                [x for x in [updated_at, vad_threshold_updated_at, vad_prefix_updated_at, vad_silence_updated_at, vad_idle_updated_at] if x] or [None]
+            ),
+            "updated_by": updated_by or vad_threshold_updated_by or vad_prefix_updated_by or vad_silence_updated_by or vad_idle_updated_by,
         }
     })
 
@@ -262,24 +285,91 @@ def set_platform_config():
     try:
         admin_user_id = request.environ.get('authenticated_user_id')
         data = request.get_json(silent=True) or {}
+        allowed_keys = {
+            "elevenlabs_output_enabled",
+            "voice_vad_threshold",
+            "voice_vad_prefix_padding_ms",
+            "voice_vad_silence_duration_ms",
+            "voice_vad_idle_timeout_ms",
+        }
+        provided = [k for k in allowed_keys if k in data]
+        if not provided:
+            return bad("At least one configuration field is required", 400)
 
-        if "elevenlabs_output_enabled" not in data:
-            return bad("elevenlabs_output_enabled is required", 400)
-        enabled = data.get("elevenlabs_output_enabled")
-        if not isinstance(enabled, bool):
+        if "elevenlabs_output_enabled" in data and not isinstance(data.get("elevenlabs_output_enabled"), bool):
             return bad("elevenlabs_output_enabled must be a boolean", 400)
 
-        row = set_bool_config(
-            key="elevenlabs_output_enabled",
-            value=enabled,
-            updated_by=admin_user_id,
-            description="Enable OpenAI text output routed through ElevenLabs realtime TTS for new streaming calls",
-        )
+        def _validate_number(name: str, min_value: float, max_value: float, integer: bool = False):
+            if name not in data:
+                return None
+            value = data.get(name)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ValueError(f"{name} must be a number")
+            numeric = float(value)
+            if numeric < min_value or numeric > max_value:
+                raise ValueError(f"{name} must be between {min_value} and {max_value}")
+            if integer and int(numeric) != numeric:
+                raise ValueError(f"{name} must be an integer")
+            return int(numeric) if integer else numeric
+
+        try:
+            voice_vad_threshold = _validate_number("voice_vad_threshold", 0.1, 0.95)
+            voice_vad_prefix_padding_ms = _validate_number("voice_vad_prefix_padding_ms", 0, 2000, integer=True)
+            voice_vad_silence_duration_ms = _validate_number("voice_vad_silence_duration_ms", 200, 4000, integer=True)
+            voice_vad_idle_timeout_ms = _validate_number("voice_vad_idle_timeout_ms", 1000, 15000, integer=True)
+        except ValueError as validation_err:
+            return bad(str(validation_err), 400)
+
+        if "elevenlabs_output_enabled" in data:
+            set_bool_config(
+                key="elevenlabs_output_enabled",
+                value=bool(data.get("elevenlabs_output_enabled")),
+                updated_by=admin_user_id,
+                description="Enable OpenAI text output routed through ElevenLabs realtime TTS for new streaming calls",
+            )
+        if voice_vad_threshold is not None:
+            set_number_config(
+                key="voice_vad_threshold",
+                value=voice_vad_threshold,
+                updated_by=admin_user_id,
+                description="OpenAI Realtime server_vad threshold for outbound voice calls",
+            )
+        if voice_vad_prefix_padding_ms is not None:
+            set_number_config(
+                key="voice_vad_prefix_padding_ms",
+                value=voice_vad_prefix_padding_ms,
+                updated_by=admin_user_id,
+                description="OpenAI Realtime server_vad prefix padding in milliseconds for outbound voice calls",
+            )
+        if voice_vad_silence_duration_ms is not None:
+            set_number_config(
+                key="voice_vad_silence_duration_ms",
+                value=voice_vad_silence_duration_ms,
+                updated_by=admin_user_id,
+                description="OpenAI Realtime server_vad silence duration in milliseconds for outbound voice calls",
+            )
+        if voice_vad_idle_timeout_ms is not None:
+            set_number_config(
+                key="voice_vad_idle_timeout_ms",
+                value=voice_vad_idle_timeout_ms,
+                updated_by=admin_user_id,
+                description="OpenAI Realtime server_vad idle timeout in milliseconds for outbound voice calls",
+            )
+
+        enabled, updated_at, updated_by = get_bool_config("elevenlabs_output_enabled", default=False)
+        vad_threshold, _, _ = get_number_config("voice_vad_threshold", default=0.5)
+        vad_prefix_padding_ms, _, _ = get_number_config("voice_vad_prefix_padding_ms", default=300)
+        vad_silence_duration_ms, _, _ = get_number_config("voice_vad_silence_duration_ms", default=900)
+        vad_idle_timeout_ms, _, _ = get_number_config("voice_vad_idle_timeout_ms", default=8000)
         return ok({
             "configuration": {
-                "elevenlabs_output_enabled": bool(row.get("value", enabled)),
-                "updated_at": row.get("updated_at"),
-                "updated_by": row.get("updated_by"),
+                "elevenlabs_output_enabled": enabled,
+                "voice_vad_threshold": vad_threshold,
+                "voice_vad_prefix_padding_ms": int(vad_prefix_padding_ms),
+                "voice_vad_silence_duration_ms": int(vad_silence_duration_ms),
+                "voice_vad_idle_timeout_ms": int(vad_idle_timeout_ms),
+                "updated_at": updated_at,
+                "updated_by": updated_by,
             }
         })
     except Exception as e:

@@ -14,7 +14,7 @@ from simple_websocket import Server as SimpleWebSocket
 
 from services.realtime_session_state import get_session_manager, CallPhase
 from services.voice_metrics import get_metrics_service
-from services.platform_config_service import get_bool_config
+from services.platform_config_service import get_bool_config, get_number_config
 from config.app_config import OPENAI_API_KEY, ELEVEN_API_KEY, ELEVEN_VOICE_ID
 
 # Import the bridge components
@@ -53,6 +53,25 @@ def _append_job_debug_event(job_id: Optional[str], event_name: str, metadata: Op
         supabase_client.table("outbound_call_jobs").update({"artifacts": artifacts}).eq("id", job_id).execute()
     except Exception as exc:
         print(f"Failed to append debug event for job {job_id}: {exc}", flush=True)
+
+
+def _load_vad_config(job_id: Optional[str]) -> dict:
+    """Load VAD tuning from platform_config for new calls."""
+    threshold, _, _ = get_number_config("voice_vad_threshold", default=0.5)
+    prefix_padding_ms, _, _ = get_number_config("voice_vad_prefix_padding_ms", default=300)
+    silence_duration_ms, _, _ = get_number_config("voice_vad_silence_duration_ms", default=900)
+    idle_timeout_ms, _, _ = get_number_config("voice_vad_idle_timeout_ms", default=8000)
+    config = {
+        "type": "server_vad",
+        "threshold": float(threshold),
+        "prefix_padding_ms": int(prefix_padding_ms),
+        "silence_duration_ms": int(silence_duration_ms),
+        "idle_timeout_ms": int(idle_timeout_ms),
+        "create_response": True,
+        "interrupt_response": True,
+    }
+    _append_job_debug_event(job_id, "vad_config_loaded", config)
+    return config
 
 
 def init_voice_websocket(sock: Sock):
@@ -96,6 +115,15 @@ def init_voice_websocket(sock: Sock):
             "last_transcript_key": None,
             "use_elevenlabs_output": False,
             "assistant_text_parts": [],
+            "vad_config": {
+                "type": "server_vad",
+                "threshold": 0.5,
+                "prefix_padding_ms": 300,
+                "silence_duration_ms": 900,
+                "idle_timeout_ms": 8000,
+                "create_response": True,
+                "interrupt_response": True,
+            },
         }
 
         try:
@@ -210,6 +238,7 @@ def init_voice_websocket(sock: Sock):
                     with state_lock:
                         bridge_state["use_elevenlabs_output"] = use_elevenlabs_output
                         bridge_state["assistant_text_parts"] = []
+                        bridge_state["vad_config"] = _load_vad_config(job_id)
 
                     # Connect to OpenAI Realtime API
                     try:
@@ -219,6 +248,7 @@ def init_voice_websocket(sock: Sock):
                             signup_mode,
                             output_text_only=use_elevenlabs_output,
                             job_id=job_id,
+                            vad_config=bridge_state.get("vad_config"),
                         )
                         if openai_ws:
                             _append_job_debug_event(job_id, "openai_connect_success")
@@ -361,7 +391,12 @@ def _start_keepalive_thread(ws, interval=20):
     return keepalive_thread
 
 
-def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = False, job_id: Optional[str] = None):
+def _connect_openai_sync(
+    signup_mode: Optional[str],
+    output_text_only: bool = False,
+    job_id: Optional[str] = None,
+    vad_config: Optional[dict] = None,
+):
     """Connect to OpenAI Realtime API (synchronous wrapper)."""
     import os
     import websocket
@@ -373,6 +408,15 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
 
     realtime_model = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
     realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "ash")
+    effective_vad = vad_config or {
+        "type": "server_vad",
+        "threshold": 0.5,
+        "prefix_padding_ms": 300,
+        "silence_duration_ms": 900,
+        "idle_timeout_ms": 8000,
+        "create_response": True,
+        "interrupt_response": True,
+    }
     url = f"wss://api.openai.com/v1/realtime?model={realtime_model}"
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -479,15 +523,7 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
                         "transcription": {
                             "model": "gpt-4o-mini-transcribe"
                         },
-                        "turn_detection": {
-                            "type": "server_vad",
-                            "threshold": 0.5,
-                            "prefix_padding_ms": 300,
-                            "silence_duration_ms": 900,
-                            "idle_timeout_ms": 8000,
-                            "create_response": True,
-                            "interrupt_response": True
-                        }
+                        "turn_detection": effective_vad,
                     },
                     "output": {
                         "format": {"type": "audio/pcmu"},
@@ -586,23 +622,24 @@ def _send_greeting_request(openai_ws, signup_mode: Optional[str]):
     print("Response.create sent to OpenAI", flush=True)
 
 
-def _enable_post_greeting_barge_in(openai_ws):
+def _enable_post_greeting_barge_in(openai_ws, vad_config: Optional[dict] = None):
     """Re-assert VAD turn behavior after greeting completes."""
+    effective_vad = vad_config or {
+        "type": "server_vad",
+        "threshold": 0.5,
+        "prefix_padding_ms": 300,
+        "silence_duration_ms": 900,
+        "idle_timeout_ms": 8000,
+        "create_response": True,
+        "interrupt_response": True,
+    }
     update_event = {
         "type": "session.update",
         "session": {
             "type": "realtime",
             "audio": {
                 "input": {
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": 0.5,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 900,
-                        "idle_timeout_ms": 8000,
-                        "create_response": True,
-                        "interrupt_response": True
-                    }
+                    "turn_detection": effective_vad
                 }
             },
         }
@@ -1174,7 +1211,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                         with state_lock:
                             bridge_state["greeting_completed"] = True
                         try:
-                            _enable_post_greeting_barge_in(openai_ws)
+                            _enable_post_greeting_barge_in(openai_ws, bridge_state.get("vad_config"))
                             log("Post-greeting barge-in mode enabled")
                         except Exception as e:
                             log(f"Failed to enable post-greeting barge-in mode: {type(e).__name__}: {e}")
