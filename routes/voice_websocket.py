@@ -305,6 +305,7 @@ def _connect_openai_sync(signup_mode: Optional[str]):
         return None
 
     realtime_model = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
+    realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "ash")
     url = f"wss://api.openai.com/v1/realtime?model={realtime_model}"
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}"
@@ -395,7 +396,7 @@ def _connect_openai_sync(signup_mode: Optional[str]):
                         "format": {
                             "type": "audio/pcmu"
                         },
-                        "voice": "alloy"
+                        "voice": realtime_voice
                     }
                 }
             }
