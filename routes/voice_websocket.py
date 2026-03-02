@@ -69,11 +69,16 @@ def init_voice_websocket(sock: Sock):
             print("Entering main receive loop...", flush=True)
             while True:
                 # Receive message from Twilio
-                message = ws.receive()
+                try:
+                    message = ws.receive(timeout=60)  # 60 second timeout
+                except Exception as recv_err:
+                    print(f"Twilio ws.receive() error: {type(recv_err).__name__}: {recv_err}", flush=True)
+                    break
+
                 message_count += 1
 
                 if message is None:
-                    print("Received None message, breaking loop", flush=True)
+                    print(f"Received None message after {message_count} messages, breaking loop", flush=True)
                     break
 
                 try:
@@ -83,9 +88,11 @@ def init_voice_websocket(sock: Sock):
 
                 event_type = data.get("event")
 
-                # Log non-media events (media events are too frequent)
+                # Log non-media events and periodic media count
                 if event_type != "media":
                     print(f"[MSG #{message_count}] Twilio event: {event_type}", flush=True)
+                elif message_count % 500 == 0:
+                    print(f"[MSG #{message_count}] Received {message_count} media frames so far", flush=True)
 
                 if event_type == "connected":
                     print(f"Twilio Media Stream connected: {data.get('protocol')}", flush=True)
@@ -188,26 +195,31 @@ def init_voice_websocket(sock: Sock):
                             print(f"Error forwarding audio to OpenAI: {e}")
 
                 elif event_type == "stop":
-                    print(f"Stream stopped: stream_sid={stream_sid}")
+                    print(f"Stream stopped: stream_sid={stream_sid}, total messages received: {message_count}", flush=True)
                     break
 
+            print(f"Main Twilio loop exited normally after {message_count} messages", flush=True)
+
         except Exception as e:
-            print(f"WebSocket error: {e}")
+            print(f"WebSocket error in main loop: {type(e).__name__}: {e}", flush=True)
             import traceback
             traceback.print_exc()
         finally:
+            print(f"Entering finally block, will close OpenAI connection. Total Twilio messages: {message_count}", flush=True)
             # Clean up
             if openai_ws:
                 try:
+                    print("Closing OpenAI WebSocket...", flush=True)
                     openai_ws.close()
-                except Exception:
-                    pass
+                    print("OpenAI WebSocket closed", flush=True)
+                except Exception as close_err:
+                    print(f"Error closing OpenAI ws: {close_err}", flush=True)
 
             if call_sid:
                 session_manager.end_session(call_sid)
                 metrics_service.end_call(call_sid)
 
-            print(f"WebSocket connection closed for call_sid={call_sid}")
+            print(f"WebSocket connection fully cleaned up for call_sid={call_sid}", flush=True)
 
 
 def _connect_openai_sync(signup_mode: Optional[str]):
