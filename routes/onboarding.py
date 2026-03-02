@@ -997,15 +997,15 @@ def onboarding_status():
 def process_jobs_endpoint():
     """
     Endpoint to trigger job processing (for HTTP-based cron/scheduled tasks).
-    
+
     **Note:** This endpoint is optional. If using Render Background Workers,
     you can run `python -m workers.call_dispatcher` directly instead.
-    
+
     Optional query param: limit (default 10)
     """
     # Optional: Add service secret protection here if needed
     limit = int(request.args.get("limit", 10))
-    
+
     try:
         processed = process_queued_jobs(limit=limit)
         return ok({"processed": processed, "message": f"Processed {processed} jobs"})
@@ -1013,3 +1013,204 @@ def process_jobs_endpoint():
         import traceback
         traceback.print_exc()
         return bad(f"Failed to process jobs: {str(e)}", 500)
+
+
+# =============================================================================
+# LinkedIn OAuth Integration Endpoints
+# =============================================================================
+
+from utils.auth_helpers import require_auth
+
+
+@onboarding_bp.route("/linkedin/start", methods=["POST"])
+@require_auth
+def linkedin_start():
+    """
+    Start LinkedIn OAuth flow.
+
+    **Auth Required**: User must be authenticated.
+    Returns the OAuth authorization URL to redirect the user to.
+
+    Headers:
+        Authorization: Bearer <supabase_jwt_token>
+
+    Body (JSON, optional):
+        { "redirect_after": "/dashboard" } - URL to redirect to after OAuth
+
+    Returns:
+        {
+            "url": "https://linkedin.com/oauth/v2/authorization?...",
+            "state": "abc123..."
+        }
+    """
+    try:
+        from services.linkedin_service import get_oauth_url
+
+        user_id = request.environ.get('authenticated_user_id')
+        data = request.get_json(silent=True) or {}
+        redirect_after = data.get("redirect_after")
+
+        result = get_oauth_url(user_id, redirect_after)
+
+        print(f"🔗 LinkedIn OAuth started for user {user_id}")
+        return ok(result)
+
+    except ValueError as e:
+        return bad(str(e), 400)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error starting LinkedIn OAuth: {e}")
+        return bad(f"Failed to start LinkedIn OAuth: {str(e)}", 500)
+
+
+@onboarding_bp.route("/linkedin/callback", methods=["GET"])
+def linkedin_callback():
+    """
+    LinkedIn OAuth callback handler.
+
+    **No Auth Required**: This is called by LinkedIn redirect, not frontend.
+    Validates state, exchanges code for tokens, imports profile data,
+    and redirects to frontend completion page.
+
+    Query Parameters:
+        - code: Authorization code from LinkedIn
+        - state: State parameter for validation
+        - error: Error code if OAuth failed
+        - error_description: Error description if OAuth failed
+
+    Redirects to frontend with result parameters.
+    """
+    from flask import redirect
+    from urllib.parse import urlencode
+    import os
+
+    # Get frontend URL for redirects
+    frontend_url = os.getenv("FRONTEND_URL", "https://execflex.ai")
+
+    # Check for OAuth errors
+    error = request.args.get("error")
+    if error:
+        error_desc = request.args.get("error_description", "LinkedIn authorization failed")
+        print(f"❌ LinkedIn OAuth error: {error} - {error_desc}")
+        params = urlencode({"error": error_desc})
+        return redirect(f"{frontend_url}/linkedin-connect?{params}")
+
+    code = request.args.get("code")
+    state = request.args.get("state")
+
+    if not code or not state:
+        params = urlencode({"error": "Missing authorization code or state"})
+        return redirect(f"{frontend_url}/linkedin-connect?{params}")
+
+    try:
+        from services.linkedin_service import handle_oauth_callback
+
+        result = handle_oauth_callback(code, state)
+
+        if not result.get("success"):
+            error_msg = result.get("error", "OAuth flow failed")
+            print(f"❌ LinkedIn OAuth callback failed: {error_msg}")
+            params = urlencode({"error": error_msg})
+            return redirect(f"{frontend_url}/linkedin-connect?{params}")
+
+        # Success - redirect to completion page
+        print(f"✅ LinkedIn OAuth completed for user {result.get('user_id')}")
+
+        params = {
+            "success": "true",
+            "imported": ",".join(result.get("imported_fields", [])),
+            "missing": ",".join(result.get("missing_fields", []))
+        }
+
+        # If user has missing fields, go to completion page
+        if result.get("missing_fields"):
+            return redirect(f"{frontend_url}/profile-completion?{urlencode(params)}")
+
+        # Otherwise, go to intended destination or default
+        redirect_after = result.get("redirect_after") or "/find-jobs"
+        return redirect(f"{frontend_url}{redirect_after}?linkedin=connected")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error in LinkedIn callback: {e}")
+        params = urlencode({"error": str(e)})
+        return redirect(f"{frontend_url}/linkedin-connect?{params}")
+
+
+@onboarding_bp.route("/linkedin/status", methods=["GET"])
+@require_auth
+def linkedin_status():
+    """
+    Get LinkedIn connection status and profile completion.
+
+    **Auth Required**: User must be authenticated.
+    Used by frontend to determine if LinkedIn gate should be shown.
+
+    Headers:
+        Authorization: Bearer <supabase_jwt_token>
+
+    Returns:
+        {
+            "connected": true/false,
+            "imported_fields": ["first_name", "headshot_url", ...],
+            "missing_fields": ["headline", "location", ...],
+            "completion_score": 75,
+            "linked_at": "2026-03-02T10:30:00Z",
+            "last_sync_at": "2026-03-02T10:30:00Z"
+        }
+    """
+    try:
+        from services.linkedin_service import get_connection_status
+
+        user_id = request.environ.get('authenticated_user_id')
+        result = get_connection_status(user_id)
+
+        return ok(result)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error getting LinkedIn status: {e}")
+        return bad(f"Failed to get LinkedIn status: {str(e)}", 500)
+
+
+@onboarding_bp.route("/linkedin/skip", methods=["POST"])
+@require_auth
+def linkedin_skip():
+    """
+    Record that user skipped LinkedIn connection.
+
+    **Auth Required**: User must be authenticated.
+    Records skip event for analytics but does not prevent future prompts.
+
+    Headers:
+        Authorization: Bearer <supabase_jwt_token>
+
+    Returns:
+        { "skipped": true, "missing_fields": ["first_name", ...] }
+    """
+    try:
+        from services.linkedin_service import record_skip_event, get_connection_status
+
+        user_id = request.environ.get('authenticated_user_id')
+
+        # Record the skip
+        record_skip_event(user_id)
+
+        # Return current status so frontend knows what to show
+        status = get_connection_status(user_id)
+
+        print(f"⏭️ User {user_id} skipped LinkedIn connection")
+
+        return ok({
+            "skipped": True,
+            "missing_fields": status.get("missing_fields", [])
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Error recording LinkedIn skip: {e}")
+        return bad(f"Failed to record skip: {str(e)}", 500)

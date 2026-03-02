@@ -28,6 +28,13 @@ ELEVEN_VOICE_ID = os.getenv("ELEVEN_VOICE_ID")
 # OpenAI configuration (optional)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY".lower()) or os.getenv("openai_api_key")
 
+# LinkedIn OAuth configuration (optional)
+LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID")
+LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET")
+LINKEDIN_CALLBACK_URL = os.getenv("LINKEDIN_CALLBACK_URL")
+LINKEDIN_ENCRYPTION_KEY = os.getenv("LINKEDIN_ENCRYPTION_KEY")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://execflex.ai")
+
 
 def validate_config():
     """Validate required configuration."""
@@ -47,5 +54,7 @@ def print_config_status():
     print(f"  Twilio configured? {bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN)}")
     print(f"  ElevenLabs configured? {bool(ELEVEN_API_KEY and ELEVEN_VOICE_ID)}")
     print(f"  OpenAI configured? {bool(OPENAI_API_KEY)}")
+    print(f"  LinkedIn OAuth configured? {bool(LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET)}")
+    print(f"  Frontend URL={FRONTEND_URL}")
     print("--------------------------------------------------")
 
