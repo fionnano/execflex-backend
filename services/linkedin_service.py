@@ -251,14 +251,12 @@ def map_linkedin_to_profile(linkedin_data: Dict[str, Any]) -> Dict[str, Any]:
         mapped["headshot_url"] = linkedin_data["picture"]
         print(f"✅ Mapped headshot_url: {linkedin_data['picture']}")
 
-    # LinkedIn member ID and profile URL
+    # LinkedIn member ID (internal identifier - NOT usable for public profile URL)
     if linkedin_data.get("sub"):
         mapped["linkedin_member_id"] = linkedin_data["sub"]
-        # Construct profile URL from member ID
-        # Note: This creates a URL like https://www.linkedin.com/in/member_id
-        # It will redirect to the user's actual vanity URL
-        mapped["linkedin_profile_url"] = f"https://www.linkedin.com/in/{linkedin_data['sub']}"
-        print(f"✅ Mapped linkedin_profile_url: {mapped['linkedin_profile_url']}")
+        # Note: LinkedIn's sub claim is an internal ID that does NOT work as a public URL
+        # The user must manually provide their vanity URL (e.g., linkedin.com/in/johndoe)
+        print(f"✅ Mapped linkedin_member_id: {linkedin_data['sub']}")
 
     # Note: LinkedIn's basic scopes don't provide headline, location, skills, or industries
     # Those would require additional API calls with different scopes
