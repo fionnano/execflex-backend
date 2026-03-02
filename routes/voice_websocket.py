@@ -3,7 +3,6 @@ WebSocket route handler for Twilio Media Streams.
 This module is initialized from server.py with the Flask-Sock instance.
 """
 import json
-import asyncio
 import base64
 import threading
 from typing import Optional
@@ -70,7 +69,7 @@ def init_voice_websocket(sock: Sock):
             while True:
                 # Receive message from Twilio
                 try:
-                    message = ws.receive(timeout=60)  # 60 second timeout
+                    message = ws.receive()
                 except Exception as recv_err:
                     print(f"Twilio ws.receive() error: {type(recv_err).__name__}: {recv_err}", flush=True)
                     break
@@ -222,12 +221,8 @@ def init_voice_websocket(sock: Sock):
             print(f"WebSocket connection fully cleaned up for call_sid={call_sid}", flush=True)
 
 
-def _start_keepalive_thread(ws, interval=1):
-    """Start a background thread to send keepalive messages to OpenAI.
-
-    OpenAI Realtime API may close connections that don't send any data.
-    We send input_audio_buffer.commit periodically to keep the connection alive.
-    """
+def _start_keepalive_thread(ws, interval=20):
+    """Start a background thread to send WebSocket pings to OpenAI."""
     import time
 
     def keepalive_loop():
@@ -235,17 +230,8 @@ def _start_keepalive_thread(ws, interval=1):
             try:
                 time.sleep(interval)
                 if ws.connected:
-                    # Send a ping at WebSocket level
-                    try:
-                        ws.ping()
-                    except Exception:
-                        pass
-
-                    # Also send an OpenAI-level keepalive (commit empty buffer)
-                    # This tells OpenAI we're still here and listening
-                    keepalive_msg = {"type": "input_audio_buffer.commit"}
-                    ws.send(json.dumps(keepalive_msg))
-                    print(f"Sent keepalive to OpenAI", flush=True)
+                    ws.ping()
+                    print("Sent WebSocket ping to OpenAI", flush=True)
                 else:
                     print("WebSocket disconnected, stopping keepalive thread", flush=True)
                     break
@@ -260,6 +246,7 @@ def _start_keepalive_thread(ws, interval=1):
 
 def _connect_openai_sync(signup_mode: Optional[str]):
     """Connect to OpenAI Realtime API (synchronous wrapper)."""
+    import os
     import websocket
     import ssl
 
@@ -267,10 +254,8 @@ def _connect_openai_sync(signup_mode: Optional[str]):
         print("OpenAI API key not configured", flush=True)
         return None
 
-    # Use the GA Realtime model
-    # GA model: gpt-realtime (or gpt-realtime-2025-08-28 for specific version)
-    # Preview model: gpt-4o-realtime-preview-2024-12-17
-    url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
+    realtime_model = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
+    url = f"wss://api.openai.com/v1/realtime?model={realtime_model}"
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}"
     }
@@ -284,14 +269,16 @@ def _connect_openai_sync(signup_mode: Optional[str]):
             url,
             header=[f"{k}: {v}" for k, v in headers.items()],
             sslopt={"cert_reqs": ssl.CERT_REQUIRED},
-            timeout=60,  # Increase timeout
+            timeout=20,
             skip_utf8_validation=True,  # For binary audio data
             sockopt=[(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]  # Enable TCP keepalive
         )
         print("OpenAI WebSocket connected successfully", flush=True)
+        # Avoid socket read timeouts during natural conversation pauses.
+        ws.settimeout(None)
 
-        # Start keepalive thread - send data every second to prevent connection drop
-        _start_keepalive_thread(ws, interval=1)
+        # Keep TCP/WebSocket connection alive without mutating conversation state.
+        _start_keepalive_thread(ws, interval=20)
 
         # Wait for session.created before sending any configuration
         print("Waiting for session.created from OpenAI...", flush=True)
@@ -313,7 +300,7 @@ def _connect_openai_sync(signup_mode: Optional[str]):
         session_config = {
             "type": "session.update",
             "session": {
-                "type": "realtime",  # Required for GA API (options: realtime, transcription)
+                "type": "realtime",
                 "modalities": ["text", "audio"],
                 "instructions": system_prompt,
                 "voice": "alloy",
@@ -328,8 +315,7 @@ def _connect_openai_sync(signup_mode: Optional[str]):
                     "prefix_padding_ms": 300,
                     "silence_duration_ms": 500
                 },
-                "temperature": 0.8,
-                "max_response_output_tokens": "inf"
+                "max_response_output_tokens": 512
             }
         }
         ws.send(json.dumps(session_config))
@@ -401,10 +387,11 @@ IMPORTANT RULES:
 
 def _send_greeting_request(openai_ws, signup_mode: Optional[str]):
     """Send initial greeting request to OpenAI."""
-    # Simply trigger a response - the system instructions should make the AI greet
-    # We don't need to inject a user message first
     create_response = {
-        "type": "response.create"
+        "type": "response.create",
+        "response": {
+            "modalities": ["audio", "text"]
+        }
     }
     print(f"Sending response.create to trigger greeting (signup_mode={signup_mode})", flush=True)
     openai_ws.send(json.dumps(create_response))
@@ -528,7 +515,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
             except websocket.WebSocketTimeoutException as e:
                 exit_reason = f"websocket_timeout: {e}"
                 log(f"OpenAI WebSocket timeout: {e}")
-                break
+                continue
             except Exception as e:
                 import traceback
                 exit_reason = f"exception: {type(e).__name__}: {e}"
