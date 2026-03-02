@@ -5,6 +5,8 @@ This module is initialized from server.py with the Flask-Sock instance.
 import json
 import base64
 import threading
+import time
+import struct
 from typing import Optional
 from flask_sock import Sock
 from simple_websocket import Server as SimpleWebSocket
@@ -50,6 +52,15 @@ def init_voice_websocket(sock: Sock):
         signup_mode: Optional[str] = None
         openai_ws = None
         forwarded_audio_frames = 0
+        state_lock = threading.Lock()
+        bridge_state = {
+            "greeting_completed": False,
+            "awaiting_response": False,
+            "saw_openai_speech_event": False,
+            "manual_vad_active": False,
+            "manual_last_voice_ms": 0.0,
+            "manual_last_trigger_ms": 0.0,
+        }
 
         try:
             session_manager = get_session_manager()
@@ -150,7 +161,7 @@ def init_voice_websocket(sock: Sock):
                             # Start background thread to handle OpenAI responses
                             response_thread = threading.Thread(
                                 target=_handle_openai_responses,
-                                args=(openai_ws, ws, stream_sid, call_sid, metrics_service),
+                                args=(openai_ws, ws, stream_sid, call_sid, metrics_service, bridge_state, state_lock),
                                 daemon=True
                             )
                             response_thread.start()
@@ -158,6 +169,8 @@ def init_voice_websocket(sock: Sock):
 
                             # Send initial greeting request
                             _send_greeting_request(openai_ws, signup_mode)
+                            with state_lock:
+                                bridge_state["awaiting_response"] = True
                         else:
                             print("OpenAI connection returned None; ending stream.", flush=True)
                             break
@@ -194,6 +207,40 @@ def init_voice_websocket(sock: Sock):
                                     f"Forwarded audio frame #{forwarded_audio_frames} to OpenAI",
                                     flush=True,
                                 )
+
+                            # Deterministic fallback: if OpenAI VAD isn't emitting speech events,
+                            # use Twilio audio activity + silence gap to force commit/create.
+                            now_ms = time.monotonic() * 1000.0
+                            rms = _pcm16_rms(pcm_8k)
+                            voice_threshold = 900.0
+                            silence_gap_ms = 850.0
+                            trigger_cooldown_ms = 1200.0
+
+                            with state_lock:
+                                greeting_completed = bridge_state["greeting_completed"]
+                                awaiting_response = bridge_state["awaiting_response"]
+                                saw_openai_speech_event = bridge_state["saw_openai_speech_event"]
+                                manual_vad_active = bridge_state["manual_vad_active"]
+                                manual_last_voice_ms = bridge_state["manual_last_voice_ms"]
+                                manual_last_trigger_ms = bridge_state["manual_last_trigger_ms"]
+
+                                if greeting_completed and not awaiting_response and not saw_openai_speech_event:
+                                    if rms >= voice_threshold:
+                                        bridge_state["manual_vad_active"] = True
+                                        bridge_state["manual_last_voice_ms"] = now_ms
+                                    elif manual_vad_active:
+                                        silence_elapsed = now_ms - manual_last_voice_ms
+                                        cooldown_elapsed = now_ms - manual_last_trigger_ms
+                                        if silence_elapsed >= silence_gap_ms and cooldown_elapsed >= trigger_cooldown_ms:
+                                            try:
+                                                openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                                                openai_ws.send(json.dumps({"type": "response.create"}))
+                                                bridge_state["awaiting_response"] = True
+                                                bridge_state["manual_vad_active"] = False
+                                                bridge_state["manual_last_trigger_ms"] = now_ms
+                                                print("Deterministic fallback triggered: commit + response.create", flush=True)
+                                            except Exception as trigger_err:
+                                                print(f"Deterministic fallback trigger error: {trigger_err}", flush=True)
                         except Exception as e:
                             print(f"Error forwarding audio to OpenAI: {e}")
 
@@ -417,7 +464,21 @@ def _enable_post_greeting_barge_in(openai_ws):
     openai_ws.send(json.dumps(update_event))
 
 
-def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, metrics_service):
+def _pcm16_rms(pcm16_data: bytes) -> float:
+    """Compute RMS for PCM16 mono bytes."""
+    if not pcm16_data:
+        return 0.0
+    sample_count = len(pcm16_data) // 2
+    if sample_count <= 0:
+        return 0.0
+    samples = struct.unpack(f"<{sample_count}h", pcm16_data)
+    energy = 0.0
+    for s in samples:
+        energy += float(s) * float(s)
+    return (energy / float(sample_count)) ** 0.5
+
+
+def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, metrics_service, bridge_state, state_lock):
     """Handle responses from OpenAI in a background thread."""
     import sys
     import websocket
@@ -510,9 +571,13 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     # User stopped speaking - record timing
                     metrics_service.record_user_speech_end(call_sid)
                     log("User stopped speaking")
+                    with state_lock:
+                        bridge_state["saw_openai_speech_event"] = True
 
                 elif event_type == "input_audio_buffer.speech_started":
                     log("User started speaking")
+                    with state_lock:
+                        bridge_state["saw_openai_speech_event"] = True
 
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     # Got transcript of user speech
@@ -532,14 +597,24 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     exit_reason = f"openai_error: {error.get('type', 'unknown')}"
 
                 elif event_type == "response.done":
+                    with state_lock:
+                        bridge_state["awaiting_response"] = False
+                        bridge_state["saw_openai_speech_event"] = False
+
                     # Flip to explicit post-greeting turn behavior.
                     if not greeting_completed:
                         greeting_completed = True
+                        with state_lock:
+                            bridge_state["greeting_completed"] = True
                         try:
                             _enable_post_greeting_barge_in(openai_ws)
                             log("Post-greeting barge-in mode enabled")
                         except Exception as e:
                             log(f"Failed to enable post-greeting barge-in mode: {type(e).__name__}: {e}")
+
+                elif event_type == "response.created":
+                    with state_lock:
+                        bridge_state["awaiting_response"] = True
 
             except websocket.WebSocketConnectionClosedException as e:
                 exit_reason = f"websocket_closed: {e}"
