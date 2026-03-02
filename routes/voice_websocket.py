@@ -761,6 +761,45 @@ def _stream_text_via_elevenlabs_to_twilio(
     return False
 
 
+def _fallback_to_openai_audio_mode(openai_ws, assistant_text: str, bridge_state, state_lock, log_fn) -> bool:
+    """Disable ElevenLabs mode for this call and continue with OpenAI audio output."""
+    realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "ash")
+    session_update = {
+        "type": "session.update",
+        "session": {
+            "type": "realtime",
+            "output_modalities": ["audio"],
+            "audio": {
+                "output": {
+                    "format": {"type": "audio/pcmu"},
+                    "voice": realtime_voice,
+                }
+            },
+        },
+    }
+    try:
+        openai_ws.send(json.dumps(session_update))
+        with state_lock:
+            bridge_state["use_elevenlabs_output"] = False
+            bridge_state["assistant_text_parts"] = []
+        if assistant_text:
+            recovery_response = {
+                "type": "response.create",
+                "response": {
+                    "instructions": (
+                        "Briefly repeat your previous reply to the caller in one concise sentence. "
+                        f"Previous reply: {assistant_text}"
+                    )
+                },
+            }
+            openai_ws.send(json.dumps(recovery_response))
+        log_fn("Fell back to OpenAI audio mode for this call")
+        return True
+    except Exception as exc:
+        log_fn(f"Failed to switch to OpenAI audio mode: {type(exc).__name__}: {exc}")
+        return False
+
+
 def _persist_transcript_turn(interaction_id: Optional[str], speaker: str, text: str, turn_sequence: int, raw_payload: dict) -> None:
     """Persist a transcript turn row for realtime voice calls."""
     if not interaction_id or not text:
@@ -1024,6 +1063,16 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                             log_fn=log,
                         )
                         if not ok:
+                            switched = _fallback_to_openai_audio_mode(
+                                openai_ws=openai_ws,
+                                assistant_text=assistant_text,
+                                bridge_state=bridge_state,
+                                state_lock=state_lock,
+                                log_fn=log,
+                            )
+                            if switched:
+                                use_elevenlabs_output = False
+                                continue
                             with state_lock:
                                 bridge_state["end_call_requested"] = True
                             _request_call_hangup_with_message(
