@@ -5,11 +5,13 @@ from datetime import datetime
 from flask import request
 from routes import introductions_bp
 from utils.response_helpers import ok, bad
+from utils.auth_helpers import require_auth
 from config.clients import supabase_client
 from modules.email_sender import send_intro_email
 
 
 @introductions_bp.route("/request-intro", methods=["POST"])
+@require_auth
 def request_intro():
     """
     Creates a thread and interaction for an intro request, sends email.

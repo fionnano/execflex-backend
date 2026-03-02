@@ -42,9 +42,22 @@ fi
 # Remove trailing slash if present
 API_BASE="${API_BASE%/}"
 
+# Optional auth for protected endpoints (match, post-role, request-intro)
+# Option A: Smoke-test bypass - set SMOKE_TEST_BYPASS_SECRET (must match backend env)
+# Option B: Real JWT - set SMOKE_TEST_AUTH_TOKEN to a Bearer token
+CURL_AUTH_HEADERS=""
+if [ -n "$SMOKE_TEST_AUTH_TOKEN" ]; then
+    CURL_AUTH_HEADERS="-H 'Authorization: Bearer ${SMOKE_TEST_AUTH_TOKEN}'"
+elif [ -n "$SMOKE_TEST_BYPASS_SECRET" ]; then
+    CURL_AUTH_HEADERS="-H 'X-Smoke-Test: ${SMOKE_TEST_BYPASS_SECRET}'"
+fi
+
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}ExecFlex API Smoke Test Suite${NC}"
 echo -e "${BLUE}Testing: ${API_BASE}${NC}"
+if [ -n "$CURL_AUTH_HEADERS" ]; then
+    echo -e "${BLUE}Auth: using SMOKE_TEST_* env (bypass or token)${NC}"
+fi
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
@@ -54,12 +67,22 @@ FAILED=0
 TOTAL=0
 
 # Function to run a smoke test
+# Usage: test_endpoint "name" METHOD "/path" ["body"] [expected_status] [use_auth] [content_type]
+# use_auth: "auth" = add auth headers
+# content_type: "form" = application/x-www-form-urlencoded (default for body is application/json)
 test_endpoint() {
     local test_name="$1"
     local method="$2"
     local endpoint="$3"
     local data="$4"
     local expected_status="${5:-200}"
+    local use_auth="${6:-false}"
+    local content_type="${7:-json}"
+    
+    # When auth is required but no auth headers are set, accept 401 (endpoint exists and correctly rejects)
+    if [ "$use_auth" = "auth" ] && [ -z "$CURL_AUTH_HEADERS" ]; then
+        expected_status="200,201,401"
+    fi
     
     ((TOTAL++))
     echo -e "${YELLOW}[${TOTAL}] Testing: ${test_name}${NC}"
@@ -68,8 +91,16 @@ test_endpoint() {
     # Build curl command
     local curl_cmd="curl -s -w '\n%{http_code}' -X ${method}"
     
+    if [ "$use_auth" = "auth" ] && [ -n "$CURL_AUTH_HEADERS" ]; then
+        curl_cmd="${curl_cmd} ${CURL_AUTH_HEADERS}"
+    fi
+    
     if [ -n "$data" ]; then
-        curl_cmd="${curl_cmd} -H 'Content-Type: application/json' -d '${data}'"
+        if [ "$content_type" = "form" ]; then
+            curl_cmd="${curl_cmd} -H 'Content-Type: application/x-www-form-urlencoded' -d '${data}'"
+        else
+            curl_cmd="${curl_cmd} -H 'Content-Type: application/json' -d '${data}'"
+        fi
     fi
     
     curl_cmd="${curl_cmd} '${API_BASE}${endpoint}'"
@@ -79,8 +110,17 @@ test_endpoint() {
     local http_code=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | sed '$d')
     
-    # Check status code
-    if [ "$http_code" -eq "$expected_status" ]; then
+    # Check status code (expected_status can be "200" or "200,403" for multiple allowed)
+    local ok=0
+    if [[ "$expected_status" == *","* ]]; then
+        IFS=',' read -ra statuses <<< "$expected_status"
+        for s in "${statuses[@]}"; do
+            if [ "$http_code" -eq "$s" ]; then ok=1; break; fi
+        done
+    else
+        [ "$http_code" -eq "$expected_status" ] && ok=1
+    fi
+    if [ "$ok" -eq 1 ]; then
         echo -e "  ${GREEN}✓ PASS${NC} (HTTP ${http_code})"
         ((PASSED++))
     else
@@ -97,7 +137,7 @@ test_endpoint() {
 test_endpoint "Health Check" "GET" "/" "" "200"
 
 # ========================================
-# Matching Endpoints
+# Matching Endpoints (auth required)
 # ========================================
 test_endpoint "Find Match" "POST" "/match" \
     '{
@@ -107,10 +147,10 @@ test_endpoint "Find Match" "POST" "/match" \
         "min_experience": 10,
         "max_salary": 150000,
         "location": "Ireland"
-    }' "200"
+    }' "200" "auth"
 
 # ========================================
-# Roles Endpoints
+# Roles Endpoints (auth required)
 # ========================================
 test_endpoint "Post Role" "POST" "/post-role" \
     '{
@@ -127,10 +167,10 @@ test_endpoint "Post Role" "POST" "/post-role" \
         "contact_name": "Jane Doe",
         "contact_email": "jane@test.com",
         "phone": "+353123456789"
-    }' "201"
+    }' "201" "auth"
 
 # ========================================
-# Introductions Endpoints
+# Introductions Endpoints (auth required)
 # ========================================
 test_endpoint "Request Introduction" "POST" "/request-intro" \
     '{
@@ -140,38 +180,15 @@ test_endpoint "Request Introduction" "POST" "/request-intro" \
         "requester_company": "Test Corp",
         "match_id": "test-match-001",
         "notes": "Test introduction request"
-    }' "200"
+    }' "200" "auth"
 
 # ========================================
-# Voice Endpoints
+# Voice Endpoints (Twilio webhooks - no auth; 403 when signature missing in prod is OK)
 # ========================================
-test_endpoint "Call Candidate" "POST" "/call_candidate" \
-    '{
-        "phone": "+353123456789"
-    }' "200"
-
-test_endpoint "CORS Preflight - call_candidate" "OPTIONS" "/call_candidate" "" "200"
-
-test_endpoint "Call Scheduling" "POST" "/call_scheduling" \
-    '{
-        "phone": "+353123456789",
-        "executiveId": "test-exec-001",
-        "executiveName": "Test Executive",
-        "executiveExpertise": "CFO"
-    }' "200"
-
-test_endpoint "CORS Preflight - call_scheduling" "OPTIONS" "/call_scheduling" "" "200"
-
-# Twilio webhook endpoints (GET and POST)
-test_endpoint "Voice Intro (GET)" "GET" "/voice/intro" "" "200"
-
-test_endpoint "Voice Intro (POST)" "POST" "/voice/intro" \
-    "CallSid=CA1234567890abcdef" "200"
-
-test_endpoint "Voice Capture (GET)" "GET" "/voice/capture?step=name" "" "200"
-
-test_endpoint "Voice Capture (POST)" "POST" "/voice/capture?step=name" \
-    "CallSid=CA1234567890abcdef&SpeechResult=test&Confidence=0.9" "200"
+test_endpoint "Voice Qualify (GET)" "GET" "/voice/qualify" "" "200,403"
+test_endpoint "Voice Qualify (POST)" "POST" "/voice/qualify" "CallSid=CAtest&job_id=test-job" "200,403" "false" "form"
+test_endpoint "Voice Inbound (GET)" "GET" "/voice/inbound" "" "200,403"
+test_endpoint "Voice Status (GET)" "GET" "/voice/status" "" "200,403"
 
 # ========================================
 # Summary
@@ -188,6 +205,10 @@ if [ $FAILED -eq 0 ]; then
     exit 0
 else
     echo -e "${RED}✗ ${FAILED} smoke test(s) failed.${NC}"
+    if [ -z "$CURL_AUTH_HEADERS" ]; then
+        echo -e "${YELLOW}  For protected endpoints (match, post-role, request-intro) set SMOKE_TEST_BYPASS_SECRET or SMOKE_TEST_AUTH_TOKEN.${NC}"
+        echo -e "${YELLOW}  On the server, set SMOKE_TEST_BYPASS_SECRET and SMOKE_TEST_USER_ID (a valid auth.users UUID).${NC}"
+    fi
     exit 1
 fi
 

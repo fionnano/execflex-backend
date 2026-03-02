@@ -14,11 +14,23 @@ def get_authenticated_user_id() -> Tuple[Optional[str], Optional[str]]:
     Verifies Supabase JWT tokens by decoding them. For production, you may want
     to add signature verification against Supabase's public key.
     
+    Smoke tests: When SMOKE_TEST_BYPASS_SECRET and SMOKE_TEST_USER_ID are set,
+    requests with header X-Smoke-Test: <secret> are treated as authenticated
+    as that user (for CI/pipeline smoke tests only).
+    
     Returns:
         Tuple[user_id, error_message]
         - If authenticated: (user_id, None)
         - If not authenticated: (None, error_message)
     """
+    import os
+    # Smoke-test bypass for CI/pipeline: allow header-based auth when env is set
+    smoke_secret = os.getenv("SMOKE_TEST_BYPASS_SECRET")
+    smoke_user_id = os.getenv("SMOKE_TEST_USER_ID")
+    if smoke_secret and smoke_user_id:
+        if request.headers.get("X-Smoke-Test") == smoke_secret:
+            return smoke_user_id, None
+
     # Get Authorization header
     auth_header = request.headers.get("Authorization")
     if not auth_header:
