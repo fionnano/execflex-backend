@@ -26,6 +26,7 @@ from services.realtime_voice_bridge import (
 
 def init_voice_websocket(sock: Sock):
     """Initialize the WebSocket routes with the Flask-Sock instance."""
+    print("Initializing voice WebSocket routes")
 
     @sock.route("/voice/ws")
     def handle_voice_websocket(ws: SimpleWebSocket):
@@ -35,6 +36,10 @@ def init_voice_websocket(sock: Sock):
         This endpoint receives audio from Twilio, processes it through OpenAI Realtime API,
         and sends TTS audio back to Twilio.
         """
+        import sys
+        print("=" * 50, file=sys.stderr)
+        print("WEBSOCKET HANDLER ENTERED", file=sys.stderr)
+        print("=" * 50, file=sys.stderr)
         print("WebSocket connection opened for voice streaming")
 
         # State for this connection
