@@ -56,11 +56,10 @@ def init_voice_websocket(sock: Sock):
         bridge_state = {
             "greeting_completed": False,
             "awaiting_response": False,
+            "saw_openai_speech_event": False,
             "manual_vad_active": False,
             "manual_last_voice_ms": 0.0,
             "manual_last_trigger_ms": 0.0,
-            "manual_voice_frames": 0,
-            "manual_last_commit_frame": 0,
         }
 
         try:
@@ -209,65 +208,39 @@ def init_voice_websocket(sock: Sock):
                                     flush=True,
                                 )
 
-                            # Manual turn mode: detect speech from Twilio audio energy and
-                            # explicitly commit/create after silence.
+                            # Deterministic fallback: if OpenAI VAD isn't emitting speech events,
+                            # use Twilio audio activity + silence gap to force commit/create.
                             now_ms = time.monotonic() * 1000.0
                             rms = _pcm16_rms(pcm_8k)
-                            voice_threshold = 700.0
-                            silence_gap_ms = 700.0
-                            min_voice_frames = 8  # ~160ms at 20ms/frame
-                            min_frames_since_last_commit = 12  # ~240ms of fresh audio
+                            voice_threshold = 900.0
+                            silence_gap_ms = 850.0
                             trigger_cooldown_ms = 1200.0
 
                             with state_lock:
                                 greeting_completed = bridge_state["greeting_completed"]
                                 awaiting_response = bridge_state["awaiting_response"]
+                                saw_openai_speech_event = bridge_state["saw_openai_speech_event"]
                                 manual_vad_active = bridge_state["manual_vad_active"]
                                 manual_last_voice_ms = bridge_state["manual_last_voice_ms"]
                                 manual_last_trigger_ms = bridge_state["manual_last_trigger_ms"]
-                                manual_voice_frames = bridge_state["manual_voice_frames"]
-                                manual_last_commit_frame = bridge_state["manual_last_commit_frame"]
 
-                                if greeting_completed and not awaiting_response:
+                                if greeting_completed and not awaiting_response and not saw_openai_speech_event:
                                     if rms >= voice_threshold:
-                                        if not manual_vad_active:
-                                            print("Manual turn detection: voice start", flush=True)
                                         bridge_state["manual_vad_active"] = True
                                         bridge_state["manual_last_voice_ms"] = now_ms
-                                        bridge_state["manual_voice_frames"] = manual_voice_frames + 1
                                     elif manual_vad_active:
                                         silence_elapsed = now_ms - manual_last_voice_ms
                                         cooldown_elapsed = now_ms - manual_last_trigger_ms
-                                        new_frames = forwarded_audio_frames - manual_last_commit_frame
-                                        if (
-                                            silence_elapsed >= silence_gap_ms
-                                            and cooldown_elapsed >= trigger_cooldown_ms
-                                            and manual_voice_frames >= min_voice_frames
-                                            and new_frames >= min_frames_since_last_commit
-                                        ):
+                                        if silence_elapsed >= silence_gap_ms and cooldown_elapsed >= trigger_cooldown_ms:
                                             try:
                                                 openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
                                                 openai_ws.send(json.dumps({"type": "response.create"}))
                                                 bridge_state["awaiting_response"] = True
                                                 bridge_state["manual_vad_active"] = False
                                                 bridge_state["manual_last_trigger_ms"] = now_ms
-                                                bridge_state["manual_voice_frames"] = 0
-                                                bridge_state["manual_last_commit_frame"] = forwarded_audio_frames
-                                                print(
-                                                    f"Manual turn triggered: commit + response.create "
-                                                    f"(voice_frames={manual_voice_frames}, new_frames={new_frames})",
-                                                    flush=True,
-                                                )
+                                                print("Deterministic fallback triggered: commit + response.create", flush=True)
                                             except Exception as trigger_err:
-                                                print(f"Manual turn trigger error: {trigger_err}", flush=True)
-                                        elif silence_elapsed >= silence_gap_ms:
-                                            bridge_state["manual_vad_active"] = False
-                                            bridge_state["manual_voice_frames"] = 0
-                                            print(
-                                                f"Manual turn ignored short burst "
-                                                f"(voice_frames={manual_voice_frames}, new_frames={new_frames})",
-                                                flush=True,
-                                            )
+                                                print(f"Deterministic fallback trigger error: {trigger_err}", flush=True)
                         except Exception as e:
                             print(f"Error forwarding audio to OpenAI: {e}")
 
@@ -379,10 +352,30 @@ def _connect_openai_sync(signup_mode: Optional[str]):
             "type": "session.update",
             "session": {
                 "type": "realtime",
+                "model": realtime_model,
                 "instructions": system_prompt,
+                "output_modalities": ["audio"],
                 "audio": {
                     "input": {
-                        "turn_detection": None
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": 24000
+                        },
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": 0.5,
+                            "prefix_padding_ms": 300,
+                            "silence_duration_ms": 500,
+                            "create_response": True,
+                            "interrupt_response": True
+                        }
+                    },
+                    "output": {
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": 24000
+                        },
+                        "voice": "alloy"
                     }
                 }
             }
@@ -463,14 +456,21 @@ def _send_greeting_request(openai_ws, signup_mode: Optional[str]):
 
 
 def _enable_post_greeting_barge_in(openai_ws):
-    """Re-assert manual turn mode after greeting completes."""
+    """Re-assert VAD turn behavior after greeting completes."""
     update_event = {
         "type": "session.update",
         "session": {
             "type": "realtime",
             "audio": {
                 "input": {
-                    "turn_detection": None
+                    "turn_detection": {
+                        "type": "server_vad",
+                        "threshold": 0.5,
+                        "prefix_padding_ms": 300,
+                        "silence_duration_ms": 500,
+                        "create_response": True,
+                        "interrupt_response": True
+                    }
                 }
             }
         }
@@ -585,9 +585,16 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     # User stopped speaking - record timing
                     metrics_service.record_user_speech_end(call_sid)
                     log("User stopped speaking")
+                    with state_lock:
+                        bridge_state["saw_openai_speech_event"] = True
 
                 elif event_type == "input_audio_buffer.speech_started":
                     log("User started speaking")
+                    with state_lock:
+                        bridge_state["saw_openai_speech_event"] = True
+
+                elif event_type == "input_audio_buffer.committed":
+                    log("Input audio buffer committed")
 
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     # Got transcript of user speech
@@ -609,8 +616,8 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                 elif event_type == "response.done":
                     with state_lock:
                         bridge_state["awaiting_response"] = False
+                        bridge_state["saw_openai_speech_event"] = False
                         bridge_state["manual_vad_active"] = False
-                        bridge_state["manual_voice_frames"] = 0
 
                     # Flip to explicit post-greeting turn behavior.
                     if not greeting_completed:
