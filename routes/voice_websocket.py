@@ -355,16 +355,19 @@ def _send_greeting_request(openai_ws, signup_mode: Optional[str]):
 
 def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, metrics_service):
     """Handle responses from OpenAI in a background thread."""
+    import websocket
     print(f"OpenAI response handler started for call {call_sid}", flush=True)
     first_audio_recorded = False
     message_count = 0
     audio_chunks_sent = 0
+    exit_reason = "unknown"
 
     try:
         while True:
             try:
                 message = openai_ws.recv()
                 if not message:
+                    exit_reason = "empty_message"
                     print(f"OpenAI WebSocket returned empty message, exiting handler", flush=True)
                     break
 
@@ -372,12 +375,12 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                 data = json.loads(message)
                 event_type = data.get("type")
 
-                # Log all event types for debugging (first 30 messages, then key events only)
-                if message_count <= 30 or event_type not in ("response.audio.delta",):
+                # Log all event types for debugging (first 50 messages, then key events only)
+                if message_count <= 50 or event_type not in ("response.audio.delta",):
                     print(f"OpenAI event #{message_count}: {event_type}", flush=True)
                     # Log full data for key events
-                    if event_type in ("error", "response.done", "session.updated", "response.created"):
-                        print(f"  Full data: {json.dumps(data)[:500]}", flush=True)
+                    if event_type in ("error", "response.done", "session.updated", "response.created", "response.audio.done"):
+                        print(f"  Full data: {json.dumps(data)[:800]}", flush=True)
 
                 if event_type == "response.audio.delta":
                     # Streaming audio from OpenAI
@@ -407,7 +410,8 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                             if audio_chunks_sent <= 5 or audio_chunks_sent % 50 == 0:
                                 print(f"Sent audio chunk #{audio_chunks_sent} to Twilio", flush=True)
                         except Exception as e:
-                            print(f"Error sending audio to Twilio: {e}", flush=True)
+                            print(f"Error sending audio to Twilio: {type(e).__name__}: {e}", flush=True)
+                            # Don't break - Twilio might have disconnected but we can still process OpenAI events
 
                 elif event_type == "response.audio.done":
                     # Response complete
@@ -435,19 +439,32 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                         provider="openai",
                         metadata=error
                     )
+                    exit_reason = f"openai_error: {error.get('type', 'unknown')}"
 
+            except websocket.WebSocketConnectionClosedException as e:
+                exit_reason = f"websocket_closed: {e}"
+                print(f"OpenAI WebSocket connection closed: {e}", flush=True)
+                break
+            except websocket.WebSocketTimeoutException as e:
+                exit_reason = f"websocket_timeout: {e}"
+                print(f"OpenAI WebSocket timeout: {e}", flush=True)
+                break
             except Exception as e:
                 import traceback
-                print(f"Error handling OpenAI message: {e}", flush=True)
+                exit_reason = f"exception: {type(e).__name__}: {e}"
+                print(f"Error handling OpenAI message: {type(e).__name__}: {e}", flush=True)
                 traceback.print_exc()
                 break
 
     except Exception as e:
         import traceback
-        print(f"OpenAI response handler error: {e}", flush=True)
+        exit_reason = f"outer_exception: {type(e).__name__}: {e}"
+        print(f"OpenAI response handler error: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
     finally:
-        print(f"OpenAI response handler exiting for call {call_sid}, processed {message_count} messages, sent {audio_chunks_sent} audio chunks", flush=True)
+        print(f"OpenAI response handler exiting for call {call_sid}", flush=True)
+        print(f"  Exit reason: {exit_reason}", flush=True)
+        print(f"  Processed {message_count} messages, sent {audio_chunks_sent} audio chunks", flush=True)
 
 
 def _send_fallback_greeting(twilio_ws, stream_sid: str, signup_mode: Optional[str]):
