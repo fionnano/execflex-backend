@@ -369,12 +369,26 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
     """Handle responses from OpenAI in a background thread."""
     import sys
     import websocket
+    import os
+    from datetime import datetime
+
+    # Create a log file for this call
+    log_dir = "/tmp"
+    log_file = f"{log_dir}/openai_handler_{call_sid}.log"
 
     def log(msg):
-        """Log to both stdout and stderr for reliability."""
-        print(msg, flush=True)
-        sys.stderr.write(f"{msg}\n")
+        """Log to file, stdout, and stderr for reliability."""
+        timestamp = datetime.utcnow().strftime("%H:%M:%S.%f")[:-3]
+        full_msg = f"[{timestamp}] {msg}"
+        print(full_msg, flush=True)
+        sys.stderr.write(f"{full_msg}\n")
         sys.stderr.flush()
+        try:
+            with open(log_file, "a") as f:
+                f.write(f"{full_msg}\n")
+                f.flush()
+        except Exception:
+            pass
 
     log(f"OpenAI response handler started for call {call_sid}")
     first_audio_recorded = False
