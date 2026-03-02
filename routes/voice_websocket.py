@@ -219,9 +219,8 @@ def _connect_openai_sync(signup_mode: Optional[str]):
         print("OpenAI API key not configured", flush=True)
         return None
 
-    # Use the correct model name for OpenAI Realtime API
-    # Try gpt-4o-mini-realtime-preview which might have different access
-    url = "wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview-2024-12-17"
+    # Use the full GPT-4o Realtime model with audio support
+    url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "OpenAI-Beta": "realtime=v1"
