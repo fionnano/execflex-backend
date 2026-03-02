@@ -786,6 +786,7 @@ def delete_user():
             ("opportunities", "created_by_user_id"),
             ("match_suggestions", "suggested_user_id"),
             ("channel_identities", "user_id"),
+            ("linkedin_connections", "user_id"),
             ("role_assignments", "user_id"),
             ("user_preferences", "user_id"),
             ("people_profiles", "user_id"),
