@@ -220,7 +220,7 @@ def _connect_openai_sync(signup_mode: Optional[str]):
         return None
 
     # Use the correct model name for OpenAI Realtime API
-    url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+    url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
         "OpenAI-Beta": "realtime=v1"
@@ -305,14 +305,19 @@ def _get_system_prompt(signup_mode: Optional[str]) -> str:
     """Get the system prompt for the qualification call."""
     if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
         mode_context = "The user is an executive looking for job opportunities."
+        greeting = "Hi, this is Ai-dan from ExecFlex. I noticed you just signed up looking for executive opportunities. Have I caught you at a bad time?"
     elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
         mode_context = "The user is looking to hire executive talent for their organization."
+        greeting = "Hello, this is Ai-dan from ExecFlex. I noticed you just signed up looking for executive talent for your organization. Have I caught you at a bad time?"
     else:
         mode_context = "Determine whether the user is looking to hire executives or is an executive seeking opportunities."
+        greeting = "Hello, this is Ai-dan from ExecFlex. I noticed you just signed up. Are you looking to hire executive talent, or are you an executive looking for opportunities?"
 
     return f"""You are Ai-dan, a friendly voice assistant for ExecFlex, a platform connecting companies with executive talent.
 
 {mode_context}
+
+IMPORTANT: Start the conversation IMMEDIATELY by saying: "{greeting}"
 
 CONVERSATION STYLE:
 - Be warm, professional, and concise
@@ -338,49 +343,14 @@ IMPORTANT RULES:
 
 def _send_greeting_request(openai_ws, signup_mode: Optional[str]):
     """Send initial greeting request to OpenAI."""
-    if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
-        greeting_text = (
-            "Hi, this is Ai-dan from ExecFlex. "
-            "I noticed you just signed up looking for executive opportunities. "
-            "Have I caught you at a bad time?"
-        )
-    elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
-        greeting_text = (
-            "Hello, this is Ai-dan from ExecFlex. "
-            "I noticed you just signed up looking for executive talent for your organization. "
-            "Have I caught you at a bad time?"
-        )
-    else:
-        greeting_text = (
-            "Hello, this is Ai-dan from ExecFlex. "
-            "I noticed you just signed up. Are you looking to hire executive talent, "
-            "or are you an executive looking for opportunities?"
-        )
-
-    # Create a user message that prompts the assistant to speak
-    # This is a workaround - we create a "user" message asking the assistant to greet
-    user_prompt = {
-        "type": "conversation.item.create",
-        "item": {
-            "type": "message",
-            "role": "user",
-            "content": [
-                {
-                    "type": "input_text",
-                    "text": f"[System: The call just connected. Greet the caller now.] Say exactly this: {greeting_text}"
-                }
-            ]
-        }
-    }
-    print(f"Sending user prompt to OpenAI: {greeting_text[:50]}...", flush=True)
-    openai_ws.send(json.dumps(user_prompt))
-
-    # Now trigger a response - OpenAI should generate audio based on the prompt
+    # Simply trigger a response - the system instructions should make the AI greet
+    # We don't need to inject a user message first
     create_response = {
         "type": "response.create"
     }
+    print(f"Sending response.create to trigger greeting (signup_mode={signup_mode})", flush=True)
     openai_ws.send(json.dumps(create_response))
-    print("Response.create sent to OpenAI (should generate audio)", flush=True)
+    print("Response.create sent to OpenAI", flush=True)
 
 
 def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, metrics_service):
