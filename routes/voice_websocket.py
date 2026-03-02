@@ -454,7 +454,6 @@ def _connect_openai_sync(signup_mode: Optional[str], output_text_only: bool = Fa
             "session": {
                 "model": realtime_model,
                 "instructions": system_prompt,
-                "output_modalities": ["text"] if output_text_only else ["audio"],
                 "tools": [
                     {
                         "type": "function",
@@ -835,7 +834,6 @@ def _fallback_to_openai_audio_mode(openai_ws, assistant_text: str, bridge_state,
     session_update = {
         "type": "session.update",
         "session": {
-            "output_modalities": ["audio"],
             "audio": {
                 "output": {
                     "format": {"type": "audio/pcmu"},
