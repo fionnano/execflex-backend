@@ -1174,6 +1174,11 @@ def list_users():
             if include_debug:
                 user_row["phone_debug_source"] = phone_source
                 user_row["phone_debug_candidates"] = phone_candidates
+                user_row["phone_debug_value"] = phone
+                user_row["phone_debug_length"] = len(phone) if isinstance(phone, str) else 0
+                user_row["phone_debug_char_codes"] = (
+                    [ord(ch) for ch in phone[:24]] if isinstance(phone, str) else []
+                )
 
             if not phone:
                 print(
