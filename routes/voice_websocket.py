@@ -90,7 +90,7 @@ def _load_vad_config(job_id: Optional[str]) -> dict:
     prefix_padding_ms, _, _ = get_number_config("voice_vad_prefix_padding_ms", default=300)
     silence_duration_ms, _, _ = get_number_config("voice_vad_silence_duration_ms", default=900)
     # Keep idle timeout generous to avoid cutting callers off mid-answer.
-    idle_timeout_ms, _, _ = get_number_config("voice_vad_idle_timeout_ms", default=30000)
+    idle_timeout_ms, _, _ = get_number_config("voice_vad_idle_timeout_ms", default=0)
     config = {
         "type": "server_vad",
         "threshold": float(threshold),
@@ -179,7 +179,8 @@ def init_voice_websocket(sock: Sock):
             "end_call_requested": False,
             "assistant_playback_active": False,
             "assistant_playback_block_until_ms": 0.0,
-            "playback_input_cooldown_ms": 1200,
+            "playback_input_cooldown_ms": 0,
+            "overlap_guard_ms": 600,
             "playback_dropped_frames": 0,
             "openai_turn_detection_muted": False,
             "last_assistant_audio_done_ms": 0.0,
@@ -369,12 +370,17 @@ def init_voice_websocket(sock: Sock):
                         bridge_state["prompt_vars"] = prompt_vars
                         playback_input_cooldown_ms, _, _ = get_number_config(
                             "voice_playback_input_cooldown_ms",
-                            default=1200,
+                            default=0,
                         )
                         bridge_state["playback_input_cooldown_ms"] = max(
                             0,
                             int(playback_input_cooldown_ms),
                         )
+                        overlap_guard_ms, _, _ = get_number_config(
+                            "voice_overlap_guard_ms",
+                            default=600,
+                        )
+                        bridge_state["overlap_guard_ms"] = max(0, int(overlap_guard_ms))
                         low_signal_filter_enabled, _, _ = get_bool_config(
                             "voice_low_signal_filter_enabled",
                             default=True,
@@ -978,7 +984,7 @@ def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock,
         bridge_state["end_call_requested"] = True
 
     log_fn(f"end_call tool invoked with args: {args}")
-    min_grace_ms = 1800
+    min_grace_ms = 3000
     try:
         configured_grace_ms, _, _ = get_number_config("voice_end_call_grace_ms", default=min_grace_ms)
         min_grace_ms = max(0, int(configured_grace_ms))
@@ -1363,7 +1369,7 @@ def _handle_openai_responses(
                         bridge_state["assistant_playback_active"] = False
                         bridge_state["assistant_playback_block_until_ms"] = (
                             time.monotonic() * 1000.0
-                            + float(bridge_state.get("playback_input_cooldown_ms", 1200))
+                            + float(bridge_state.get("playback_input_cooldown_ms", 0))
                         )
                         dropped_frames = int(bridge_state.get("playback_dropped_frames", 0))
                         bridge_state["playback_dropped_frames"] = 0
@@ -1375,7 +1381,7 @@ def _handle_openai_responses(
                         {
                             "source": "openai_audio_done",
                             "dropped_twilio_frames": dropped_frames,
-                            "cooldown_ms": int(bridge_state.get("playback_input_cooldown_ms", 1200)),
+                            "cooldown_ms": int(bridge_state.get("playback_input_cooldown_ms", 0)),
                         },
                     )
                     if should_resume_turn_detection:
@@ -1427,6 +1433,7 @@ def _handle_openai_responses(
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     # Got transcript of user speech
                     transcript = data.get("transcript", "")
+                    now_ms = time.monotonic() * 1000.0
                     with state_lock:
                         low_signal_filter_enabled = bool(
                             bridge_state.get("low_signal_filter_enabled", True)
@@ -1436,6 +1443,40 @@ def _handle_openai_responses(
                             bridge_state.get("low_signal_allowed_short_replies")
                             or {"yes", "no", "ok", "sure"}
                         )
+                        overlap_guard_ms = int(bridge_state.get("overlap_guard_ms", 600))
+                        last_assistant_audio_done_ms = float(
+                            bridge_state.get("last_assistant_audio_done_ms", 0.0)
+                        )
+
+                    # Guard: ignore overlap speech captured immediately after assistant playback ends.
+                    # This prevents accidental talk-over from auto-triggering the next full response turn.
+                    elapsed_since_assistant_done_ms = (
+                        now_ms - last_assistant_audio_done_ms
+                        if last_assistant_audio_done_ms > 0
+                        else 999999.0
+                    )
+                    if elapsed_since_assistant_done_ms < float(overlap_guard_ms):
+                        log(
+                            "Ignoring overlap transcript captured too soon after assistant audio: "
+                            f"{elapsed_since_assistant_done_ms:.0f}ms < {overlap_guard_ms}ms"
+                        )
+                        debug_event(
+                            "ignored_overlap_transcript",
+                            {
+                                "text": (transcript or "")[:80],
+                                "elapsed_ms": int(elapsed_since_assistant_done_ms),
+                                "guard_ms": int(overlap_guard_ms),
+                            },
+                        )
+                        try:
+                            openai_ws.send(json.dumps({"type": "response.cancel"}))
+                            openai_ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
+                        except Exception:
+                            pass
+                        with state_lock:
+                            bridge_state["awaiting_response"] = False
+                        continue
+
                     if low_signal_filter_enabled and _is_low_signal_user_transcript(
                         transcript,
                         min_chars=low_signal_min_chars,
@@ -1443,14 +1484,16 @@ def _handle_openai_responses(
                     ):
                         log(f"Ignoring low-signal user transcript: {transcript!r}")
                         debug_event("ignored_low_signal_transcript", {"text": (transcript or "")[:80]})
-                        try:
-                            openai_ws.send(json.dumps({"type": "response.cancel"}))
-                            debug_event("response_cancel_sent_for_low_signal")
-                        except Exception as cancel_err:
-                            log(
-                                "Failed to cancel response after low-signal transcript: "
-                                f"{type(cancel_err).__name__}: {cancel_err}"
-                            )
+                        # Do not cancel for empty transcript artifacts; cancelling can truncate active assistant output.
+                        if (transcript or "").strip():
+                            try:
+                                openai_ws.send(json.dumps({"type": "response.cancel"}))
+                                debug_event("response_cancel_sent_for_low_signal")
+                            except Exception as cancel_err:
+                                log(
+                                    "Failed to cancel response after low-signal transcript: "
+                                    f"{type(cancel_err).__name__}: {cancel_err}"
+                                )
                         with state_lock:
                             bridge_state["awaiting_response"] = False
                         continue
@@ -1569,7 +1612,7 @@ def _handle_openai_responses(
                             bridge_state["assistant_playback_active"] = False
                             bridge_state["assistant_playback_block_until_ms"] = (
                                 time.monotonic() * 1000.0
-                                + float(bridge_state.get("playback_input_cooldown_ms", 1200))
+                                + float(bridge_state.get("playback_input_cooldown_ms", 0))
                             )
                             dropped_frames = int(bridge_state.get("playback_dropped_frames", 0))
                             bridge_state["playback_dropped_frames"] = 0
@@ -1581,7 +1624,7 @@ def _handle_openai_responses(
                             {
                                 "source": "elevenlabs_playback",
                                 "dropped_twilio_frames": dropped_frames,
-                                "cooldown_ms": int(bridge_state.get("playback_input_cooldown_ms", 1200)),
+                                "cooldown_ms": int(bridge_state.get("playback_input_cooldown_ms", 0)),
                             },
                         )
                         if should_resume_turn_detection:

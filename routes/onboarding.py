@@ -266,16 +266,19 @@ def get_platform_config():
         "voice_vad_silence_duration_ms", default=900
     )
     vad_idle_timeout_ms, vad_idle_updated_at, vad_idle_updated_by = get_number_config(
-        "voice_vad_idle_timeout_ms", default=30000
+        "voice_vad_idle_timeout_ms", default=0
     )
     playback_input_cooldown_ms, playback_cooldown_updated_at, playback_cooldown_updated_by = get_number_config(
-        "voice_playback_input_cooldown_ms", default=1200
+        "voice_playback_input_cooldown_ms", default=0
     )
     end_call_grace_ms, end_call_grace_updated_at, end_call_grace_updated_by = get_number_config(
-        "voice_end_call_grace_ms", default=1800
+        "voice_end_call_grace_ms", default=3000
     )
     elevenlabs_preflight_timeout_ms, preflight_timeout_updated_at, preflight_timeout_updated_by = get_number_config(
         "voice_elevenlabs_preflight_timeout_ms", default=200
+    )
+    overlap_guard_ms, overlap_guard_updated_at, overlap_guard_updated_by = get_number_config(
+        "voice_overlap_guard_ms", default=600
     )
     low_signal_filter_enabled, low_signal_filter_updated_at, low_signal_filter_updated_by = get_bool_config(
         "voice_low_signal_filter_enabled", default=True
@@ -319,6 +322,7 @@ def get_platform_config():
             "voice_playback_input_cooldown_ms": int(playback_input_cooldown_ms),
             "voice_end_call_grace_ms": int(end_call_grace_ms),
             "voice_elevenlabs_preflight_timeout_ms": int(elevenlabs_preflight_timeout_ms),
+            "voice_overlap_guard_ms": int(overlap_guard_ms),
             "voice_low_signal_filter_enabled": bool(low_signal_filter_enabled),
             "voice_low_signal_min_chars": int(low_signal_min_chars),
             "voice_low_signal_allowed_short_replies": low_signal_allowed_short_replies,
@@ -336,6 +340,7 @@ def get_platform_config():
                 "voice_playback_input_cooldown_ms": "How long to ignore caller audio after assistant playback finishes.",
                 "voice_end_call_grace_ms": "Extra delay before hangup after final goodbye to avoid clipping.",
                 "voice_elevenlabs_preflight_timeout_ms": "Max wait for ElevenLabs readiness at call start before fallback.",
+                "voice_overlap_guard_ms": "Ignore fresh transcripts captured immediately after assistant playback (accidental talk-over window).",
                 "voice_low_signal_filter_enabled": "Ignore obvious low-signal transcripts (noise/fillers) to prevent false turns.",
                 "voice_low_signal_min_chars": "Minimum characters for single-token user utterances unless whitelisted.",
                 "voice_low_signal_allowed_short_replies": "Comma-separated short replies always accepted (e.g. yes,no,ok).",
@@ -354,6 +359,7 @@ def get_platform_config():
                         playback_cooldown_updated_at,
                         end_call_grace_updated_at,
                         preflight_timeout_updated_at,
+                        overlap_guard_updated_at,
                         low_signal_filter_updated_at,
                         low_signal_min_chars_updated_at,
                         low_signal_allowed_updated_at,
@@ -376,6 +382,7 @@ def get_platform_config():
                 or playback_cooldown_updated_by
                 or end_call_grace_updated_by
                 or preflight_timeout_updated_by
+                or overlap_guard_updated_by
                 or low_signal_filter_updated_by
                 or low_signal_min_chars_updated_by
                 or low_signal_allowed_updated_by
@@ -407,6 +414,7 @@ def set_platform_config():
             "voice_playback_input_cooldown_ms",
             "voice_end_call_grace_ms",
             "voice_elevenlabs_preflight_timeout_ms",
+            "voice_overlap_guard_ms",
             "voice_low_signal_filter_enabled",
             "voice_low_signal_min_chars",
             "voice_low_signal_allowed_short_replies",
@@ -449,6 +457,7 @@ def set_platform_config():
             voice_playback_input_cooldown_ms = _validate_number("voice_playback_input_cooldown_ms", 0, 5000, integer=True)
             voice_end_call_grace_ms = _validate_number("voice_end_call_grace_ms", 0, 8000, integer=True)
             voice_elevenlabs_preflight_timeout_ms = _validate_number("voice_elevenlabs_preflight_timeout_ms", 100, 3000, integer=True)
+            voice_overlap_guard_ms = _validate_number("voice_overlap_guard_ms", 0, 3000, integer=True)
             voice_low_signal_min_chars = _validate_number("voice_low_signal_min_chars", 1, 12, integer=True)
             voice_end_call_min_turns = _validate_number("voice_end_call_min_turns", 0, 20, integer=True)
             voice_first_turn_max_words = _validate_number("voice_first_turn_max_words", 10, 120, integer=True)
@@ -545,6 +554,13 @@ def set_platform_config():
                 updated_by=admin_user_id,
                 description="ElevenLabs websocket preflight timeout in milliseconds at call start",
             )
+        if voice_overlap_guard_ms is not None:
+            set_number_config(
+                key="voice_overlap_guard_ms",
+                value=voice_overlap_guard_ms,
+                updated_by=admin_user_id,
+                description="Milliseconds after assistant playback where overlap transcripts are ignored to avoid immediate run-on replies",
+            )
         if voice_low_signal_min_chars is not None:
             set_number_config(
                 key="voice_low_signal_min_chars",
@@ -609,10 +625,11 @@ def set_platform_config():
         vad_threshold, _, _ = get_number_config("voice_vad_threshold", default=0.5)
         vad_prefix_padding_ms, _, _ = get_number_config("voice_vad_prefix_padding_ms", default=300)
         vad_silence_duration_ms, _, _ = get_number_config("voice_vad_silence_duration_ms", default=900)
-        vad_idle_timeout_ms, _, _ = get_number_config("voice_vad_idle_timeout_ms", default=30000)
-        playback_input_cooldown_ms, _, _ = get_number_config("voice_playback_input_cooldown_ms", default=1200)
-        end_call_grace_ms, _, _ = get_number_config("voice_end_call_grace_ms", default=1800)
+        vad_idle_timeout_ms, _, _ = get_number_config("voice_vad_idle_timeout_ms", default=0)
+        playback_input_cooldown_ms, _, _ = get_number_config("voice_playback_input_cooldown_ms", default=0)
+        end_call_grace_ms, _, _ = get_number_config("voice_end_call_grace_ms", default=3000)
         elevenlabs_preflight_timeout_ms, _, _ = get_number_config("voice_elevenlabs_preflight_timeout_ms", default=200)
+        overlap_guard_ms, _, _ = get_number_config("voice_overlap_guard_ms", default=600)
         low_signal_filter_enabled, _, _ = get_bool_config("voice_low_signal_filter_enabled", default=True)
         low_signal_min_chars, _, _ = get_number_config("voice_low_signal_min_chars", default=4)
         low_signal_allowed_short_replies, _, _ = get_string_config(
@@ -648,6 +665,7 @@ def set_platform_config():
                 "voice_playback_input_cooldown_ms": int(playback_input_cooldown_ms),
                 "voice_end_call_grace_ms": int(end_call_grace_ms),
                 "voice_elevenlabs_preflight_timeout_ms": int(elevenlabs_preflight_timeout_ms),
+                "voice_overlap_guard_ms": int(overlap_guard_ms),
                 "voice_low_signal_filter_enabled": bool(low_signal_filter_enabled),
                 "voice_low_signal_min_chars": int(low_signal_min_chars),
                 "voice_low_signal_allowed_short_replies": low_signal_allowed_short_replies,
@@ -662,6 +680,7 @@ def set_platform_config():
                     "voice_playback_input_cooldown_ms": "Milliseconds to ignore input after assistant playback completes.",
                     "voice_end_call_grace_ms": "Delay before hangup after final message so caller hears full goodbye.",
                     "voice_elevenlabs_preflight_timeout_ms": "Call-start wait for ElevenLabs readiness before OpenAI fallback.",
+                    "voice_overlap_guard_ms": "Window after assistant playback where overlap transcripts are ignored.",
                     "voice_low_signal_filter_enabled": "Enable low-signal transcript filtering.",
                     "voice_low_signal_min_chars": "Single-token transcript min length unless whitelisted.",
                     "voice_low_signal_allowed_short_replies": "Comma-separated whitelist for short valid replies.",
