@@ -20,6 +20,29 @@ from services.platform_config_service import get_bool_config
 NO_ANSWER_BACKOFF_MINUTES = [10, 60, 360, 1440, 10080]  # 10m, 1h, 6h, 24h, 1w
 
 
+def _build_transcript_text_from_turns(turns: list) -> str:
+    """
+    Convert interaction_turns rows to a readable transcript string.
+    Format: 'User: ...' / 'Assistant: ...' in turn_sequence order.
+    """
+    lines = []
+    for turn in turns or []:
+        speaker = (turn.get("speaker") or "unknown").strip().lower()
+        text = (turn.get("text") or "").strip()
+        if not text:
+            continue
+        if speaker == "user":
+            label = "User"
+        elif speaker == "assistant":
+            label = "Assistant"
+        elif speaker == "system":
+            label = "System"
+        else:
+            label = speaker.capitalize() if speaker else "Unknown"
+        lines.append(f"{label}: {text}")
+    return "\n".join(lines).strip()
+
+
 def _get_no_answer_backoff_minutes(attempt_number: int):
     """
     Return backoff minutes for a no-answer retry based on 1-indexed attempt number.
@@ -312,10 +335,48 @@ def voice_status():
             .eq("id", job_id)\
             .execute()
         
-        # Note: interactions are append-only, so we don't update them
-        # Status is stored in job artifacts
-        if interaction_id:
-            print(f"ℹ️  Interaction {interaction_id} status: {call_status} (interactions are append-only)")
+        # Finalize interaction row on terminal call statuses.
+        # This keeps ended_at/transcript_text in sync for admin conversation views.
+        if interaction_id and call_status in ["completed", "failed", "busy", "no-answer", "canceled"]:
+            try:
+                turns_resp = (
+                    supabase_client.table("interaction_turns")
+                    .select("speaker, text, turn_sequence")
+                    .eq("interaction_id", interaction_id)
+                    .order("turn_sequence", desc=False)
+                    .execute()
+                )
+                turns = turns_resp.data or []
+                transcript_text = _build_transcript_text_from_turns(turns)
+
+                interaction_payload = {
+                    "ended_at": now_iso,
+                    "raw_payload": {
+                        "status_callback": {
+                            "call_sid": call_sid,
+                            "call_status": call_status,
+                            "call_duration": call_duration,
+                            "from_number": from_number,
+                            "to_number": to_number,
+                            "updated_at": now_iso,
+                        }
+                    },
+                }
+                if transcript_text:
+                    interaction_payload["transcript_text"] = transcript_text
+
+                (
+                    supabase_client.table("interactions")
+                    .update(interaction_payload)
+                    .eq("id", interaction_id)
+                    .execute()
+                )
+                print(
+                    f"✅ Finalized interaction {interaction_id}: "
+                    f"ended_at set, turns={len(turns)}, transcript_saved={bool(transcript_text)}"
+                )
+            except Exception as interaction_exc:
+                print(f"⚠️ Failed to finalize interaction {interaction_id}: {interaction_exc}")
         
         print(f"✅ Updated call status: job_id={job_id}, call_sid={call_sid}, status={call_status}")
         return Response("OK", status=200), 200
