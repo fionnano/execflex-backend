@@ -266,7 +266,16 @@ def get_platform_config():
         "voice_vad_silence_duration_ms", default=900
     )
     vad_idle_timeout_ms, vad_idle_updated_at, vad_idle_updated_by = get_number_config(
-        "voice_vad_idle_timeout_ms", default=8000
+        "voice_vad_idle_timeout_ms", default=30000
+    )
+    playback_input_cooldown_ms, playback_cooldown_updated_at, playback_cooldown_updated_by = get_number_config(
+        "voice_playback_input_cooldown_ms", default=1200
+    )
+    end_call_grace_ms, end_call_grace_updated_at, end_call_grace_updated_by = get_number_config(
+        "voice_end_call_grace_ms", default=1800
+    )
+    elevenlabs_preflight_timeout_ms, preflight_timeout_updated_at, preflight_timeout_updated_by = get_number_config(
+        "voice_elevenlabs_preflight_timeout_ms", default=200
     )
     talent_greeting, talent_prompt_updated_at, talent_prompt_updated_by = get_string_config(
         "voice_prompt_talent_greeting",
@@ -292,6 +301,9 @@ def get_platform_config():
             "voice_vad_prefix_padding_ms": int(vad_prefix_padding_ms),
             "voice_vad_silence_duration_ms": int(vad_silence_duration_ms),
             "voice_vad_idle_timeout_ms": int(vad_idle_timeout_ms),
+            "voice_playback_input_cooldown_ms": int(playback_input_cooldown_ms),
+            "voice_end_call_grace_ms": int(end_call_grace_ms),
+            "voice_elevenlabs_preflight_timeout_ms": int(elevenlabs_preflight_timeout_ms),
             "voice_prompt_talent_greeting": talent_greeting,
             "voice_prompt_company_greeting": company_greeting,
             "voice_prompt_fallback_greeting": fallback_greeting,
@@ -305,6 +317,9 @@ def get_platform_config():
                         vad_prefix_updated_at,
                         vad_silence_updated_at,
                         vad_idle_updated_at,
+                        playback_cooldown_updated_at,
+                        end_call_grace_updated_at,
+                        preflight_timeout_updated_at,
                         talent_prompt_updated_at,
                         company_prompt_updated_at,
                         fallback_prompt_updated_at,
@@ -319,6 +334,9 @@ def get_platform_config():
                 or vad_prefix_updated_by
                 or vad_silence_updated_by
                 or vad_idle_updated_by
+                or playback_cooldown_updated_by
+                or end_call_grace_updated_by
+                or preflight_timeout_updated_by
                 or talent_prompt_updated_by
                 or company_prompt_updated_by
                 or fallback_prompt_updated_by
@@ -342,6 +360,9 @@ def set_platform_config():
             "voice_vad_prefix_padding_ms",
             "voice_vad_silence_duration_ms",
             "voice_vad_idle_timeout_ms",
+            "voice_playback_input_cooldown_ms",
+            "voice_end_call_grace_ms",
+            "voice_elevenlabs_preflight_timeout_ms",
             "voice_prompt_talent_greeting",
             "voice_prompt_company_greeting",
             "voice_prompt_fallback_greeting",
@@ -373,7 +394,10 @@ def set_platform_config():
             voice_vad_threshold = _validate_number("voice_vad_threshold", 0.1, 0.95)
             voice_vad_prefix_padding_ms = _validate_number("voice_vad_prefix_padding_ms", 0, 2000, integer=True)
             voice_vad_silence_duration_ms = _validate_number("voice_vad_silence_duration_ms", 200, 4000, integer=True)
-            voice_vad_idle_timeout_ms = _validate_number("voice_vad_idle_timeout_ms", 1000, 15000, integer=True)
+            voice_vad_idle_timeout_ms = _validate_number("voice_vad_idle_timeout_ms", 0, 60000, integer=True)
+            voice_playback_input_cooldown_ms = _validate_number("voice_playback_input_cooldown_ms", 0, 5000, integer=True)
+            voice_end_call_grace_ms = _validate_number("voice_end_call_grace_ms", 0, 8000, integer=True)
+            voice_elevenlabs_preflight_timeout_ms = _validate_number("voice_elevenlabs_preflight_timeout_ms", 100, 3000, integer=True)
         except ValueError as validation_err:
             return bad(str(validation_err), 400)
 
@@ -438,6 +462,27 @@ def set_platform_config():
                 updated_by=admin_user_id,
                 description="OpenAI Realtime server_vad idle timeout in milliseconds for outbound voice calls",
             )
+        if voice_playback_input_cooldown_ms is not None:
+            set_number_config(
+                key="voice_playback_input_cooldown_ms",
+                value=voice_playback_input_cooldown_ms,
+                updated_by=admin_user_id,
+                description="Milliseconds to ignore caller audio immediately after assistant playback completes",
+            )
+        if voice_end_call_grace_ms is not None:
+            set_number_config(
+                key="voice_end_call_grace_ms",
+                value=voice_end_call_grace_ms,
+                updated_by=admin_user_id,
+                description="Minimum delay before Twilio hangup after end_call tool to let final audio finish",
+            )
+        if voice_elevenlabs_preflight_timeout_ms is not None:
+            set_number_config(
+                key="voice_elevenlabs_preflight_timeout_ms",
+                value=voice_elevenlabs_preflight_timeout_ms,
+                updated_by=admin_user_id,
+                description="ElevenLabs websocket preflight timeout in milliseconds at call start",
+            )
         if voice_prompt_talent_greeting is not None:
             set_string_config(
                 key="voice_prompt_talent_greeting",
@@ -474,7 +519,10 @@ def set_platform_config():
         vad_threshold, _, _ = get_number_config("voice_vad_threshold", default=0.5)
         vad_prefix_padding_ms, _, _ = get_number_config("voice_vad_prefix_padding_ms", default=300)
         vad_silence_duration_ms, _, _ = get_number_config("voice_vad_silence_duration_ms", default=900)
-        vad_idle_timeout_ms, _, _ = get_number_config("voice_vad_idle_timeout_ms", default=8000)
+        vad_idle_timeout_ms, _, _ = get_number_config("voice_vad_idle_timeout_ms", default=30000)
+        playback_input_cooldown_ms, _, _ = get_number_config("voice_playback_input_cooldown_ms", default=1200)
+        end_call_grace_ms, _, _ = get_number_config("voice_end_call_grace_ms", default=1800)
+        elevenlabs_preflight_timeout_ms, _, _ = get_number_config("voice_elevenlabs_preflight_timeout_ms", default=200)
         talent_greeting, _, _ = get_string_config(
             "voice_prompt_talent_greeting",
             "Hi, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive opportunities. Have I caught you at a bad time?",
@@ -499,6 +547,9 @@ def set_platform_config():
                 "voice_vad_prefix_padding_ms": int(vad_prefix_padding_ms),
                 "voice_vad_silence_duration_ms": int(vad_silence_duration_ms),
                 "voice_vad_idle_timeout_ms": int(vad_idle_timeout_ms),
+                "voice_playback_input_cooldown_ms": int(playback_input_cooldown_ms),
+                "voice_end_call_grace_ms": int(end_call_grace_ms),
+                "voice_elevenlabs_preflight_timeout_ms": int(elevenlabs_preflight_timeout_ms),
                 "voice_prompt_talent_greeting": talent_greeting,
                 "voice_prompt_company_greeting": company_greeting,
                 "voice_prompt_fallback_greeting": fallback_greeting,

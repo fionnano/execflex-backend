@@ -89,18 +89,49 @@ def _load_vad_config(job_id: Optional[str]) -> dict:
     threshold, _, _ = get_number_config("voice_vad_threshold", default=0.5)
     prefix_padding_ms, _, _ = get_number_config("voice_vad_prefix_padding_ms", default=300)
     silence_duration_ms, _, _ = get_number_config("voice_vad_silence_duration_ms", default=900)
-    idle_timeout_ms, _, _ = get_number_config("voice_vad_idle_timeout_ms", default=8000)
+    # Keep idle timeout generous to avoid cutting callers off mid-answer.
+    idle_timeout_ms, _, _ = get_number_config("voice_vad_idle_timeout_ms", default=30000)
     config = {
         "type": "server_vad",
         "threshold": float(threshold),
         "prefix_padding_ms": int(prefix_padding_ms),
         "silence_duration_ms": int(silence_duration_ms),
-        "idle_timeout_ms": int(idle_timeout_ms),
         "create_response": True,
         "interrupt_response": True,
     }
+    if float(idle_timeout_ms) > 0:
+        config["idle_timeout_ms"] = int(idle_timeout_ms)
+    else:
+        # Allow explicit disable via platform_config (0 or negative).
+        _append_job_debug_event(job_id, "vad_idle_timeout_disabled")
     _append_job_debug_event(job_id, "vad_config_loaded", config)
     return config
+
+
+def _is_low_signal_user_transcript(text: str) -> bool:
+    """Heuristic guard for noise/partial artifacts that should not trigger a full assistant turn."""
+    normalized = re.sub(r"[^a-z0-9' ]+", "", (text or "").strip().lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return True
+
+    # Common short valid replies should pass through.
+    allowed_short_replies = {
+        "yes", "no", "yep", "yeah", "nope", "ok", "okay", "sure", "both", "ja"
+    }
+    if normalized in allowed_short_replies:
+        return False
+
+    # Filler/noise-like artifacts, including observed false transcript "ani".
+    likely_noise_tokens = {"uh", "um", "erm", "mm", "hmm", "mhm", "ah", "eh", "ani"}
+    if normalized in likely_noise_tokens:
+        return True
+
+    # Single short token that isn't a common valid acknowledgement is usually noise.
+    if " " not in normalized and len(normalized) <= 3:
+        return True
+
+    return False
 
 
 def init_voice_websocket(sock: Sock):
@@ -145,6 +176,7 @@ def init_voice_websocket(sock: Sock):
             "playback_input_cooldown_ms": 1200,
             "playback_dropped_frames": 0,
             "openai_turn_detection_muted": False,
+            "last_assistant_audio_done_ms": 0.0,
             "next_transcript_turn_sequence": 1,
             "last_transcript_key": None,
             "use_elevenlabs_output": False,
@@ -155,7 +187,7 @@ def init_voice_websocket(sock: Sock):
                 "threshold": 0.5,
                 "prefix_padding_ms": 300,
                 "silence_duration_ms": 900,
-                "idle_timeout_ms": 8000,
+                "idle_timeout_ms": 30000,
                 "create_response": True,
                 "interrupt_response": True,
             },
@@ -306,7 +338,7 @@ def init_voice_websocket(sock: Sock):
                     enabled, _, _ = get_bool_config("elevenlabs_output_enabled", default=False)
                     preflight_timeout_ms, _, _ = get_number_config(
                         "voice_elevenlabs_preflight_timeout_ms",
-                        default=350,
+                        default=200,
                     )
                     if enabled:
                         use_elevenlabs_output = _preflight_elevenlabs_ws(
@@ -524,7 +556,7 @@ def _connect_openai_sync(
         "threshold": 0.5,
         "prefix_padding_ms": 300,
         "silence_duration_ms": 900,
-        "idle_timeout_ms": 8000,
+        "idle_timeout_ms": 30000,
         "create_response": True,
         "interrupt_response": True,
     }
@@ -762,7 +794,7 @@ def _enable_post_greeting_barge_in(openai_ws, vad_config: Optional[dict] = None)
         "threshold": 0.5,
         "prefix_padding_ms": 300,
         "silence_duration_ms": 900,
-        "idle_timeout_ms": 8000,
+        "idle_timeout_ms": 30000,
         "create_response": True,
         "interrupt_response": True,
     }
@@ -793,7 +825,7 @@ def _set_turn_detection_mode(
         "threshold": 0.5,
         "prefix_padding_ms": 300,
         "silence_duration_ms": 900,
-        "idle_timeout_ms": 8000,
+        "idle_timeout_ms": 30000,
         "create_response": True,
         "interrupt_response": True,
     }
@@ -888,6 +920,7 @@ def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock,
         if bridge_state.get("end_call_requested"):
             return
         turn_count = int(bridge_state.get("next_transcript_turn_sequence", 1))
+        last_assistant_audio_done_ms = float(bridge_state.get("last_assistant_audio_done_ms", 0.0))
 
     # Guardrail: ignore accidental early end_call tool invocations.
     reason = (args.get("reason") or "").strip().lower() if isinstance(args, dict) else ""
@@ -902,6 +935,18 @@ def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock,
         bridge_state["end_call_requested"] = True
 
     log_fn(f"end_call tool invoked with args: {args}")
+    min_grace_ms = 1800
+    try:
+        configured_grace_ms, _, _ = get_number_config("voice_end_call_grace_ms", default=min_grace_ms)
+        min_grace_ms = max(0, int(configured_grace_ms))
+    except Exception:
+        pass
+    now_ms = time.monotonic() * 1000.0
+    elapsed_since_audio_done_ms = now_ms - last_assistant_audio_done_ms if last_assistant_audio_done_ms > 0 else 0.0
+    remaining_wait_ms = max(0, min_grace_ms - int(elapsed_since_audio_done_ms))
+    if remaining_wait_ms > 0:
+        log_fn(f"Delaying hangup {remaining_wait_ms}ms so final assistant audio can finish playing")
+        time.sleep(remaining_wait_ms / 1000.0)
     _request_call_hangup(call_sid)
 
 
@@ -1271,6 +1316,7 @@ def _handle_openai_responses(
                     first_audio_recorded = False  # Reset for next turn
                     should_resume_turn_detection = False
                     with state_lock:
+                        bridge_state["last_assistant_audio_done_ms"] = time.monotonic() * 1000.0
                         bridge_state["assistant_playback_active"] = False
                         bridge_state["assistant_playback_block_until_ms"] = (
                             time.monotonic() * 1000.0
@@ -1320,6 +1366,10 @@ def _handle_openai_responses(
                     log("Input audio buffer committed")
                     debug_event("input_audio_buffer_committed")
 
+                elif event_type == "input_audio_buffer.timeout_triggered":
+                    log("Input audio buffer timeout triggered")
+                    debug_event("input_audio_buffer_timeout_triggered")
+
                 elif event_type == "conversation.item.created":
                     item = data.get("item", {}) or {}
                     log(
@@ -1334,6 +1384,20 @@ def _handle_openai_responses(
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     # Got transcript of user speech
                     transcript = data.get("transcript", "")
+                    if _is_low_signal_user_transcript(transcript):
+                        log(f"Ignoring low-signal user transcript: {transcript!r}")
+                        debug_event("ignored_low_signal_transcript", {"text": (transcript or "")[:80]})
+                        try:
+                            openai_ws.send(json.dumps({"type": "response.cancel"}))
+                            debug_event("response_cancel_sent_for_low_signal")
+                        except Exception as cancel_err:
+                            log(
+                                "Failed to cancel response after low-signal transcript: "
+                                f"{type(cancel_err).__name__}: {cancel_err}"
+                            )
+                        with state_lock:
+                            bridge_state["awaiting_response"] = False
+                        continue
                     _store_transcript_turn(
                         interaction_id=interaction_id,
                         speaker="user",
@@ -1445,6 +1509,7 @@ def _handle_openai_responses(
                         )
                         should_resume_turn_detection = False
                         with state_lock:
+                            bridge_state["last_assistant_audio_done_ms"] = time.monotonic() * 1000.0
                             bridge_state["assistant_playback_active"] = False
                             bridge_state["assistant_playback_block_until_ms"] = (
                                 time.monotonic() * 1000.0
