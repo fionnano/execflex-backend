@@ -59,7 +59,7 @@ def _append_job_debug_event(job_id: Optional[str], event_name: str, metadata: Op
 
 
 def _render_prompt_template(template: str, variables: dict) -> str:
-    """Render {var_name} placeholders with known variables only."""
+    """Render {var_name} and {var_name|fallback} placeholders."""
     if not template:
         return template
 
@@ -68,11 +68,20 @@ def _render_prompt_template(template: str, variables: dict) -> str:
 
     def _replace(match):
         key = match.group(1)
-        if key in variables and variables[key] is not None:
-            return str(variables[key])
-        return match.group(0)
+        fallback = match.group(2)
+        value = variables.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+        if fallback is not None:
+            return fallback
+        # For name placeholders, use a natural default instead of reading braces aloud.
+        if key in ("first_name", "user_name"):
+            return "there"
+        # Remove unresolved placeholders to avoid awkward speech output.
+        return ""
 
-    return re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", _replace, template)
+    rendered = re.sub(r"\{([a-zA-Z_][a-zA-Z0-9_]*)(?:\|([^{}]*))?\}", _replace, template)
+    return re.sub(r"\s{2,}", " ", rendered).strip()
 
 
 def _load_vad_config(job_id: Optional[str]) -> dict:
@@ -243,6 +252,25 @@ def init_voice_websocket(sock: Sock):
                                             user_name = f"{first_name or ''} {last_name or ''}".strip()
                                 except Exception as profile_exc:
                                     print(f"Failed loading profile for prompt variables: {profile_exc}", flush=True)
+                                if not first_name or not user_name:
+                                    try:
+                                        auth_user_resp = supabase_client.schema("auth").table("users")\
+                                            .select("raw_user_meta_data")\
+                                            .eq("id", job.get("user_id"))\
+                                            .limit(1)\
+                                            .execute()
+                                        if auth_user_resp.data:
+                                            raw_meta = (auth_user_resp.data[0] or {}).get("raw_user_meta_data") or {}
+                                            auth_first_name = (raw_meta.get("first_name") or "").strip()
+                                            auth_full_name = (raw_meta.get("full_name") or raw_meta.get("name") or "").strip()
+                                            if not first_name and auth_first_name:
+                                                first_name = auth_first_name
+                                            if not user_name and auth_full_name:
+                                                user_name = auth_full_name
+                                            if not user_name and first_name:
+                                                user_name = first_name
+                                    except Exception as auth_user_exc:
+                                        print(f"Failed loading auth user metadata for prompt variables: {auth_user_exc}", flush=True)
                                 if user_name:
                                     prompt_vars["user_name"] = user_name
                                 if first_name:
