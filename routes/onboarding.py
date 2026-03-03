@@ -819,6 +819,8 @@ def list_users():
                 return None
             return text
 
+        include_debug = str(request.args.get("debug", "")).strip().lower() in ("1", "true", "yes")
+
         # Get query parameters
         limit = int(request.args.get("limit", 100))
         offset = int(request.args.get("offset", 0))
@@ -1118,15 +1120,31 @@ def list_users():
                 or (email.split("@")[0] if isinstance(email, str) and "@" in email else None)
                 or (identity_email.split("@")[0] if isinstance(identity_email, str) and "@" in identity_email else None)
             )
-            phone = (
-                _clean_text(auth_user.get("phone"))
-                or _clean_text(metadata.get("phone"))
-                or _clean_text(metadata.get("phone_number"))
-                or _clean_text(first_identity_data.get("phone"))
-                or _clean_text(first_identity_data.get("phone_number"))
-                or (phone_map.get(user_id) or {}).get("value")
-                or outbound_phone_map.get(user_id)
-            )
+            phone_candidates = {
+                "auth.phone": _clean_text(auth_user.get("phone")),
+                "metadata.phone": _clean_text(metadata.get("phone")),
+                "metadata.phone_number": _clean_text(metadata.get("phone_number")),
+                "identity.phone": _clean_text(first_identity_data.get("phone")),
+                "identity.phone_number": _clean_text(first_identity_data.get("phone_number")),
+                "channel_identities": _clean_text((phone_map.get(user_id) or {}).get("value")),
+                "outbound_call_jobs.phone_e164": _clean_text(outbound_phone_map.get(user_id)),
+            }
+            phone = None
+            phone_source = None
+            for source_key in (
+                "auth.phone",
+                "metadata.phone",
+                "metadata.phone_number",
+                "identity.phone",
+                "identity.phone_number",
+                "channel_identities",
+                "outbound_call_jobs.phone_e164",
+            ):
+                candidate = phone_candidates.get(source_key)
+                if candidate:
+                    phone = candidate
+                    phone_source = source_key
+                    break
             has_linkedin_identity = False
             for identity in identities:
                 if not isinstance(identity, dict):
@@ -1141,7 +1159,7 @@ def list_users():
                 fallback_mode = "hirer"
             elif "talent" in roles:
                 fallback_mode = "talent"
-            users.append({
+            user_row = {
                 "id": user_id,
                 "name": display_name,
                 "email": email or identity_email,
@@ -1152,7 +1170,22 @@ def list_users():
                 "linkedin_connected": linkedin_connected_map.get(user_id, False) or has_linkedin_identity,
                 "linkedin_profile_url": linkedin_url_map.get(user_id),
                 "user_mode": modes_map.get(user_id) or fallback_mode
-            })
+            }
+            if include_debug:
+                user_row["phone_debug_source"] = phone_source
+                user_row["phone_debug_candidates"] = phone_candidates
+
+            if not phone:
+                print(
+                    "⚠️ Admin list-users missing phone",
+                    {
+                        "user_id": user_id,
+                        "email": email or identity_email,
+                        "phone_candidates": phone_candidates,
+                    },
+                )
+
+            users.append(user_row)
         
         return ok({
             "users": users,
