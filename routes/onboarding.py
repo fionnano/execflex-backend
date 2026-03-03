@@ -866,12 +866,13 @@ def list_users():
         # Get all filtered user IDs to fetch roles
         filtered_user_ids = [user["id"] for user in filtered_auth_users]
         
-        # Fetch profile names for filtered users
+        # Fetch profile names and LinkedIn URLs for filtered users
         names_map = {}
+        linkedin_url_map = {}
         if filtered_user_ids:
             try:
                 profiles_result = supabase_client.table("people_profiles")\
-                    .select("user_id, first_name, last_name")\
+                    .select("user_id, first_name, last_name, linkedin_profile_url")\
                     .in_("user_id", filtered_user_ids)\
                     .execute()
 
@@ -882,12 +883,15 @@ def list_users():
                     full_name = f"{first_name} {last_name}".strip()
                     if user_id and full_name:
                         names_map[user_id] = full_name
+                    linkedin_profile_url = (profile.get("linkedin_profile_url") or "").strip()
+                    if user_id and linkedin_profile_url:
+                        linkedin_url_map[user_id] = linkedin_profile_url
             except AttributeError:
                 # Fallback: query individually
                 for user_id in filtered_user_ids:
                     try:
                         profile_result = supabase_client.table("people_profiles")\
-                            .select("first_name, last_name")\
+                            .select("first_name, last_name, linkedin_profile_url")\
                             .eq("user_id", user_id)\
                             .limit(1)\
                             .execute()
@@ -898,6 +902,9 @@ def list_users():
                             full_name = f"{first_name} {last_name}".strip()
                             if full_name:
                                 names_map[user_id] = full_name
+                            linkedin_profile_url = (profile.get("linkedin_profile_url") or "").strip()
+                            if linkedin_profile_url:
+                                linkedin_url_map[user_id] = linkedin_profile_url
                     except Exception:
                         continue
 
@@ -1044,19 +1051,55 @@ def list_users():
             user_id = auth_user["id"]
             roles = roles_map.get(user_id, []) or []
             metadata = auth_user.get("user_metadata") or {}
+            app_metadata = auth_user.get("app_metadata") or {}
+            identities = auth_user.get("identities") or []
+
+            first_identity_data = {}
+            for identity in identities:
+                if isinstance(identity, dict):
+                    identity_data = identity.get("identity_data")
+                    if isinstance(identity_data, dict):
+                        first_identity_data = identity_data
+                        break
+
             metadata_full_name = (
                 metadata.get("full_name")
                 or " ".join(
                     part for part in [metadata.get("first_name"), metadata.get("last_name")] if part
                 ).strip()
             )
+            identity_full_name = (
+                first_identity_data.get("full_name")
+                or first_identity_data.get("name")
+                or " ".join(
+                    part for part in [first_identity_data.get("first_name"), first_identity_data.get("last_name")] if part
+                ).strip()
+            )
             email = auth_user.get("email")
+            identity_email = first_identity_data.get("email")
             display_name = (
                 names_map.get(user_id)
                 or (metadata_full_name if isinstance(metadata_full_name, str) and metadata_full_name.strip() else None)
+                or (identity_full_name if isinstance(identity_full_name, str) and identity_full_name.strip() else None)
                 or (email.split("@")[0] if isinstance(email, str) and "@" in email else None)
+                or (identity_email.split("@")[0] if isinstance(identity_email, str) and "@" in identity_email else None)
             )
-            phone = auth_user.get("phone") or (phone_map.get(user_id) or {}).get("value")
+            phone = (
+                auth_user.get("phone")
+                or metadata.get("phone")
+                or metadata.get("phone_number")
+                or first_identity_data.get("phone")
+                or first_identity_data.get("phone_number")
+                or (phone_map.get(user_id) or {}).get("value")
+            )
+            has_linkedin_identity = False
+            for identity in identities:
+                if not isinstance(identity, dict):
+                    continue
+                provider = str(identity.get("provider") or "").strip().lower()
+                if provider == "linkedin_oidc" or provider == "linkedin":
+                    has_linkedin_identity = True
+                    break
             # Fallback to role_assignments if user_preferences missing
             fallback_mode = None
             if "hirer" in roles:
@@ -1066,12 +1109,13 @@ def list_users():
             users.append({
                 "id": user_id,
                 "name": display_name,
-                "email": email,
+                "email": email or identity_email,
                 "phone": phone,
                 "created_at": auth_user.get("created_at"),
                 "last_sign_in_at": auth_user.get("last_sign_in_at"),
                 "roles": roles,
-                "linkedin_connected": linkedin_connected_map.get(user_id, False),
+                "linkedin_connected": linkedin_connected_map.get(user_id, False) or has_linkedin_identity,
+                "linkedin_profile_url": linkedin_url_map.get(user_id),
                 "user_mode": modes_map.get(user_id) or fallback_mode
             })
         
