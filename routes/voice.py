@@ -95,8 +95,7 @@ def voice_stream():
 
     This is the entry point for realtime streaming calls. When Twilio calls this endpoint,
     it returns TwiML that:
-    1. Plays a brief connection message
-    2. Starts a bidirectional Media Stream WebSocket connection to /voice/ws
+    1. Starts a bidirectional Media Stream WebSocket connection to /voice/ws
 
     The actual conversation is handled by the WebSocket endpoint which bridges
     Twilio Media Streams with OpenAI Realtime API and ElevenLabs TTS.

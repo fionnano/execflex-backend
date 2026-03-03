@@ -277,6 +277,21 @@ def get_platform_config():
     elevenlabs_preflight_timeout_ms, preflight_timeout_updated_at, preflight_timeout_updated_by = get_number_config(
         "voice_elevenlabs_preflight_timeout_ms", default=200
     )
+    low_signal_filter_enabled, low_signal_filter_updated_at, low_signal_filter_updated_by = get_bool_config(
+        "voice_low_signal_filter_enabled", default=True
+    )
+    low_signal_min_chars, low_signal_min_chars_updated_at, low_signal_min_chars_updated_by = get_number_config(
+        "voice_low_signal_min_chars", default=4
+    )
+    low_signal_allowed_short_replies, low_signal_allowed_updated_at, low_signal_allowed_updated_by = get_string_config(
+        "voice_low_signal_allowed_short_replies", "yes,no,yep,yeah,nope,ok,okay,sure,both,ja"
+    )
+    end_call_min_turns, end_call_min_turns_updated_at, end_call_min_turns_updated_by = get_number_config(
+        "voice_end_call_min_turns", default=2
+    )
+    first_turn_max_words, first_turn_max_words_updated_at, first_turn_max_words_updated_by = get_number_config(
+        "voice_first_turn_max_words", default=45
+    )
     talent_greeting, talent_prompt_updated_at, talent_prompt_updated_by = get_string_config(
         "voice_prompt_talent_greeting",
         "Hi, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive opportunities. Have I caught you at a bad time?",
@@ -304,10 +319,29 @@ def get_platform_config():
             "voice_playback_input_cooldown_ms": int(playback_input_cooldown_ms),
             "voice_end_call_grace_ms": int(end_call_grace_ms),
             "voice_elevenlabs_preflight_timeout_ms": int(elevenlabs_preflight_timeout_ms),
+            "voice_low_signal_filter_enabled": bool(low_signal_filter_enabled),
+            "voice_low_signal_min_chars": int(low_signal_min_chars),
+            "voice_low_signal_allowed_short_replies": low_signal_allowed_short_replies,
+            "voice_end_call_min_turns": int(end_call_min_turns),
+            "voice_first_turn_max_words": int(first_turn_max_words),
             "voice_prompt_talent_greeting": talent_greeting,
             "voice_prompt_company_greeting": company_greeting,
             "voice_prompt_fallback_greeting": fallback_greeting,
             "voice_prompt_general_system": general_prompt,
+            "configuration_hints": {
+                "voice_vad_threshold": "Sensitivity of speech detection; lower = more sensitive to quiet speech.",
+                "voice_vad_prefix_padding_ms": "Milliseconds of audio retained before speech start (captures first syllables).",
+                "voice_vad_silence_duration_ms": "How long silence must last before ending a user turn.",
+                "voice_vad_idle_timeout_ms": "Auto-timeout for user turn when no speech end is detected. Set 0 to disable.",
+                "voice_playback_input_cooldown_ms": "How long to ignore caller audio after assistant playback finishes.",
+                "voice_end_call_grace_ms": "Extra delay before hangup after final goodbye to avoid clipping.",
+                "voice_elevenlabs_preflight_timeout_ms": "Max wait for ElevenLabs readiness at call start before fallback.",
+                "voice_low_signal_filter_enabled": "Ignore obvious low-signal transcripts (noise/fillers) to prevent false turns.",
+                "voice_low_signal_min_chars": "Minimum characters for single-token user utterances unless whitelisted.",
+                "voice_low_signal_allowed_short_replies": "Comma-separated short replies always accepted (e.g. yes,no,ok).",
+                "voice_end_call_min_turns": "Minimum turn count before model-driven end_call is allowed (unless explicit user end).",
+                "voice_first_turn_max_words": "Soft cap for first assistant spoken turn length.",
+            },
             "updated_at": max(
                 [
                     x for x in [
@@ -320,6 +354,11 @@ def get_platform_config():
                         playback_cooldown_updated_at,
                         end_call_grace_updated_at,
                         preflight_timeout_updated_at,
+                        low_signal_filter_updated_at,
+                        low_signal_min_chars_updated_at,
+                        low_signal_allowed_updated_at,
+                        end_call_min_turns_updated_at,
+                        first_turn_max_words_updated_at,
                         talent_prompt_updated_at,
                         company_prompt_updated_at,
                         fallback_prompt_updated_at,
@@ -337,6 +376,11 @@ def get_platform_config():
                 or playback_cooldown_updated_by
                 or end_call_grace_updated_by
                 or preflight_timeout_updated_by
+                or low_signal_filter_updated_by
+                or low_signal_min_chars_updated_by
+                or low_signal_allowed_updated_by
+                or end_call_min_turns_updated_by
+                or first_turn_max_words_updated_by
                 or talent_prompt_updated_by
                 or company_prompt_updated_by
                 or fallback_prompt_updated_by
@@ -363,6 +407,11 @@ def set_platform_config():
             "voice_playback_input_cooldown_ms",
             "voice_end_call_grace_ms",
             "voice_elevenlabs_preflight_timeout_ms",
+            "voice_low_signal_filter_enabled",
+            "voice_low_signal_min_chars",
+            "voice_low_signal_allowed_short_replies",
+            "voice_end_call_min_turns",
+            "voice_first_turn_max_words",
             "voice_prompt_talent_greeting",
             "voice_prompt_company_greeting",
             "voice_prompt_fallback_greeting",
@@ -376,6 +425,8 @@ def set_platform_config():
             return bad("elevenlabs_output_enabled must be a boolean", 400)
         if "voice_no_answer_retries_enabled" in data and not isinstance(data.get("voice_no_answer_retries_enabled"), bool):
             return bad("voice_no_answer_retries_enabled must be a boolean", 400)
+        if "voice_low_signal_filter_enabled" in data and not isinstance(data.get("voice_low_signal_filter_enabled"), bool):
+            return bad("voice_low_signal_filter_enabled must be a boolean", 400)
 
         def _validate_number(name: str, min_value: float, max_value: float, integer: bool = False):
             if name not in data:
@@ -398,6 +449,9 @@ def set_platform_config():
             voice_playback_input_cooldown_ms = _validate_number("voice_playback_input_cooldown_ms", 0, 5000, integer=True)
             voice_end_call_grace_ms = _validate_number("voice_end_call_grace_ms", 0, 8000, integer=True)
             voice_elevenlabs_preflight_timeout_ms = _validate_number("voice_elevenlabs_preflight_timeout_ms", 100, 3000, integer=True)
+            voice_low_signal_min_chars = _validate_number("voice_low_signal_min_chars", 1, 12, integer=True)
+            voice_end_call_min_turns = _validate_number("voice_end_call_min_turns", 0, 20, integer=True)
+            voice_first_turn_max_words = _validate_number("voice_first_turn_max_words", 10, 120, integer=True)
         except ValueError as validation_err:
             return bad(str(validation_err), 400)
 
@@ -417,6 +471,7 @@ def set_platform_config():
             voice_prompt_company_greeting = _validate_string("voice_prompt_company_greeting", 10, 500)
             voice_prompt_fallback_greeting = _validate_string("voice_prompt_fallback_greeting", 10, 500)
             voice_prompt_general_system = _validate_string("voice_prompt_general_system", 50, 12000)
+            voice_low_signal_allowed_short_replies = _validate_string("voice_low_signal_allowed_short_replies", 3, 500)
         except ValueError as validation_err:
             return bad(str(validation_err), 400)
 
@@ -433,6 +488,13 @@ def set_platform_config():
                 value=bool(data.get("voice_no_answer_retries_enabled")),
                 updated_by=admin_user_id,
                 description="Enable automatic retries for no-answer outbound calls using fixed schedule: 10m, 1h, 6h, 24h, 1w",
+            )
+        if "voice_low_signal_filter_enabled" in data:
+            set_bool_config(
+                key="voice_low_signal_filter_enabled",
+                value=bool(data.get("voice_low_signal_filter_enabled")),
+                updated_by=admin_user_id,
+                description="Enable filtering of low-signal/likely-noise transcripts before generating assistant responses",
             )
         if voice_vad_threshold is not None:
             set_number_config(
@@ -483,6 +545,27 @@ def set_platform_config():
                 updated_by=admin_user_id,
                 description="ElevenLabs websocket preflight timeout in milliseconds at call start",
             )
+        if voice_low_signal_min_chars is not None:
+            set_number_config(
+                key="voice_low_signal_min_chars",
+                value=voice_low_signal_min_chars,
+                updated_by=admin_user_id,
+                description="Minimum character length for single-token user transcripts unless explicitly whitelisted",
+            )
+        if voice_end_call_min_turns is not None:
+            set_number_config(
+                key="voice_end_call_min_turns",
+                value=voice_end_call_min_turns,
+                updated_by=admin_user_id,
+                description="Minimum turn count before model-triggered end_call is allowed (except explicit user-end reasons)",
+            )
+        if voice_first_turn_max_words is not None:
+            set_number_config(
+                key="voice_first_turn_max_words",
+                value=voice_first_turn_max_words,
+                updated_by=admin_user_id,
+                description="Soft maximum words for the assistant's first spoken turn",
+            )
         if voice_prompt_talent_greeting is not None:
             set_string_config(
                 key="voice_prompt_talent_greeting",
@@ -511,6 +594,13 @@ def set_platform_config():
                 updated_by=admin_user_id,
                 description="General outbound call system prompt body appended after mode context and greeting",
             )
+        if voice_low_signal_allowed_short_replies is not None:
+            set_string_config(
+                key="voice_low_signal_allowed_short_replies",
+                value=voice_low_signal_allowed_short_replies,
+                updated_by=admin_user_id,
+                description="Comma-separated short user replies that should always be treated as valid input",
+            )
 
         enabled, updated_at, updated_by = get_bool_config("elevenlabs_output_enabled", default=False)
         no_answer_retries_enabled, retries_updated_at, retries_updated_by = get_bool_config(
@@ -523,6 +613,14 @@ def set_platform_config():
         playback_input_cooldown_ms, _, _ = get_number_config("voice_playback_input_cooldown_ms", default=1200)
         end_call_grace_ms, _, _ = get_number_config("voice_end_call_grace_ms", default=1800)
         elevenlabs_preflight_timeout_ms, _, _ = get_number_config("voice_elevenlabs_preflight_timeout_ms", default=200)
+        low_signal_filter_enabled, _, _ = get_bool_config("voice_low_signal_filter_enabled", default=True)
+        low_signal_min_chars, _, _ = get_number_config("voice_low_signal_min_chars", default=4)
+        low_signal_allowed_short_replies, _, _ = get_string_config(
+            "voice_low_signal_allowed_short_replies",
+            "yes,no,yep,yeah,nope,ok,okay,sure,both,ja",
+        )
+        end_call_min_turns, _, _ = get_number_config("voice_end_call_min_turns", default=2)
+        first_turn_max_words, _, _ = get_number_config("voice_first_turn_max_words", default=45)
         talent_greeting, _, _ = get_string_config(
             "voice_prompt_talent_greeting",
             "Hi, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive opportunities. Have I caught you at a bad time?",
@@ -550,10 +648,26 @@ def set_platform_config():
                 "voice_playback_input_cooldown_ms": int(playback_input_cooldown_ms),
                 "voice_end_call_grace_ms": int(end_call_grace_ms),
                 "voice_elevenlabs_preflight_timeout_ms": int(elevenlabs_preflight_timeout_ms),
+                "voice_low_signal_filter_enabled": bool(low_signal_filter_enabled),
+                "voice_low_signal_min_chars": int(low_signal_min_chars),
+                "voice_low_signal_allowed_short_replies": low_signal_allowed_short_replies,
+                "voice_end_call_min_turns": int(end_call_min_turns),
+                "voice_first_turn_max_words": int(first_turn_max_words),
                 "voice_prompt_talent_greeting": talent_greeting,
                 "voice_prompt_company_greeting": company_greeting,
                 "voice_prompt_fallback_greeting": fallback_greeting,
                 "voice_prompt_general_system": general_prompt,
+                "configuration_hints": {
+                    "voice_vad_idle_timeout_ms": "0 disables idle timeout auto-commit; otherwise value is milliseconds.",
+                    "voice_playback_input_cooldown_ms": "Milliseconds to ignore input after assistant playback completes.",
+                    "voice_end_call_grace_ms": "Delay before hangup after final message so caller hears full goodbye.",
+                    "voice_elevenlabs_preflight_timeout_ms": "Call-start wait for ElevenLabs readiness before OpenAI fallback.",
+                    "voice_low_signal_filter_enabled": "Enable low-signal transcript filtering.",
+                    "voice_low_signal_min_chars": "Single-token transcript min length unless whitelisted.",
+                    "voice_low_signal_allowed_short_replies": "Comma-separated whitelist for short valid replies.",
+                    "voice_end_call_min_turns": "Minimum turns before tool-based end_call is allowed.",
+                    "voice_first_turn_max_words": "First turn spoken-word limit guidance for model.",
+                },
                 "updated_at": max([x for x in [updated_at, retries_updated_at] if x] or [None]),
                 "updated_by": retries_updated_by or updated_by,
             }

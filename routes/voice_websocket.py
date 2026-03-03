@@ -108,7 +108,12 @@ def _load_vad_config(job_id: Optional[str]) -> dict:
     return config
 
 
-def _is_low_signal_user_transcript(text: str) -> bool:
+def _is_low_signal_user_transcript(
+    text: str,
+    *,
+    min_chars: int = 4,
+    allowed_short_replies: Optional[set[str]] = None,
+) -> bool:
     """Heuristic guard for noise/partial artifacts that should not trigger a full assistant turn."""
     normalized = re.sub(r"[^a-z0-9' ]+", "", (text or "").strip().lower())
     normalized = re.sub(r"\s+", " ", normalized).strip()
@@ -116,9 +121,10 @@ def _is_low_signal_user_transcript(text: str) -> bool:
         return True
 
     # Common short valid replies should pass through.
-    allowed_short_replies = {
-        "yes", "no", "yep", "yeah", "nope", "ok", "okay", "sure", "both", "ja"
-    }
+    if allowed_short_replies is None:
+        allowed_short_replies = {
+            "yes", "no", "yep", "yeah", "nope", "ok", "okay", "sure", "both", "ja"
+        }
     if normalized in allowed_short_replies:
         return False
 
@@ -128,7 +134,7 @@ def _is_low_signal_user_transcript(text: str) -> bool:
         return True
 
     # Single short token that isn't a common valid acknowledgement is usually noise.
-    if " " not in normalized and len(normalized) <= 3:
+    if " " not in normalized and len(normalized) < max(1, int(min_chars)):
         return True
 
     return False
@@ -177,6 +183,12 @@ def init_voice_websocket(sock: Sock):
             "playback_dropped_frames": 0,
             "openai_turn_detection_muted": False,
             "last_assistant_audio_done_ms": 0.0,
+            "low_signal_filter_enabled": True,
+            "low_signal_min_chars": 4,
+            "low_signal_allowed_short_replies": {
+                "yes", "no", "yep", "yeah", "nope", "ok", "okay", "sure", "both", "ja"
+            },
+            "end_call_min_turns": 2,
             "next_transcript_turn_sequence": 1,
             "last_transcript_key": None,
             "use_elevenlabs_output": False,
@@ -363,6 +375,34 @@ def init_voice_websocket(sock: Sock):
                             0,
                             int(playback_input_cooldown_ms),
                         )
+                        low_signal_filter_enabled, _, _ = get_bool_config(
+                            "voice_low_signal_filter_enabled",
+                            default=True,
+                        )
+                        low_signal_min_chars, _, _ = get_number_config(
+                            "voice_low_signal_min_chars",
+                            default=4,
+                        )
+                        allowed_short_replies_raw, _, _ = get_string_config(
+                            "voice_low_signal_allowed_short_replies",
+                            "yes,no,yep,yeah,nope,ok,okay,sure,both,ja",
+                        )
+                        end_call_min_turns, _, _ = get_number_config(
+                            "voice_end_call_min_turns",
+                            default=2,
+                        )
+                        allowed_short_replies = {
+                            token.strip().lower()
+                            for token in str(allowed_short_replies_raw).split(",")
+                            if token and token.strip()
+                        }
+                        bridge_state["low_signal_filter_enabled"] = bool(low_signal_filter_enabled)
+                        bridge_state["low_signal_min_chars"] = max(1, int(low_signal_min_chars))
+                        bridge_state["low_signal_allowed_short_replies"] = (
+                            allowed_short_replies
+                            or {"yes", "no", "ok", "sure"}
+                        )
+                        bridge_state["end_call_min_turns"] = max(0, int(end_call_min_turns))
 
                     # Connect to OpenAI Realtime API
                     try:
@@ -756,6 +796,7 @@ def _get_system_prompt(signup_mode: Optional[str], prompt_vars: Optional[dict] =
     company_greeting, _, _ = get_string_config("voice_prompt_company_greeting", DEFAULT_COMPANY_GREETING)
     fallback_greeting, _, _ = get_string_config("voice_prompt_fallback_greeting", DEFAULT_FALLBACK_GREETING)
     general_prompt, _, _ = get_string_config("voice_prompt_general_system", DEFAULT_GENERAL_SYSTEM_PROMPT)
+    first_turn_max_words, _, _ = get_number_config("voice_first_turn_max_words", default=45)
 
     if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
         mode_context = "The user is an executive looking for job opportunities."
@@ -774,6 +815,7 @@ def _get_system_prompt(signup_mode: Optional[str], prompt_vars: Optional[dict] =
 {mode_context}
 
 IMPORTANT: Start the conversation IMMEDIATELY by saying: "{greeting}"
+IMPORTANT: For your first spoken turn only, keep your total response under {max(10, int(first_turn_max_words))} words.
 
 {general_prompt}
 """
@@ -921,11 +963,12 @@ def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock,
             return
         turn_count = int(bridge_state.get("next_transcript_turn_sequence", 1))
         last_assistant_audio_done_ms = float(bridge_state.get("last_assistant_audio_done_ms", 0.0))
+        end_call_min_turns = int(bridge_state.get("end_call_min_turns", 2))
 
     # Guardrail: ignore accidental early end_call tool invocations.
     reason = (args.get("reason") or "").strip().lower() if isinstance(args, dict) else ""
     allow_early_reasons = {"user_requested_end", "no_interest", "voicemail"}
-    if turn_count <= 2 and reason not in allow_early_reasons:
+    if turn_count <= end_call_min_turns and reason not in allow_early_reasons:
         log_fn(f"Ignoring early end_call signal (turn_count={turn_count}, reason={reason or 'unknown'})")
         return
 
@@ -1384,7 +1427,20 @@ def _handle_openai_responses(
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     # Got transcript of user speech
                     transcript = data.get("transcript", "")
-                    if _is_low_signal_user_transcript(transcript):
+                    with state_lock:
+                        low_signal_filter_enabled = bool(
+                            bridge_state.get("low_signal_filter_enabled", True)
+                        )
+                        low_signal_min_chars = int(bridge_state.get("low_signal_min_chars", 4))
+                        low_signal_allowed_short_replies = set(
+                            bridge_state.get("low_signal_allowed_short_replies")
+                            or {"yes", "no", "ok", "sure"}
+                        )
+                    if low_signal_filter_enabled and _is_low_signal_user_transcript(
+                        transcript,
+                        min_chars=low_signal_min_chars,
+                        allowed_short_replies=low_signal_allowed_short_replies,
+                    ):
                         log(f"Ignoring low-signal user transcript: {transcript!r}")
                         debug_event("ignored_low_signal_transcript", {"text": (transcript or "")[:80]})
                         try:
