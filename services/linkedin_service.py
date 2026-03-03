@@ -144,8 +144,8 @@ def get_oauth_url(user_id: str, redirect_after: Optional[str] = None) -> Dict[st
     # openid: required for userinfo endpoint
     # profile: basic profile info (name, picture)
     # email: email address
-    # Note: Profile URL is not available through standard OAuth - users enter manually
-    scopes = "openid profile email"
+    # r_profile_basicinfo: access to profile URL via /rest/identityMe endpoint
+    scopes = "openid profile email r_profile_basicinfo"
 
     params = {
         "response_type": "code",
@@ -217,23 +217,31 @@ def fetch_linkedin_profile(access_token: str) -> Dict[str, Any]:
 
     userinfo = response.json()
 
-    # Try to get additional data from /v2/me endpoint
+    # Try to get profile URL from /rest/identityMe endpoint (requires r_profile_basicinfo scope)
     try:
-        print("🔍 Attempting to fetch /v2/me endpoint...")
-        me_response = requests.get(
-            "https://api.linkedin.com/v2/me",
-            headers={"Authorization": f"Bearer {access_token}"}
+        print("🔍 Attempting to fetch /rest/identityMe endpoint...")
+        # LinkedIn REST API requires the LinkedIn-Version header
+        identity_response = requests.get(
+            "https://api.linkedin.com/rest/identityMe",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "LinkedIn-Version": "202401"  # Required version header for REST API
+            }
         )
-        print(f"🔍 /v2/me response status: {me_response.status_code}")
-        if me_response.status_code == 200:
-            me_data = me_response.json()
-            print(f"📥 LinkedIn /v2/me data: {json.dumps(me_data, indent=2)}")
-            # Merge any useful fields
-            userinfo["_me_data"] = me_data
+        print(f"🔍 /rest/identityMe response status: {identity_response.status_code}")
+        if identity_response.status_code == 200:
+            identity_data = identity_response.json()
+            print(f"📥 LinkedIn /rest/identityMe data: {json.dumps(identity_data, indent=2)}")
+            # Extract profile URL from basicInfo
+            if identity_data.get("basicInfo", {}).get("profileUrl"):
+                userinfo["_profile_url"] = identity_data["basicInfo"]["profileUrl"]
+                print(f"✅ Found profile URL: {userinfo['_profile_url']}")
+            # Merge any other useful fields
+            userinfo["_identity_data"] = identity_data
         else:
-            print(f"⚠️ /v2/me returned {me_response.status_code}: {me_response.text[:500]}")
+            print(f"⚠️ /rest/identityMe returned {identity_response.status_code}: {identity_response.text[:500]}")
     except Exception as e:
-        print(f"⚠️ Could not fetch /v2/me: {e}")
+        print(f"⚠️ Could not fetch /rest/identityMe: {e}")
 
     return userinfo
 
@@ -273,12 +281,15 @@ def map_linkedin_to_profile(linkedin_data: Dict[str, Any]) -> Dict[str, Any]:
         mapped["headshot_url"] = linkedin_data["picture"]
         print(f"✅ Mapped headshot_url: {linkedin_data['picture']}")
 
-    # LinkedIn member ID (internal identifier - NOT usable for public profile URL)
+    # LinkedIn member ID (internal identifier)
     if linkedin_data.get("sub"):
         mapped["linkedin_member_id"] = linkedin_data["sub"]
-        # Note: LinkedIn's sub claim is an internal ID that does NOT work as a public URL
-        # The user must manually provide their vanity URL (e.g., linkedin.com/in/johndoe)
         print(f"✅ Mapped linkedin_member_id: {linkedin_data['sub']}")
+
+    # Profile URL from /rest/identityMe endpoint (requires r_profile_basicinfo scope)
+    if linkedin_data.get("_profile_url"):
+        mapped["linkedin_profile_url"] = linkedin_data["_profile_url"]
+        print(f"✅ Mapped linkedin_profile_url: {linkedin_data['_profile_url']}")
 
     # Note: LinkedIn's basic scopes don't provide headline, location, skills, or industries
     # Those would require additional API calls with different scopes
@@ -312,7 +323,7 @@ def store_connection(
         "user_id": user_id,
         "provider": "linkedin",
         "status": "active",
-        "scopes": scopes or ["openid", "profile", "email"],
+        "scopes": scopes or ["openid", "profile", "email", "r_profile_basicinfo"],
         "access_token_encrypted": encrypt_token(access_token),
         "expires_at": expires_at.isoformat(),
         "linked_at": now.isoformat(),
