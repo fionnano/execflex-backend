@@ -253,6 +253,9 @@ def set_user_mode():
 def get_platform_config():
     """Read admin-managed configuration values."""
     enabled, updated_at, updated_by = get_bool_config("elevenlabs_output_enabled", default=False)
+    no_answer_retries_enabled, retries_updated_at, retries_updated_by = get_bool_config(
+        "voice_no_answer_retries_enabled", default=True
+    )
     vad_threshold, vad_threshold_updated_at, vad_threshold_updated_by = get_number_config(
         "voice_vad_threshold", default=0.5
     )
@@ -284,6 +287,7 @@ def get_platform_config():
     return ok({
         "configuration": {
             "elevenlabs_output_enabled": enabled,
+            "voice_no_answer_retries_enabled": no_answer_retries_enabled,
             "voice_vad_threshold": vad_threshold,
             "voice_vad_prefix_padding_ms": int(vad_prefix_padding_ms),
             "voice_vad_silence_duration_ms": int(vad_silence_duration_ms),
@@ -296,6 +300,7 @@ def get_platform_config():
                 [
                     x for x in [
                         updated_at,
+                        retries_updated_at,
                         vad_threshold_updated_at,
                         vad_prefix_updated_at,
                         vad_silence_updated_at,
@@ -309,6 +314,7 @@ def get_platform_config():
             ),
             "updated_by": (
                 updated_by
+                or retries_updated_by
                 or vad_threshold_updated_by
                 or vad_prefix_updated_by
                 or vad_silence_updated_by
@@ -331,6 +337,7 @@ def set_platform_config():
         data = request.get_json(silent=True) or {}
         allowed_keys = {
             "elevenlabs_output_enabled",
+            "voice_no_answer_retries_enabled",
             "voice_vad_threshold",
             "voice_vad_prefix_padding_ms",
             "voice_vad_silence_duration_ms",
@@ -346,6 +353,8 @@ def set_platform_config():
 
         if "elevenlabs_output_enabled" in data and not isinstance(data.get("elevenlabs_output_enabled"), bool):
             return bad("elevenlabs_output_enabled must be a boolean", 400)
+        if "voice_no_answer_retries_enabled" in data and not isinstance(data.get("voice_no_answer_retries_enabled"), bool):
+            return bad("voice_no_answer_retries_enabled must be a boolean", 400)
 
         def _validate_number(name: str, min_value: float, max_value: float, integer: bool = False):
             if name not in data:
@@ -393,6 +402,13 @@ def set_platform_config():
                 value=bool(data.get("elevenlabs_output_enabled")),
                 updated_by=admin_user_id,
                 description="Enable OpenAI text output routed through ElevenLabs realtime TTS for new streaming calls",
+            )
+        if "voice_no_answer_retries_enabled" in data:
+            set_bool_config(
+                key="voice_no_answer_retries_enabled",
+                value=bool(data.get("voice_no_answer_retries_enabled")),
+                updated_by=admin_user_id,
+                description="Enable automatic retries for no-answer outbound calls using fixed schedule: 10m, 1h, 6h, 24h, 1w",
             )
         if voice_vad_threshold is not None:
             set_number_config(
@@ -452,6 +468,9 @@ def set_platform_config():
             )
 
         enabled, updated_at, updated_by = get_bool_config("elevenlabs_output_enabled", default=False)
+        no_answer_retries_enabled, retries_updated_at, retries_updated_by = get_bool_config(
+            "voice_no_answer_retries_enabled", default=True
+        )
         vad_threshold, _, _ = get_number_config("voice_vad_threshold", default=0.5)
         vad_prefix_padding_ms, _, _ = get_number_config("voice_vad_prefix_padding_ms", default=300)
         vad_silence_duration_ms, _, _ = get_number_config("voice_vad_silence_duration_ms", default=900)
@@ -475,6 +494,7 @@ def set_platform_config():
         return ok({
             "configuration": {
                 "elevenlabs_output_enabled": enabled,
+                "voice_no_answer_retries_enabled": no_answer_retries_enabled,
                 "voice_vad_threshold": vad_threshold,
                 "voice_vad_prefix_padding_ms": int(vad_prefix_padding_ms),
                 "voice_vad_silence_duration_ms": int(vad_silence_duration_ms),
@@ -483,8 +503,8 @@ def set_platform_config():
                 "voice_prompt_company_greeting": company_greeting,
                 "voice_prompt_fallback_greeting": fallback_greeting,
                 "voice_prompt_general_system": general_prompt,
-                "updated_at": updated_at,
-                "updated_by": updated_by,
+                "updated_at": max([x for x in [updated_at, retries_updated_at] if x] or [None]),
+                "updated_by": retries_updated_by or updated_by,
             }
         })
     except Exception as e:

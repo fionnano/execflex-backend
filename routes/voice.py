@@ -15,6 +15,21 @@ import os
 from flask import request, Response
 from routes import voice_bp
 from config.clients import VoiceResponse
+from services.platform_config_service import get_bool_config
+
+NO_ANSWER_BACKOFF_MINUTES = [10, 60, 360, 1440, 10080]  # 10m, 1h, 6h, 24h, 1w
+
+
+def _get_no_answer_backoff_minutes(attempt_number: int):
+    """
+    Return backoff minutes for a no-answer retry based on 1-indexed attempt number.
+    Returns None when retries are exhausted.
+    """
+    if attempt_number <= 0:
+        attempt_number = 1
+    if attempt_number > len(NO_ANSWER_BACKOFF_MINUTES):
+        return None
+    return NO_ANSWER_BACKOFF_MINUTES[attempt_number - 1]
 
 
 def _append_stream_debug_event(job_id: str, event_name: str, metadata=None):
@@ -168,7 +183,8 @@ def voice_status():
     
     Status Mapping:
     - completed → succeeded
-    - failed, busy, no-answer, canceled → failed
+    - failed, busy, canceled → failed
+    - no-answer → queued with progressive retry delay (10m, 1h, 6h, 24h, 1w), then failed
     - Other statuses → keep existing job status
     
     Security:
@@ -208,7 +224,7 @@ def voice_status():
     
     try:
         from config.clients import supabase_client
-        from datetime import datetime, timezone
+        from datetime import datetime, timezone, timedelta
         
         if not supabase_client:
             print("⚠️ Supabase client not available for status update")
@@ -238,21 +254,58 @@ def voice_status():
             "canceled": "failed"
         }
         job_status = status_map.get(call_status, job.get("status", "running"))
+        next_run_at = None
+
+        # No-answer retry schedule:
+        # 10m -> 1h -> 6h -> 24h -> 1w, then mark failed permanently.
+        current_attempt = int(job.get("attempts") or 0)
+        if call_status == "no-answer":
+            retries_enabled, _, _ = get_bool_config("voice_no_answer_retries_enabled", default=True)
+            if retries_enabled:
+                backoff_minutes = _get_no_answer_backoff_minutes(current_attempt)
+                if backoff_minutes is not None:
+                    job_status = "queued"
+                    next_run_at = (
+                        datetime.utcnow().replace(tzinfo=timezone.utc) +
+                        timedelta(minutes=backoff_minutes)
+                    ).isoformat()
+                else:
+                    job_status = "failed"
+            else:
+                job_status = "failed"
         
         # Update job
         now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+        artifacts = {
+            **job.get("artifacts", {}),
+            "call_status": call_status,
+            "call_duration": call_duration,
+            "from_number": from_number,
+            "to_number": to_number,
+            "status_updated_at": now_iso
+        }
+
+        if call_status == "no-answer":
+            retries_enabled, _, _ = get_bool_config("voice_no_answer_retries_enabled", default=True)
+            artifacts["no_answer_retry"] = {
+                "attempt_number": current_attempt,
+                "enabled": retries_enabled,
+                "scheduled": job_status == "queued",
+                "backoff_minutes": _get_no_answer_backoff_minutes(current_attempt) if retries_enabled else None,
+                "max_retry_attempts": len(NO_ANSWER_BACKOFF_MINUTES)
+            }
+
         update_data = {
             "status": job_status,
             "updated_at": now_iso,
-            "artifacts": {
-                **job.get("artifacts", {}),
-                "call_status": call_status,
-                "call_duration": call_duration,
-                "from_number": from_number,
-                "to_number": to_number,
-                "status_updated_at": now_iso
-            }
+            "artifacts": artifacts
         }
+        if call_status == "no-answer":
+            update_data["next_run_at"] = next_run_at
+            if job_status == "queued":
+                update_data["last_error"] = None
+            else:
+                update_data["last_error"] = "No-answer retry limit reached"
         
         supabase_client.table("outbound_call_jobs")\
             .update(update_data)\
