@@ -809,6 +809,16 @@ def list_users():
         }
     """
     try:
+        def _clean_text(value):
+            if value is None:
+                return None
+            text = str(value).strip()
+            if not text:
+                return None
+            if text.lower() in ("null", "none", "undefined", "n/a"):
+                return None
+            return text
+
         # Get query parameters
         limit = int(request.args.get("limit", 100))
         offset = int(request.args.get("offset", 0))
@@ -878,12 +888,12 @@ def list_users():
 
                 for profile in (profiles_result.data or []):
                     user_id = profile.get("user_id")
-                    first_name = (profile.get("first_name") or "").strip()
-                    last_name = (profile.get("last_name") or "").strip()
+                    first_name = _clean_text(profile.get("first_name")) or ""
+                    last_name = _clean_text(profile.get("last_name")) or ""
                     full_name = f"{first_name} {last_name}".strip()
                     if user_id and full_name:
                         names_map[user_id] = full_name
-                    linkedin_profile_url = (profile.get("linkedin_profile_url") or "").strip()
+                    linkedin_profile_url = _clean_text(profile.get("linkedin_profile_url"))
                     if user_id and linkedin_profile_url:
                         linkedin_url_map[user_id] = linkedin_profile_url
             except AttributeError:
@@ -897,12 +907,12 @@ def list_users():
                             .execute()
                         if profile_result.data:
                             profile = profile_result.data[0] or {}
-                            first_name = (profile.get("first_name") or "").strip()
-                            last_name = (profile.get("last_name") or "").strip()
+                            first_name = _clean_text(profile.get("first_name")) or ""
+                            last_name = _clean_text(profile.get("last_name")) or ""
                             full_name = f"{first_name} {last_name}".strip()
                             if full_name:
                                 names_map[user_id] = full_name
-                            linkedin_profile_url = (profile.get("linkedin_profile_url") or "").strip()
+                            linkedin_profile_url = _clean_text(profile.get("linkedin_profile_url"))
                             if linkedin_profile_url:
                                 linkedin_url_map[user_id] = linkedin_profile_url
                     except Exception:
@@ -922,7 +932,7 @@ def list_users():
                 for identity in (identities_result.data or []):
                     user_id = identity.get("user_id")
                     channel = (identity.get("channel") or "").strip().lower()
-                    value = (identity.get("value") or "").strip()
+                    value = _clean_text(identity.get("value"))
                     if not user_id or not value:
                         continue
                     current = phone_map.get(user_id)
@@ -943,7 +953,7 @@ def list_users():
                         best_priority = 999
                         for identity in (identities_result.data or []):
                             channel = (identity.get("channel") or "").strip().lower()
-                            value = (identity.get("value") or "").strip()
+                            value = _clean_text(identity.get("value"))
                             if not value:
                                 continue
                             this_priority = channel_priority.get(channel, 999)
@@ -982,6 +992,31 @@ def list_users():
                             roles_map[user_id] = [r["role"] for r in role_result.data]
                     except Exception:
                         continue
+
+        # Fetch latest outbound phone used for onboarding calls as fallback
+        outbound_phone_map = {}
+        if filtered_user_ids:
+            try:
+                jobs_result = supabase_client.table("outbound_call_jobs")\
+                    .select("user_id, phone_e164, created_at")\
+                    .in_("user_id", filtered_user_ids)\
+                    .execute()
+
+                latest_by_user = {}
+                for row in (jobs_result.data or []):
+                    user_id = row.get("user_id")
+                    phone = _clean_text(row.get("phone_e164"))
+                    created_at = _clean_text(row.get("created_at")) or ""
+                    if not user_id or not phone:
+                        continue
+                    current = latest_by_user.get(user_id)
+                    if not current or created_at > current["created_at"]:
+                        latest_by_user[user_id] = {"created_at": created_at, "phone": phone}
+
+                for user_id, value in latest_by_user.items():
+                    outbound_phone_map[user_id] = value["phone"]
+            except Exception:
+                pass
 
         # Fetch LinkedIn auth status for filtered users
         linkedin_connected_map = {}
@@ -1051,7 +1086,6 @@ def list_users():
             user_id = auth_user["id"]
             roles = roles_map.get(user_id, []) or []
             metadata = auth_user.get("user_metadata") or {}
-            app_metadata = auth_user.get("app_metadata") or {}
             identities = auth_user.get("identities") or []
 
             first_identity_data = {}
@@ -1063,20 +1097,20 @@ def list_users():
                         break
 
             metadata_full_name = (
-                metadata.get("full_name")
+                _clean_text(metadata.get("full_name"))
                 or " ".join(
-                    part for part in [metadata.get("first_name"), metadata.get("last_name")] if part
+                    part for part in [_clean_text(metadata.get("first_name")), _clean_text(metadata.get("last_name"))] if part
                 ).strip()
             )
             identity_full_name = (
-                first_identity_data.get("full_name")
-                or first_identity_data.get("name")
+                _clean_text(first_identity_data.get("full_name"))
+                or _clean_text(first_identity_data.get("name"))
                 or " ".join(
-                    part for part in [first_identity_data.get("first_name"), first_identity_data.get("last_name")] if part
+                    part for part in [_clean_text(first_identity_data.get("first_name")), _clean_text(first_identity_data.get("last_name"))] if part
                 ).strip()
             )
-            email = auth_user.get("email")
-            identity_email = first_identity_data.get("email")
+            email = _clean_text(auth_user.get("email"))
+            identity_email = _clean_text(first_identity_data.get("email"))
             display_name = (
                 names_map.get(user_id)
                 or (metadata_full_name if isinstance(metadata_full_name, str) and metadata_full_name.strip() else None)
@@ -1085,12 +1119,13 @@ def list_users():
                 or (identity_email.split("@")[0] if isinstance(identity_email, str) and "@" in identity_email else None)
             )
             phone = (
-                auth_user.get("phone")
-                or metadata.get("phone")
-                or metadata.get("phone_number")
-                or first_identity_data.get("phone")
-                or first_identity_data.get("phone_number")
+                _clean_text(auth_user.get("phone"))
+                or _clean_text(metadata.get("phone"))
+                or _clean_text(metadata.get("phone_number"))
+                or _clean_text(first_identity_data.get("phone"))
+                or _clean_text(first_identity_data.get("phone_number"))
                 or (phone_map.get(user_id) or {}).get("value")
+                or outbound_phone_map.get(user_id)
             )
             has_linkedin_identity = False
             for identity in identities:
