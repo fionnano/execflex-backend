@@ -181,9 +181,17 @@ def init_voice_websocket(sock: Sock):
             "assistant_playback_block_until_ms": 0.0,
             "playback_input_cooldown_ms": 0,
             "overlap_guard_ms": 600,
+            "overlap_merge_window_ms": 6000,
             "playback_dropped_frames": 0,
             "openai_turn_detection_muted": False,
             "last_assistant_audio_done_ms": 0.0,
+            "pending_overlap_text": "",
+            "pending_overlap_captured_ms": 0.0,
+            "cancel_next_response_created": False,
+            "playback_mark_seq": 0,
+            "last_playback_mark_sent": "",
+            "last_playback_mark_acked": "",
+            "pending_end_call": False,
             "low_signal_filter_enabled": True,
             "low_signal_min_chars": 4,
             "low_signal_allowed_short_replies": {
@@ -381,6 +389,11 @@ def init_voice_websocket(sock: Sock):
                             default=600,
                         )
                         bridge_state["overlap_guard_ms"] = max(0, int(overlap_guard_ms))
+                        overlap_merge_window_ms, _, _ = get_number_config(
+                            "voice_overlap_merge_window_ms",
+                            default=6000,
+                        )
+                        bridge_state["overlap_merge_window_ms"] = max(1000, int(overlap_merge_window_ms))
                         low_signal_filter_enabled, _, _ = get_bool_config(
                             "voice_low_signal_filter_enabled",
                             default=True,
@@ -530,6 +543,15 @@ def init_voice_websocket(sock: Sock):
                     print(f"Stream stopped: stream_sid={stream_sid}, total messages received: {message_count}", flush=True)
                     _append_job_debug_event(job_id, "twilio_stream_stop", {"message_count": message_count})
                     break
+
+                elif event_type == "mark":
+                    mark_data = data.get("mark", {}) or {}
+                    mark_name = (mark_data.get("name") or "").strip()
+                    if mark_name:
+                        with state_lock:
+                            bridge_state["last_playback_mark_acked"] = mark_name
+                        print(f"Twilio playback mark acknowledged: {mark_name}", flush=True)
+                        _append_job_debug_event(job_id, "twilio_playback_mark_acked", {"mark_name": mark_name})
 
             print(f"Main Twilio loop exited normally after {message_count} messages", flush=True)
 
@@ -951,7 +973,47 @@ def _request_call_hangup_with_message(call_sid: Optional[str], message: str) -> 
         return False
 
 
-def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock, log_fn):
+def _send_twilio_playback_mark(
+    *,
+    twilio_ws,
+    stream_sid: Optional[str],
+    bridge_state,
+    state_lock,
+    log_fn,
+    source: str,
+) -> Optional[str]:
+    """Send a Twilio mark event to know when queued media has actually played."""
+    if not twilio_ws or not stream_sid:
+        return None
+    try:
+        with state_lock:
+            seq = int(bridge_state.get("playback_mark_seq", 0)) + 1
+            bridge_state["playback_mark_seq"] = seq
+            mark_name = f"assistant-playback-{seq}"
+            bridge_state["last_playback_mark_sent"] = mark_name
+        twilio_ws.send(
+            json.dumps(
+                {
+                    "event": "mark",
+                    "streamSid": stream_sid,
+                    "mark": {"name": mark_name},
+                }
+            )
+        )
+        log_fn(f"Sent Twilio playback mark: {mark_name} ({source})")
+        return mark_name
+    except Exception as exc:
+        log_fn(f"Failed to send Twilio playback mark ({source}): {type(exc).__name__}: {exc}")
+        return None
+
+
+def _handle_end_call_signal(
+    item: dict,
+    call_sid: str,
+    bridge_state,
+    state_lock,
+    log_fn,
+):
     """Detect end_call function invocation and trigger hangup once."""
     if (item or {}).get("type") != "function_call":
         return
@@ -968,7 +1030,6 @@ def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock,
         if bridge_state.get("end_call_requested"):
             return
         turn_count = int(bridge_state.get("next_transcript_turn_sequence", 1))
-        last_assistant_audio_done_ms = float(bridge_state.get("last_assistant_audio_done_ms", 0.0))
         end_call_min_turns = int(bridge_state.get("end_call_min_turns", 2))
 
     # Guardrail: ignore accidental early end_call tool invocations.
@@ -981,21 +1042,38 @@ def _handle_end_call_signal(item: dict, call_sid: str, bridge_state, state_lock,
     with state_lock:
         if bridge_state.get("end_call_requested"):
             return
-        bridge_state["end_call_requested"] = True
+        bridge_state["pending_end_call"] = True
 
     log_fn(f"end_call tool invoked with args: {args}")
-    min_grace_ms = 3000
+    wait_timeout_ms = 12000
     try:
-        configured_grace_ms, _, _ = get_number_config("voice_end_call_grace_ms", default=min_grace_ms)
-        min_grace_ms = max(0, int(configured_grace_ms))
+        configured_wait_timeout_ms, _, _ = get_number_config(
+            "voice_end_call_wait_for_playback_ms",
+            default=wait_timeout_ms,
+        )
+        wait_timeout_ms = max(1000, int(configured_wait_timeout_ms))
     except Exception:
         pass
-    now_ms = time.monotonic() * 1000.0
-    elapsed_since_audio_done_ms = now_ms - last_assistant_audio_done_ms if last_assistant_audio_done_ms > 0 else 0.0
-    remaining_wait_ms = max(0, min_grace_ms - int(elapsed_since_audio_done_ms))
-    if remaining_wait_ms > 0:
-        log_fn(f"Delaying hangup {remaining_wait_ms}ms so final assistant audio can finish playing")
-        time.sleep(remaining_wait_ms / 1000.0)
+
+    start_ms = time.monotonic() * 1000.0
+    while True:
+        with state_lock:
+            sent_mark = str(bridge_state.get("last_playback_mark_sent", "") or "")
+            acked_mark = str(bridge_state.get("last_playback_mark_acked", "") or "")
+        if sent_mark and sent_mark == acked_mark:
+            log_fn(f"Twilio playback ack received for {acked_mark}; ending call now")
+            break
+        elapsed_ms = (time.monotonic() * 1000.0) - start_ms
+        if elapsed_ms >= float(wait_timeout_ms):
+            log_fn(
+                "Timed out waiting for Twilio playback mark ack; "
+                f"proceeding with hangup after {int(elapsed_ms)}ms"
+            )
+            break
+        time.sleep(0.05)
+
+    with state_lock:
+        bridge_state["end_call_requested"] = True
     _request_call_hangup(call_sid)
 
 
@@ -1362,6 +1440,14 @@ def _handle_openai_responses(
                     # Response complete
                     metrics_service.record_response_complete(call_sid)
                     log(f"Response audio complete, sent {audio_chunks_sent} audio chunks total")
+                    _send_twilio_playback_mark(
+                        twilio_ws=twilio_ws,
+                        stream_sid=stream_sid,
+                        bridge_state=bridge_state,
+                        state_lock=state_lock,
+                        log_fn=log,
+                        source="openai_audio_done",
+                    )
                     first_audio_recorded = False  # Reset for next turn
                     should_resume_turn_detection = False
                     with state_lock:
@@ -1414,6 +1500,26 @@ def _handle_openai_responses(
                 elif event_type == "input_audio_buffer.committed":
                     log("Input audio buffer committed")
                     debug_event("input_audio_buffer_committed")
+                    now_ms = time.monotonic() * 1000.0
+                    with state_lock:
+                        overlap_guard_ms = int(bridge_state.get("overlap_guard_ms", 600))
+                        last_assistant_audio_done_ms = float(
+                            bridge_state.get("last_assistant_audio_done_ms", 0.0)
+                        )
+                        elapsed_since_assistant_done_ms = (
+                            now_ms - last_assistant_audio_done_ms
+                            if last_assistant_audio_done_ms > 0
+                            else 999999.0
+                        )
+                        if elapsed_since_assistant_done_ms < float(overlap_guard_ms):
+                            bridge_state["cancel_next_response_created"] = True
+                            debug_event(
+                                "marked_cancel_next_response_created",
+                                {
+                                    "elapsed_ms": int(elapsed_since_assistant_done_ms),
+                                    "guard_ms": int(overlap_guard_ms),
+                                },
+                            )
 
                 elif event_type == "input_audio_buffer.timeout_triggered":
                     log("Input audio buffer timeout triggered")
@@ -1434,6 +1540,7 @@ def _handle_openai_responses(
                     # Got transcript of user speech
                     transcript = data.get("transcript", "")
                     now_ms = time.monotonic() * 1000.0
+                    transcript_clean = (transcript or "").strip()
                     with state_lock:
                         low_signal_filter_enabled = bool(
                             bridge_state.get("low_signal_filter_enabled", True)
@@ -1444,8 +1551,13 @@ def _handle_openai_responses(
                             or {"yes", "no", "ok", "sure"}
                         )
                         overlap_guard_ms = int(bridge_state.get("overlap_guard_ms", 600))
+                        overlap_merge_window_ms = int(bridge_state.get("overlap_merge_window_ms", 6000))
                         last_assistant_audio_done_ms = float(
                             bridge_state.get("last_assistant_audio_done_ms", 0.0)
+                        )
+                        pending_overlap_text = str(bridge_state.get("pending_overlap_text", "") or "").strip()
+                        pending_overlap_captured_ms = float(
+                            bridge_state.get("pending_overlap_captured_ms", 0.0)
                         )
 
                     # Guard: ignore overlap speech captured immediately after assistant playback ends.
@@ -1456,6 +1568,15 @@ def _handle_openai_responses(
                         else 999999.0
                     )
                     if elapsed_since_assistant_done_ms < float(overlap_guard_ms):
+                        if transcript_clean:
+                            with state_lock:
+                                existing_pending = str(bridge_state.get("pending_overlap_text", "") or "").strip()
+                                bridge_state["pending_overlap_text"] = (
+                                    f"{existing_pending} {transcript_clean}".strip()
+                                    if existing_pending
+                                    else transcript_clean
+                                )
+                                bridge_state["pending_overlap_captured_ms"] = now_ms
                         log(
                             "Ignoring overlap transcript captured too soon after assistant audio: "
                             f"{elapsed_since_assistant_done_ms:.0f}ms < {overlap_guard_ms}ms"
@@ -1466,6 +1587,7 @@ def _handle_openai_responses(
                                 "text": (transcript or "")[:80],
                                 "elapsed_ms": int(elapsed_since_assistant_done_ms),
                                 "guard_ms": int(overlap_guard_ms),
+                                "buffered_text": bool(transcript_clean),
                             },
                         )
                         try:
@@ -1476,6 +1598,40 @@ def _handle_openai_responses(
                         with state_lock:
                             bridge_state["awaiting_response"] = False
                         continue
+
+                    # Merge overlap text captured during assistant playback with the first
+                    # normal transcript after playback, so model responds to one complete answer.
+                    if pending_overlap_text:
+                        pending_age_ms = (
+                            now_ms - pending_overlap_captured_ms
+                            if pending_overlap_captured_ms > 0
+                            else 999999.0
+                        )
+                        if transcript_clean and pending_age_ms <= float(overlap_merge_window_ms):
+                            transcript = f"{pending_overlap_text} {transcript_clean}".strip()
+                            transcript_clean = transcript
+                            with state_lock:
+                                bridge_state["pending_overlap_text"] = ""
+                                bridge_state["pending_overlap_captured_ms"] = 0.0
+                            debug_event(
+                                "merged_overlap_with_followup_transcript",
+                                {
+                                    "pending_age_ms": int(pending_age_ms),
+                                    "merge_window_ms": int(overlap_merge_window_ms),
+                                    "merged_text": transcript[:120],
+                                },
+                            )
+                        elif pending_age_ms > float(overlap_merge_window_ms):
+                            with state_lock:
+                                bridge_state["pending_overlap_text"] = ""
+                                bridge_state["pending_overlap_captured_ms"] = 0.0
+                            debug_event(
+                                "discarded_stale_pending_overlap_transcript",
+                                {
+                                    "pending_age_ms": int(pending_age_ms),
+                                    "merge_window_ms": int(overlap_merge_window_ms),
+                                },
+                            )
 
                     if low_signal_filter_enabled and _is_low_signal_user_transcript(
                         transcript,
@@ -1606,6 +1762,14 @@ def _handle_openai_responses(
                             metrics_service=metrics_service,
                             log_fn=log,
                         )
+                        _send_twilio_playback_mark(
+                            twilio_ws=twilio_ws,
+                            stream_sid=stream_sid,
+                            bridge_state=bridge_state,
+                            state_lock=state_lock,
+                            log_fn=log,
+                            source="elevenlabs_playback_done",
+                        )
                         should_resume_turn_detection = False
                         with state_lock:
                             bridge_state["last_assistant_audio_done_ms"] = time.monotonic() * 1000.0
@@ -1677,6 +1841,22 @@ def _handle_openai_responses(
 
                 elif event_type == "response.created":
                     debug_event("openai_response_created")
+                    should_cancel = False
+                    with state_lock:
+                        if bridge_state.get("cancel_next_response_created"):
+                            should_cancel = True
+                            bridge_state["cancel_next_response_created"] = False
+                    if should_cancel:
+                        log("Cancelling response.created due to overlap guard")
+                        debug_event("cancelled_response_created_for_overlap_guard")
+                        try:
+                            openai_ws.send(json.dumps({"type": "response.cancel"}))
+                        except Exception as cancel_err:
+                            log(f"Failed cancelling overlap-guard response: {type(cancel_err).__name__}: {cancel_err}")
+                        with state_lock:
+                            bridge_state["awaiting_response"] = False
+                            bridge_state["assistant_text_parts"] = []
+                        continue
                     with state_lock:
                         bridge_state["awaiting_response"] = True
                         bridge_state["assistant_text_parts"] = []
