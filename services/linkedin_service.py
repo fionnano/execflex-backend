@@ -218,15 +218,19 @@ def fetch_linkedin_profile(access_token: str) -> Dict[str, Any]:
 
     # Try to get additional data from /v2/me endpoint
     try:
+        print("🔍 Attempting to fetch /v2/me endpoint...")
         me_response = requests.get(
             "https://api.linkedin.com/v2/me",
             headers={"Authorization": f"Bearer {access_token}"}
         )
+        print(f"🔍 /v2/me response status: {me_response.status_code}")
         if me_response.status_code == 200:
             me_data = me_response.json()
             print(f"📥 LinkedIn /v2/me data: {json.dumps(me_data, indent=2)}")
             # Merge any useful fields
             userinfo["_me_data"] = me_data
+        else:
+            print(f"⚠️ /v2/me returned {me_response.status_code}: {me_response.text[:500]}")
     except Exception as e:
         print(f"⚠️ Could not fetch /v2/me: {e}")
 
