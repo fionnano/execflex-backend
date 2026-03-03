@@ -23,6 +23,8 @@ from services.realtime_voice_bridge import (
     mulaw_to_pcm16,
 )
 
+VOICE_MANUAL_VAD_FALLBACK_ENABLED = os.getenv("VOICE_MANUAL_VAD_FALLBACK", "0") == "1"
+
 def _append_job_debug_event(job_id: Optional[str], event_name: str, metadata: Optional[dict] = None):
     """Persist lightweight websocket lifecycle events to outbound_call_jobs.artifacts."""
     if not job_id:
@@ -206,6 +208,7 @@ def init_voice_websocket(sock: Sock):
                     _append_job_debug_event(job_id, "twilio_stream_start", {
                         "stream_sid": stream_sid,
                         "call_sid": call_sid,
+                        "manual_vad_fallback_enabled": VOICE_MANUAL_VAD_FALLBACK_ENABLED,
                     })
 
                     # Get call context from database
@@ -343,41 +346,42 @@ def init_voice_websocket(sock: Sock):
                                     flush=True,
                                 )
 
-                            # Deterministic fallback: if OpenAI VAD isn't emitting speech events,
-                            # use Twilio audio activity + silence gap to force commit/create.
-                            now_ms = time.monotonic() * 1000.0
-                            mulaw_audio = base64.b64decode(payload)
-                            pcm_8k = mulaw_to_pcm16(mulaw_audio)
-                            rms = _pcm16_rms(pcm_8k)
-                            voice_threshold = 1000.0
-                            silence_gap_ms = 1200.0
-                            trigger_cooldown_ms = 1500.0
+                            if VOICE_MANUAL_VAD_FALLBACK_ENABLED:
+                                # Deterministic fallback (opt-in): if OpenAI VAD isn't emitting speech events,
+                                # use Twilio audio activity + silence gap to force commit/create.
+                                now_ms = time.monotonic() * 1000.0
+                                mulaw_audio = base64.b64decode(payload)
+                                pcm_8k = mulaw_to_pcm16(mulaw_audio)
+                                rms = _pcm16_rms(pcm_8k)
+                                voice_threshold = 1000.0
+                                silence_gap_ms = 1200.0
+                                trigger_cooldown_ms = 1500.0
 
-                            with state_lock:
-                                greeting_completed = bridge_state["greeting_completed"]
-                                awaiting_response = bridge_state["awaiting_response"]
-                                saw_openai_speech_event = bridge_state["saw_openai_speech_event"]
-                                manual_vad_active = bridge_state["manual_vad_active"]
-                                manual_last_voice_ms = bridge_state["manual_last_voice_ms"]
-                                manual_last_trigger_ms = bridge_state["manual_last_trigger_ms"]
+                                with state_lock:
+                                    greeting_completed = bridge_state["greeting_completed"]
+                                    awaiting_response = bridge_state["awaiting_response"]
+                                    saw_openai_speech_event = bridge_state["saw_openai_speech_event"]
+                                    manual_vad_active = bridge_state["manual_vad_active"]
+                                    manual_last_voice_ms = bridge_state["manual_last_voice_ms"]
+                                    manual_last_trigger_ms = bridge_state["manual_last_trigger_ms"]
 
-                                if greeting_completed and not awaiting_response and not saw_openai_speech_event:
-                                    if rms >= voice_threshold:
-                                        bridge_state["manual_vad_active"] = True
-                                        bridge_state["manual_last_voice_ms"] = now_ms
-                                    elif manual_vad_active:
-                                        silence_elapsed = now_ms - manual_last_voice_ms
-                                        cooldown_elapsed = now_ms - manual_last_trigger_ms
-                                        if silence_elapsed >= silence_gap_ms and cooldown_elapsed >= trigger_cooldown_ms:
-                                            try:
-                                                openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-                                                openai_ws.send(json.dumps({"type": "response.create"}))
-                                                bridge_state["awaiting_response"] = True
-                                                bridge_state["manual_vad_active"] = False
-                                                bridge_state["manual_last_trigger_ms"] = now_ms
-                                                print("Deterministic fallback triggered: commit + response.create", flush=True)
-                                            except Exception as trigger_err:
-                                                print(f"Deterministic fallback trigger error: {trigger_err}", flush=True)
+                                    if greeting_completed and not awaiting_response and not saw_openai_speech_event:
+                                        if rms >= voice_threshold:
+                                            bridge_state["manual_vad_active"] = True
+                                            bridge_state["manual_last_voice_ms"] = now_ms
+                                        elif manual_vad_active:
+                                            silence_elapsed = now_ms - manual_last_voice_ms
+                                            cooldown_elapsed = now_ms - manual_last_trigger_ms
+                                            if silence_elapsed >= silence_gap_ms and cooldown_elapsed >= trigger_cooldown_ms:
+                                                try:
+                                                    openai_ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                                                    openai_ws.send(json.dumps({"type": "response.create"}))
+                                                    bridge_state["awaiting_response"] = True
+                                                    bridge_state["manual_vad_active"] = False
+                                                    bridge_state["manual_last_trigger_ms"] = now_ms
+                                                    print("Deterministic fallback triggered: commit + response.create", flush=True)
+                                                except Exception as trigger_err:
+                                                    print(f"Deterministic fallback trigger error: {trigger_err}", flush=True)
                         except Exception as e:
                             print(f"Error forwarding audio to OpenAI: {e}")
 
