@@ -140,12 +140,12 @@ def get_oauth_url(user_id: str, redirect_after: Optional[str] = None) -> Dict[st
 
     state = generate_oauth_state(user_id, redirect_after)
 
-    # LinkedIn OAuth scopes
+    # LinkedIn OAuth scopes (using OpenID Connect)
     # openid: required for userinfo endpoint
     # profile: basic profile info (name, picture)
     # email: email address
-    # r_profile_basicinfo: access to profile URL and more details (added to LinkedIn app)
-    scopes = "openid profile email r_profile_basicinfo"
+    # Note: Profile URL is not available through standard OAuth - users enter manually
+    scopes = "openid profile email"
 
     params = {
         "response_type": "code",
