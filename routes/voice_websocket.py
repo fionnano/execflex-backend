@@ -140,6 +140,11 @@ def init_voice_websocket(sock: Sock):
             "manual_last_voice_ms": 0.0,
             "manual_last_trigger_ms": 0.0,
             "end_call_requested": False,
+            "assistant_playback_active": False,
+            "assistant_playback_block_until_ms": 0.0,
+            "playback_input_cooldown_ms": 1200,
+            "playback_dropped_frames": 0,
+            "openai_turn_detection_muted": False,
             "next_transcript_turn_sequence": 1,
             "last_transcript_key": None,
             "use_elevenlabs_output": False,
@@ -312,6 +317,14 @@ def init_voice_websocket(sock: Sock):
                         bridge_state["assistant_text_parts"] = []
                         bridge_state["vad_config"] = _load_vad_config(job_id)
                         bridge_state["prompt_vars"] = prompt_vars
+                        playback_input_cooldown_ms, _, _ = get_number_config(
+                            "voice_playback_input_cooldown_ms",
+                            default=1200,
+                        )
+                        bridge_state["playback_input_cooldown_ms"] = max(
+                            0,
+                            int(playback_input_cooldown_ms),
+                        )
 
                     # Connect to OpenAI Realtime API
                     try:
@@ -330,7 +343,7 @@ def init_voice_websocket(sock: Sock):
                             # Start background thread to handle OpenAI responses
                             response_thread = threading.Thread(
                                 target=_handle_openai_responses,
-                                args=(openai_ws, ws, stream_sid, call_sid, interaction_id, metrics_service, bridge_state, state_lock),
+                                args=(openai_ws, ws, stream_sid, call_sid, interaction_id, metrics_service, bridge_state, state_lock, job_id),
                                 daemon=True
                             )
                             response_thread.start()
@@ -360,6 +373,23 @@ def init_voice_websocket(sock: Sock):
 
                     if payload and openai_ws:
                         try:
+                            now_ms = time.monotonic() * 1000.0
+                            with state_lock:
+                                assistant_playback_active = bool(
+                                    bridge_state.get("assistant_playback_active")
+                                )
+                                assistant_playback_block_until_ms = float(
+                                    bridge_state.get("assistant_playback_block_until_ms", 0.0)
+                                )
+                            if assistant_playback_active or now_ms < assistant_playback_block_until_ms:
+                                # Ignore caller audio while assistant audio is playing (and for a brief tail cooldown)
+                                # to prevent immediate follow-up responses from overlap acknowledgments.
+                                with state_lock:
+                                    bridge_state["playback_dropped_frames"] = int(
+                                        bridge_state.get("playback_dropped_frames", 0)
+                                    ) + 1
+                                continue
+
                             # Forward Twilio μ-law payload directly to OpenAI.
                             # Session is configured with audio/pcmu input format.
                             audio_event = {
@@ -377,7 +407,6 @@ def init_voice_websocket(sock: Sock):
                             if VOICE_MANUAL_VAD_FALLBACK_ENABLED:
                                 # Deterministic fallback (opt-in): if OpenAI VAD isn't emitting speech events,
                                 # use Twilio audio activity + silence gap to force commit/create.
-                                now_ms = time.monotonic() * 1000.0
                                 mulaw_audio = base64.b64decode(payload)
                                 pcm_8k = mulaw_to_pcm16(mulaw_audio)
                                 rms = _pcm16_rms(pcm_8k)
@@ -745,6 +774,45 @@ def _enable_post_greeting_barge_in(openai_ws, vad_config: Optional[dict] = None)
     openai_ws.send(json.dumps(update_event))
 
 
+def _set_turn_detection_mode(
+    openai_ws,
+    *,
+    vad_config: Optional[dict] = None,
+    create_response: bool,
+    interrupt_response: bool,
+):
+    """Update OpenAI turn detection flags for playback gating."""
+    base_vad = vad_config or {
+        "type": "server_vad",
+        "threshold": 0.5,
+        "prefix_padding_ms": 300,
+        "silence_duration_ms": 900,
+        "idle_timeout_ms": 8000,
+        "create_response": True,
+        "interrupt_response": True,
+    }
+    effective_vad = dict(base_vad)
+    effective_vad["create_response"] = bool(create_response)
+    effective_vad["interrupt_response"] = bool(interrupt_response)
+    update_event = {
+        "type": "session.update",
+        "session": {
+            "type": "realtime",
+            "audio": {
+                "input": {
+                    "turn_detection": effective_vad
+                }
+            },
+        },
+    }
+    openai_ws.send(json.dumps(update_event))
+
+
+def _clear_input_audio_buffer(openai_ws):
+    """Clear any pending user audio currently buffered in OpenAI."""
+    openai_ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
+
+
 def _pcm16_rms(pcm16_data: bytes) -> float:
     """Compute RMS for PCM16 mono bytes."""
     if not pcm16_data:
@@ -1053,7 +1121,17 @@ def _store_transcript_turn(interaction_id: Optional[str], speaker: str, text: st
     log_fn(f"Transcript captured [{speaker} #{turn_sequence}]: {clean_text}")
 
 
-def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: str, interaction_id: Optional[str], metrics_service, bridge_state, state_lock):
+def _handle_openai_responses(
+    openai_ws,
+    twilio_ws,
+    stream_sid: str,
+    call_sid: str,
+    interaction_id: Optional[str],
+    metrics_service,
+    bridge_state,
+    state_lock,
+    job_id: Optional[str] = None,
+):
     """Handle responses from OpenAI in a background thread."""
     import sys
     import websocket
@@ -1078,7 +1156,11 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
         except Exception:
             pass
 
+    def debug_event(event_name: str, metadata: Optional[dict] = None):
+        _append_job_debug_event(job_id, event_name, metadata or {})
+
     log(f"OpenAI response handler started for call {call_sid}")
+    debug_event("openai_response_handler_started", {"call_sid": call_sid})
     first_audio_recorded = False
     message_count = 0
     audio_chunks_sent = 0
@@ -1129,6 +1211,27 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     # Streaming audio from OpenAI
                     audio_b64 = data.get("delta", "")
                     if audio_b64:
+                        should_pause_turn_detection = False
+                        with state_lock:
+                            if not bridge_state.get("openai_turn_detection_muted"):
+                                bridge_state["openai_turn_detection_muted"] = True
+                                should_pause_turn_detection = True
+                        if should_pause_turn_detection:
+                            try:
+                                _set_turn_detection_mode(
+                                    openai_ws,
+                                    vad_config=bridge_state.get("vad_config"),
+                                    create_response=False,
+                                    interrupt_response=False,
+                                )
+                                _clear_input_audio_buffer(openai_ws)
+                                log("Paused OpenAI auto turn detection during assistant playback")
+                                debug_event("turn_detection_paused", {"source": "openai_audio_delta"})
+                            except Exception as e:
+                                log(f"Failed to pause turn detection: {type(e).__name__}: {e}")
+
+                        with state_lock:
+                            bridge_state["assistant_playback_active"] = True
                         # Record first audio timing
                         if not first_audio_recorded:
                             metrics_service.record_first_audio(call_sid)
@@ -1160,6 +1263,38 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     metrics_service.record_response_complete(call_sid)
                     log(f"Response audio complete, sent {audio_chunks_sent} audio chunks total")
                     first_audio_recorded = False  # Reset for next turn
+                    should_resume_turn_detection = False
+                    with state_lock:
+                        bridge_state["assistant_playback_active"] = False
+                        bridge_state["assistant_playback_block_until_ms"] = (
+                            time.monotonic() * 1000.0
+                            + float(bridge_state.get("playback_input_cooldown_ms", 1200))
+                        )
+                        dropped_frames = int(bridge_state.get("playback_dropped_frames", 0))
+                        bridge_state["playback_dropped_frames"] = 0
+                        if bridge_state.get("openai_turn_detection_muted"):
+                            bridge_state["openai_turn_detection_muted"] = False
+                            should_resume_turn_detection = True
+                    debug_event(
+                        "assistant_playback_window_closed",
+                        {
+                            "source": "openai_audio_done",
+                            "dropped_twilio_frames": dropped_frames,
+                            "cooldown_ms": int(bridge_state.get("playback_input_cooldown_ms", 1200)),
+                        },
+                    )
+                    if should_resume_turn_detection:
+                        try:
+                            _set_turn_detection_mode(
+                                openai_ws,
+                                vad_config=bridge_state.get("vad_config"),
+                                create_response=True,
+                                interrupt_response=True,
+                            )
+                            log("Resumed OpenAI auto turn detection after assistant playback")
+                            debug_event("turn_detection_resumed", {"source": "openai_audio_done"})
+                        except Exception as e:
+                            log(f"Failed to resume turn detection: {type(e).__name__}: {e}")
 
                 elif event_type == "input_audio_buffer.speech_stopped":
                     # User stopped speaking - record timing
@@ -1167,14 +1302,17 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     log("User stopped speaking")
                     with state_lock:
                         bridge_state["saw_openai_speech_event"] = True
+                    debug_event("input_audio_speech_stopped")
 
                 elif event_type == "input_audio_buffer.speech_started":
                     log("User started speaking")
                     with state_lock:
                         bridge_state["saw_openai_speech_event"] = True
+                    debug_event("input_audio_speech_started")
 
                 elif event_type == "input_audio_buffer.committed":
                     log("Input audio buffer committed")
+                    debug_event("input_audio_buffer_committed")
 
                 elif event_type == "conversation.item.created":
                     item = data.get("item", {}) or {}
@@ -1228,6 +1366,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                     exit_reason = f"openai_error: {error.get('type', 'unknown')}"
 
                 elif event_type == "response.done":
+                    debug_event("openai_response_done")
                     response = data.get("response", {}) or {}
                     fallback_assistant_text = ""
                     for output_item in response.get("output", []) or []:
@@ -1270,6 +1409,26 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                                 state_lock=state_lock,
                                 log_fn=log,
                             )
+                        should_pause_turn_detection = False
+                        with state_lock:
+                            if not bridge_state.get("openai_turn_detection_muted"):
+                                bridge_state["openai_turn_detection_muted"] = True
+                                should_pause_turn_detection = True
+                        if should_pause_turn_detection:
+                            try:
+                                _set_turn_detection_mode(
+                                    openai_ws,
+                                    vad_config=bridge_state.get("vad_config"),
+                                    create_response=False,
+                                    interrupt_response=False,
+                                )
+                                _clear_input_audio_buffer(openai_ws)
+                                log("Paused OpenAI auto turn detection during ElevenLabs playback")
+                                debug_event("turn_detection_paused", {"source": "elevenlabs_playback"})
+                            except Exception as e:
+                                log(f"Failed to pause turn detection: {type(e).__name__}: {e}")
+                        with state_lock:
+                            bridge_state["assistant_playback_active"] = True
                         ok = _stream_text_via_elevenlabs_to_twilio(
                             text=assistant_text,
                             twilio_ws=twilio_ws,
@@ -1278,6 +1437,38 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                             metrics_service=metrics_service,
                             log_fn=log,
                         )
+                        should_resume_turn_detection = False
+                        with state_lock:
+                            bridge_state["assistant_playback_active"] = False
+                            bridge_state["assistant_playback_block_until_ms"] = (
+                                time.monotonic() * 1000.0
+                                + float(bridge_state.get("playback_input_cooldown_ms", 1200))
+                            )
+                            dropped_frames = int(bridge_state.get("playback_dropped_frames", 0))
+                            bridge_state["playback_dropped_frames"] = 0
+                            if bridge_state.get("openai_turn_detection_muted"):
+                                bridge_state["openai_turn_detection_muted"] = False
+                                should_resume_turn_detection = True
+                        debug_event(
+                            "assistant_playback_window_closed",
+                            {
+                                "source": "elevenlabs_playback",
+                                "dropped_twilio_frames": dropped_frames,
+                                "cooldown_ms": int(bridge_state.get("playback_input_cooldown_ms", 1200)),
+                            },
+                        )
+                        if should_resume_turn_detection:
+                            try:
+                                _set_turn_detection_mode(
+                                    openai_ws,
+                                    vad_config=bridge_state.get("vad_config"),
+                                    create_response=True,
+                                    interrupt_response=True,
+                                )
+                                log("Resumed OpenAI auto turn detection after ElevenLabs playback")
+                                debug_event("turn_detection_resumed", {"source": "elevenlabs_playback"})
+                            except Exception as e:
+                                log(f"Failed to resume turn detection: {type(e).__name__}: {e}")
                         if not ok:
                             switched = _fallback_to_openai_audio_mode(
                                 openai_ws=openai_ws,
@@ -1315,6 +1506,7 @@ def _handle_openai_responses(openai_ws, twilio_ws, stream_sid: str, call_sid: st
                             log(f"Failed to enable post-greeting barge-in mode: {type(e).__name__}: {e}")
 
                 elif event_type == "response.created":
+                    debug_event("openai_response_created")
                     with state_lock:
                         bridge_state["awaiting_response"] = True
                         bridge_state["assistant_text_parts"] = []
