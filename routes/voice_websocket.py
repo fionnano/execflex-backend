@@ -304,8 +304,14 @@ def init_voice_websocket(sock: Sock):
 
                     use_elevenlabs_output = False
                     enabled, _, _ = get_bool_config("elevenlabs_output_enabled", default=False)
+                    preflight_timeout_ms, _, _ = get_number_config(
+                        "voice_elevenlabs_preflight_timeout_ms",
+                        default=350,
+                    )
                     if enabled:
-                        use_elevenlabs_output = _preflight_elevenlabs_ws(timeout_ms=1000)
+                        use_elevenlabs_output = _preflight_elevenlabs_ws(
+                            timeout_ms=max(100, int(preflight_timeout_ms))
+                        )
                         if not use_elevenlabs_output:
                             print("ElevenLabs preflight failed, pinning call to OpenAI audio output", flush=True)
                     _append_job_debug_event(job_id, "voice_routing_selected", {
