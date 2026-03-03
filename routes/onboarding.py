@@ -866,6 +866,88 @@ def list_users():
         # Get all filtered user IDs to fetch roles
         filtered_user_ids = [user["id"] for user in filtered_auth_users]
         
+        # Fetch profile names for filtered users
+        names_map = {}
+        if filtered_user_ids:
+            try:
+                profiles_result = supabase_client.table("people_profiles")\
+                    .select("user_id, first_name, last_name")\
+                    .in_("user_id", filtered_user_ids)\
+                    .execute()
+
+                for profile in (profiles_result.data or []):
+                    user_id = profile.get("user_id")
+                    first_name = (profile.get("first_name") or "").strip()
+                    last_name = (profile.get("last_name") or "").strip()
+                    full_name = f"{first_name} {last_name}".strip()
+                    if user_id and full_name:
+                        names_map[user_id] = full_name
+            except AttributeError:
+                # Fallback: query individually
+                for user_id in filtered_user_ids:
+                    try:
+                        profile_result = supabase_client.table("people_profiles")\
+                            .select("first_name, last_name")\
+                            .eq("user_id", user_id)\
+                            .limit(1)\
+                            .execute()
+                        if profile_result.data:
+                            profile = profile_result.data[0] or {}
+                            first_name = (profile.get("first_name") or "").strip()
+                            last_name = (profile.get("last_name") or "").strip()
+                            full_name = f"{first_name} {last_name}".strip()
+                            if full_name:
+                                names_map[user_id] = full_name
+                    except Exception:
+                        continue
+
+        # Fetch phone identities as fallback when auth.users phone is missing
+        phone_map = {}
+        if filtered_user_ids:
+            channel_priority = {"voice": 0, "sms": 1, "whatsapp": 2}
+            try:
+                identities_result = supabase_client.table("channel_identities")\
+                    .select("user_id, channel, value")\
+                    .in_("user_id", filtered_user_ids)\
+                    .in_("channel", ["voice", "sms", "whatsapp"])\
+                    .execute()
+
+                for identity in (identities_result.data or []):
+                    user_id = identity.get("user_id")
+                    channel = (identity.get("channel") or "").strip().lower()
+                    value = (identity.get("value") or "").strip()
+                    if not user_id or not value:
+                        continue
+                    current = phone_map.get(user_id)
+                    current_priority = channel_priority.get(current["channel"], 999) if current else 999
+                    this_priority = channel_priority.get(channel, 999)
+                    if not current or this_priority < current_priority:
+                        phone_map[user_id] = {"channel": channel, "value": value}
+            except AttributeError:
+                # Fallback: query individually
+                for user_id in filtered_user_ids:
+                    try:
+                        identities_result = supabase_client.table("channel_identities")\
+                            .select("channel, value")\
+                            .eq("user_id", user_id)\
+                            .in_("channel", ["voice", "sms", "whatsapp"])\
+                            .execute()
+                        best_identity = None
+                        best_priority = 999
+                        for identity in (identities_result.data or []):
+                            channel = (identity.get("channel") or "").strip().lower()
+                            value = (identity.get("value") or "").strip()
+                            if not value:
+                                continue
+                            this_priority = channel_priority.get(channel, 999)
+                            if this_priority < best_priority:
+                                best_identity = value
+                                best_priority = this_priority
+                        if best_identity:
+                            phone_map[user_id] = {"channel": "fallback", "value": best_identity}
+                    except Exception:
+                        continue
+
         # Fetch roles for filtered users
         roles_map = {}
         if filtered_user_ids:
@@ -891,6 +973,35 @@ def list_users():
                             .execute()
                         if role_result.data:
                             roles_map[user_id] = [r["role"] for r in role_result.data]
+                    except Exception:
+                        continue
+
+        # Fetch LinkedIn auth status for filtered users
+        linkedin_connected_map = {}
+        if filtered_user_ids:
+            try:
+                linkedin_result = supabase_client.table("linkedin_connections")\
+                    .select("user_id, status")\
+                    .in_("user_id", filtered_user_ids)\
+                    .execute()
+
+                for row in (linkedin_result.data or []):
+                    user_id = row.get("user_id")
+                    status = (row.get("status") or "").strip().lower()
+                    if user_id:
+                        linkedin_connected_map[user_id] = status == "active"
+            except AttributeError:
+                # Fallback: query individually
+                for user_id in filtered_user_ids:
+                    try:
+                        linkedin_result = supabase_client.table("linkedin_connections")\
+                            .select("status")\
+                            .eq("user_id", user_id)\
+                            .limit(1)\
+                            .execute()
+                        if linkedin_result.data:
+                            status = (linkedin_result.data[0].get("status") or "").strip().lower()
+                            linkedin_connected_map[user_id] = status == "active"
                     except Exception:
                         continue
 
@@ -932,6 +1043,20 @@ def list_users():
         for auth_user in filtered_auth_users:
             user_id = auth_user["id"]
             roles = roles_map.get(user_id, []) or []
+            metadata = auth_user.get("user_metadata") or {}
+            metadata_full_name = (
+                metadata.get("full_name")
+                or " ".join(
+                    part for part in [metadata.get("first_name"), metadata.get("last_name")] if part
+                ).strip()
+            )
+            email = auth_user.get("email")
+            display_name = (
+                names_map.get(user_id)
+                or (metadata_full_name if isinstance(metadata_full_name, str) and metadata_full_name.strip() else None)
+                or (email.split("@")[0] if isinstance(email, str) and "@" in email else None)
+            )
+            phone = auth_user.get("phone") or (phone_map.get(user_id) or {}).get("value")
             # Fallback to role_assignments if user_preferences missing
             fallback_mode = None
             if "hirer" in roles:
@@ -940,11 +1065,13 @@ def list_users():
                 fallback_mode = "talent"
             users.append({
                 "id": user_id,
-                "email": auth_user.get("email"),
-                "phone": auth_user.get("phone"),
+                "name": display_name,
+                "email": email,
+                "phone": phone,
                 "created_at": auth_user.get("created_at"),
                 "last_sign_in_at": auth_user.get("last_sign_in_at"),
                 "roles": roles,
+                "linkedin_connected": linkedin_connected_map.get(user_id, False),
                 "user_mode": modes_map.get(user_id) or fallback_mode
             })
         
