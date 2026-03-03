@@ -205,6 +205,7 @@ def fetch_linkedin_profile(access_token: str) -> Dict[str, Any]:
     Returns:
         Dict with profile data
     """
+    # First, get basic userinfo
     response = requests.get(
         LINKEDIN_USERINFO_URL,
         headers={"Authorization": f"Bearer {access_token}"}
@@ -213,7 +214,23 @@ def fetch_linkedin_profile(access_token: str) -> Dict[str, Any]:
     if response.status_code != 200:
         raise Exception(f"Failed to fetch LinkedIn profile: {response.status_code}")
 
-    return response.json()
+    userinfo = response.json()
+
+    # Try to get additional data from /v2/me endpoint
+    try:
+        me_response = requests.get(
+            "https://api.linkedin.com/v2/me",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        if me_response.status_code == 200:
+            me_data = me_response.json()
+            print(f"📥 LinkedIn /v2/me data: {json.dumps(me_data, indent=2)}")
+            # Merge any useful fields
+            userinfo["_me_data"] = me_data
+    except Exception as e:
+        print(f"⚠️ Could not fetch /v2/me: {e}")
+
+    return userinfo
 
 
 def map_linkedin_to_profile(linkedin_data: Dict[str, Any]) -> Dict[str, Any]:
