@@ -141,14 +141,12 @@ def init_cara_websocket(sock: Sock):
             print(f"[Cara] Failed to send session config: {e}", flush=True)
 
         # ── Send greeting ─────────────────────────────────────────────────────
+        # No `instructions` override — Cara follows her system prompt directly.
+        # This lets training sessions open differently from HR advisory sessions.
         greeting_request = {
             "type": "response.create",
             "response": {
                 "modalities": ["audio", "text"],
-                "instructions": (
-                    "Greet the user warmly and briefly, exactly as described in your system prompt. "
-                    "Keep it to one or two sentences."
-                ),
             },
         }
         try:
