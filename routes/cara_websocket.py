@@ -146,9 +146,8 @@ def init_cara_websocket(sock: Sock):
             "response": {
                 "modalities": ["audio", "text"],
                 "instructions": (
-                    "Greet the user warmly and briefly. "
-                    "Say something like: 'Hi, I'm Cara, your HR advisor. What can I help you with today?' "
-                    "Keep it to one sentence."
+                    "Greet the user warmly and briefly, exactly as described in your system prompt. "
+                    "Keep it to one or two sentences."
                 ),
             },
         }
