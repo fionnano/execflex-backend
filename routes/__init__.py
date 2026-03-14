@@ -15,3 +15,6 @@ screening_bp = Blueprint('screening', __name__, url_prefix='/screening')
 # Import route handlers to register them
 from routes import health, matching, roles, introductions, voice, onboarding, screening  # noqa
 
+# Cara voice session blueprint (created in cara_voice.py)
+from routes.cara_voice import cara_bp  # noqa
+

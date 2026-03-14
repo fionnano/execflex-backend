@@ -26,7 +26,8 @@ from routes import (
     introductions_bp,
     voice_bp,
     onboarding_bp,
-    screening_bp
+    screening_bp,
+    cara_bp,
 )
 
 # Validate configuration
@@ -63,14 +64,19 @@ app.register_blueprint(introductions_bp)
 app.register_blueprint(voice_bp)
 app.register_blueprint(onboarding_bp)
 app.register_blueprint(screening_bp)
+app.register_blueprint(cara_bp)
 
 # Alias: POST /screen_candidate → same handler as POST /screening
 from routes.screening import screen_candidate as _screen_candidate_handler
 app.add_url_rule("/screen_candidate", "screen_candidate_alias", _screen_candidate_handler, methods=["POST"])
 
-# Initialize WebSocket routes for realtime voice streaming
+# Initialize WebSocket routes for realtime voice streaming (Twilio/Ai-dan)
 from routes.voice_websocket import init_voice_websocket
 init_voice_websocket(sock)
+
+# Initialize Cara real-time voice WebSocket routes
+from routes.cara_websocket import init_cara_websocket
+init_cara_websocket(sock)
 
 # Rate limiting can be applied to specific endpoints here if needed
 
