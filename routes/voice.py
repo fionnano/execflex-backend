@@ -377,6 +377,17 @@ def voice_status():
             except Exception as interaction_exc:
                 print(f"⚠️ Failed to finalize interaction {interaction_id}: {interaction_exc}")
         
+        # Trigger scoring for completed screening calls
+        if call_status == "completed" and interaction_id:
+            job_artifacts = job.get("artifacts", {}) or {}
+            if job_artifacts.get("call_type") == "screening":
+                try:
+                    from services.screening_service import score_screening_call_async
+                    score_screening_call_async(interaction_id, job_id)
+                    print(f"✅ Screening scoring queued: interaction_id={interaction_id}, job_id={job_id}")
+                except Exception as scoring_exc:
+                    print(f"⚠️ Could not queue screening scoring: {scoring_exc}")
+
         print(f"✅ Updated call status: job_id={job_id}, call_sid={call_sid}, status={call_status}")
         return Response("OK", status=200), 200
 

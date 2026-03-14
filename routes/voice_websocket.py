@@ -293,6 +293,8 @@ def init_voice_websocket(sock: Sock):
                                 interaction_id = job.get("interaction_id")
                                 artifacts = job.get("artifacts", {}) or {}
                                 signup_mode = artifacts.get("signup_mode")
+                                call_type = artifacts.get("call_type", "qualification")
+                                screening_context = artifacts.get("screening_context")
                                 prompt_vars = {}
                                 user_name = None
                                 first_name = None
@@ -376,6 +378,8 @@ def init_voice_websocket(sock: Sock):
                         bridge_state["assistant_text_parts"] = []
                         bridge_state["vad_config"] = _load_vad_config(job_id)
                         bridge_state["prompt_vars"] = prompt_vars
+                        bridge_state["call_type"] = call_type if job_id else "qualification"
+                        bridge_state["screening_context"] = screening_context if job_id else None
                         playback_input_cooldown_ms, _, _ = get_number_config(
                             "voice_playback_input_cooldown_ms",
                             default=0,
@@ -433,6 +437,8 @@ def init_voice_websocket(sock: Sock):
                             job_id=job_id,
                             vad_config=bridge_state.get("vad_config"),
                             prompt_vars=bridge_state.get("prompt_vars"),
+                            call_type=bridge_state.get("call_type", "qualification"),
+                            screening_context=bridge_state.get("screening_context"),
                         )
                         if openai_ws:
                             _append_job_debug_event(job_id, "openai_connect_success")
@@ -607,6 +613,8 @@ def _connect_openai_sync(
     job_id: Optional[str] = None,
     vad_config: Optional[dict] = None,
     prompt_vars: Optional[dict] = None,
+    call_type: Optional[str] = None,
+    screening_context: Optional[dict] = None,
 ):
     """Connect to OpenAI Realtime API (synchronous wrapper)."""
     import os
@@ -698,7 +706,12 @@ def _connect_openai_sync(
             return None
 
         # Now configure the session
-        system_prompt = _get_system_prompt(signup_mode, prompt_vars)
+        system_prompt = _get_system_prompt(
+            signup_mode,
+            prompt_vars=prompt_vars,
+            call_type=call_type,
+            screening_context=screening_context,
+        )
         session_config = {
             "type": "session.update",
             "session": {
@@ -818,8 +831,83 @@ IMPORTANT RULES:
 - Use Labelling of the potential emption, if they express an opinion or feeling. e.g. 'That sounds like it was exciting!'"""
 
 
-def _get_system_prompt(signup_mode: Optional[str], prompt_vars: Optional[dict] = None) -> str:
-    """Get the system prompt for the qualification call."""
+def _get_system_prompt(
+    signup_mode: Optional[str],
+    prompt_vars: Optional[dict] = None,
+    call_type: Optional[str] = None,
+    screening_context: Optional[dict] = None,
+) -> str:
+    """Get the system prompt for the call (qualification or screening)."""
+
+    # -----------------------------------------------------------------------
+    # Screening prompt
+    # -----------------------------------------------------------------------
+    if call_type == "screening" and screening_context:
+        ctx = screening_context or {}
+        candidate_name = ctx.get("candidate_name", "the candidate")
+        role_title = ctx.get("role_title", "the role")
+        company_name = ctx.get("company_name", "the company")
+        questions = ctx.get("questions", [])
+
+        # Load overrideable screening prompt from platform_config
+        default_screening_system = (
+            "CONVERSATION STYLE:\n"
+            "- Be professional, warm, and natural — like a senior recruiter on the phone\n"
+            "- Ask ONE question at a time; wait for the full answer before continuing\n"
+            "- Keep each spoken turn under 30 seconds (about 60-80 words max)\n"
+            "- If an answer is unclear, ask ONE brief follow-up for clarity\n"
+            "- Do not repeat questions already answered\n"
+            "- Do not read out question numbers or labels — ask naturally\n\n"
+            "CALL FLOW:\n"
+            "1. Introduce yourself and confirm the candidate has a few minutes\n"
+            "2. Work through each screening question in order\n"
+            "3. After each answer, acknowledge briefly before moving on\n"
+            "4. When all questions are covered, thank the candidate and explain next steps\n"
+            "5. Close the call professionally and call the end_call tool\n\n"
+            "IMPORTANT RULES:\n"
+            "- Never mention scores, weights, or that you are AI scoring\n"
+            "- If the candidate wants to end early, thank them and close\n"
+            "- Keep the tone encouraging and respectful throughout\n"
+            "- When the call is clearly over, call end_call exactly once"
+        )
+        screening_system, _, _ = get_string_config("screening_interview", default_screening_system)
+
+        # Build numbered question list for context
+        q_lines = []
+        for i, q in enumerate(questions, 1):
+            if isinstance(q, dict):
+                q_text = q.get("question", "")
+                competency = q.get("competency", "")
+                line = f"{i}. {q_text}"
+                if competency:
+                    line += f" [assessing: {competency}]"
+            else:
+                line = f"{i}. {q}"
+            q_lines.append(line)
+        questions_block = "\n".join(q_lines) if q_lines else "(no questions provided)"
+
+        first_name = candidate_name.split()[0] if candidate_name else "there"
+        greeting = (
+            f"Hi, is that {candidate_name}? Great — this is Ai-dan calling from {company_name} "
+            f"regarding the {role_title} position. Have you got five minutes for a quick chat?"
+        )
+
+        return f"""You are Ai-dan, a professional voice recruiter calling on behalf of {company_name}.
+
+You are conducting a structured screening interview with {candidate_name} for the {role_title} role.
+
+IMPORTANT: Start the conversation IMMEDIATELY by saying: "{greeting}"
+IMPORTANT: For your first spoken turn only, keep your total response under 30 words.
+
+SCREENING QUESTIONS TO COVER (in order):
+{questions_block}
+
+{screening_system}
+"""
+
+    # -----------------------------------------------------------------------
+    # Qualification prompt (existing behaviour — unchanged)
+    # -----------------------------------------------------------------------
     talent_greeting, _, _ = get_string_config("voice_prompt_talent_greeting", DEFAULT_TALENT_GREETING)
     company_greeting, _, _ = get_string_config("voice_prompt_company_greeting", DEFAULT_COMPANY_GREETING)
     fallback_greeting, _, _ = get_string_config("voice_prompt_fallback_greeting", DEFAULT_FALLBACK_GREETING)

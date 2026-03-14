@@ -10,7 +10,8 @@ roles_bp = Blueprint('roles', __name__)
 introductions_bp = Blueprint('introductions', __name__)
 voice_bp = Blueprint('voice', __name__, url_prefix='/voice')
 onboarding_bp = Blueprint('onboarding', __name__, url_prefix='/onboarding')
+screening_bp = Blueprint('screening', __name__, url_prefix='/screening')
 
 # Import route handlers to register them
-from routes import health, matching, roles, introductions, voice, onboarding  # noqa
+from routes import health, matching, roles, introductions, voice, onboarding, screening  # noqa
 

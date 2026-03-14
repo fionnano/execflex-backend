@@ -25,7 +25,8 @@ from routes import (
     roles_bp,
     introductions_bp,
     voice_bp,
-    onboarding_bp
+    onboarding_bp,
+    screening_bp
 )
 
 # Validate configuration
@@ -61,6 +62,11 @@ app.register_blueprint(roles_bp)
 app.register_blueprint(introductions_bp)
 app.register_blueprint(voice_bp)
 app.register_blueprint(onboarding_bp)
+app.register_blueprint(screening_bp)
+
+# Alias: POST /screen_candidate → same handler as POST /screening
+from routes.screening import screen_candidate as _screen_candidate_handler
+app.add_url_rule("/screen_candidate", "screen_candidate_alias", _screen_candidate_handler, methods=["POST"])
 
 # Initialize WebSocket routes for realtime voice streaming
 from routes.voice_websocket import init_voice_websocket
