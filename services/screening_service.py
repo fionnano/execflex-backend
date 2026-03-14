@@ -41,19 +41,11 @@ def create_screening_job(
     if not phone.startswith("+"):
         phone = "+" + phone.replace(" ", "").replace("-", "")
 
-    # Thread
-    thread_resp = supabase_client.table("threads").insert({
-        "subject": f"Screening: {candidate_name} for {role_title}",
-        "status": "open",
-        "active": True,
-        "created_at": now_iso,
-        "updated_at": now_iso,
-    }).execute()
-    thread_id = thread_resp.data[0]["id"] if thread_resp.data else None
+    # Screening calls have no platform user — skip thread creation
+    thread_id = None
 
     # Interaction
     interaction_resp = supabase_client.table("interactions").insert({
-        "thread_id": thread_id,
         "channel": "voice",
         "direction": "outbound",
         "provider": "twilio",
