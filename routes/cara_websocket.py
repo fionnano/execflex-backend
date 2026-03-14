@@ -65,6 +65,8 @@ def init_cara_websocket(sock: Sock):
         stop_event = threading.Event()
         transcript_turns: List[Dict[str, str]] = []
         openai_ws_ref: List[Optional[Any]] = [None]
+        # Lock for thread-safe sends to OpenAI (main loop + background thread both send)
+        openai_send_lock = threading.Lock()
 
         # ── Connect to OpenAI Realtime API ───────────────────────────────────
         model = os.getenv("OPENAI_REALTIME_MODEL", _OPENAI_REALTIME_MODEL_DEFAULT)
@@ -126,7 +128,7 @@ def init_cara_websocket(sock: Sock):
                     "create_response": True,
                 },
                 "temperature": 0.8,
-                "max_response_output_tokens": 300,
+                "max_response_output_tokens": 800,
             },
         }
         try:
@@ -153,6 +155,7 @@ def init_cara_websocket(sock: Sock):
 
         # ── OpenAI → Browser thread ───────────────────────────────────────────
         current_assistant_text: List[str] = []
+        response_active: List[bool] = [False]  # True while Cara is generating audio
 
         def openai_to_browser():
             nonlocal current_assistant_text
@@ -167,6 +170,16 @@ def init_cara_websocket(sock: Sock):
                     if event_type == "response.audio.delta":
                         audio_b64 = data.get("delta", "")
                         if audio_b64:
+                            # On first audio chunk of each response, clear the input
+                            # buffer so any residual user audio can't trigger the VAD
+                            # and interrupt Cara mid-sentence.
+                            if not response_active[0]:
+                                response_active[0] = True
+                                try:
+                                    with openai_send_lock:
+                                        openai_ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
+                                except Exception:
+                                    pass
                             if not _safe_send(ws, {"type": "audio", "data": audio_b64}):
                                 break
 
@@ -179,6 +192,7 @@ def init_cara_websocket(sock: Sock):
                     elif event_type == "response.audio_transcript.done":
                         text = "".join(current_assistant_text).strip()
                         current_assistant_text = []
+                        response_active[0] = False
                         if text:
                             transcript_turns.append({"role": "assistant", "text": text})
                             _safe_send(ws, {"type": "transcript_done", "role": "assistant", "text": text})
@@ -240,10 +254,11 @@ def init_cara_websocket(sock: Sock):
                     audio_b64 = data.get("data", "")
                     if audio_b64 and openai_ws_ref[0]:
                         try:
-                            openai_ws_ref[0].send(json.dumps({
-                                "type": "input_audio_buffer.append",
-                                "audio": audio_b64,
-                            }))
+                            with openai_send_lock:
+                                openai_ws_ref[0].send(json.dumps({
+                                    "type": "input_audio_buffer.append",
+                                    "audio": audio_b64,
+                                }))
                         except Exception as e:
                             print(f"[Cara] Error forwarding audio to OpenAI: {e}", flush=True)
 
