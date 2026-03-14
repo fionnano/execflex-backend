@@ -122,7 +122,7 @@ def init_cara_websocket(sock: Sock):
                     "type": "server_vad",
                     "threshold": 0.8,
                     "prefix_padding_ms": 500,
-                    "silence_duration_ms": 1200,
+                    "silence_duration_ms": 1500,
                     "create_response": True,
                 },
                 "temperature": 0.8,
