@@ -1356,16 +1356,22 @@ def _persist_transcript_turn(interaction_id: Optional[str], speaker: str, text: 
         return
     try:
         from config.clients import supabase_client
-        supabase_client.table("interaction_turns").insert({
+        resp = supabase_client.table("interaction_turns").insert({
             "interaction_id": interaction_id,
             "speaker": speaker,
             "text": text,
             "turn_sequence": turn_sequence,
-            "raw_payload": raw_payload or {},
+            "artifacts_json": raw_payload or {},
         }).execute()
+        if not resp.data:
+            print(
+                f"⚠️ interaction_turns insert returned no data: interaction_id={interaction_id} "
+                f"speaker={speaker} turn_sequence={turn_sequence}",
+                flush=True,
+            )
     except Exception as e:
         print(
-            f"Failed to persist transcript turn interaction_id={interaction_id} "
+            f"❌ Failed to persist transcript turn interaction_id={interaction_id} "
             f"speaker={speaker} turn_sequence={turn_sequence}: {e}",
             flush=True,
         )
