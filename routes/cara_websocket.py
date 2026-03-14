@@ -118,9 +118,9 @@ def init_cara_websocket(sock: Sock):
                 "input_audio_transcription": {"model": "whisper-1"},
                 "turn_detection": {
                     "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 600,
+                    "threshold": 0.8,
+                    "prefix_padding_ms": 500,
+                    "silence_duration_ms": 1200,
                     "create_response": True,
                 },
                 "temperature": 0.8,
