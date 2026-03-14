@@ -49,8 +49,10 @@ def init_cara_websocket(sock: Sock):
         # ── Validate session ─────────────────────────────────────────────────
         session = get_cara_session(session_id)
         if not session:
+            print(f"[Cara] Session {session_id} NOT FOUND in store", flush=True)
             _safe_send(ws, {"type": "error", "message": "Session not found or expired"})
             return
+        print(f"[Cara] Session {session_id} found, system_prompt len={len(session.get('system_prompt',''))}", flush=True)
 
         system_prompt = session["system_prompt"]
         delete_cara_session(session_id)  # Single-use
@@ -84,8 +86,8 @@ def init_cara_websocket(sock: Sock):
             openai_ws_ref[0] = openai_ws
             print(f"[Cara] Connected to OpenAI Realtime for session {session_id}", flush=True)
         except Exception as e:
-            print(f"[Cara] Failed to connect to OpenAI: {e}", flush=True)
-            _safe_send(ws, {"type": "error", "message": "Failed to connect to AI backend"})
+            print(f"[Cara] FAILED to connect to OpenAI Realtime: {type(e).__name__}: {e}", flush=True)
+            _safe_send(ws, {"type": "error", "message": f"Failed to connect to AI backend: {type(e).__name__}"})
             return
 
         # ── Wait for session.created ─────────────────────────────────────────
