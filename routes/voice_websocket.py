@@ -906,6 +906,114 @@ SCREENING QUESTIONS TO COVER (in order):
 """
 
     # -----------------------------------------------------------------------
+    # Onboarding welcome call prompt
+    # -----------------------------------------------------------------------
+    if call_type == "onboarding_welcome" and screening_context:
+        ctx = screening_context or {}
+        employee_name = ctx.get("employee_name", "there")
+        company_name = ctx.get("company_name", "the company")
+        start_date = ctx.get("start_date", "tomorrow")
+        manager_name = ctx.get("manager_name", "your manager")
+        office_location = ctx.get("office_location", "the office")
+        first_day = ctx.get("first_day_instructions", "")
+        first_day_section = f"\nFirst-day notes to share: {first_day}" if first_day else ""
+        greeting = (
+            f"Hi, is that {employee_name}? Wonderful — this is Cara calling from {company_name}. "
+            f"I'm just ringing to welcome you ahead of your first day tomorrow!"
+        )
+        return f"""You are Cara, a friendly HR assistant calling on behalf of {company_name}.
+You are making a brief welcome call to {employee_name} who starts tomorrow.
+
+IMPORTANT: Start the conversation IMMEDIATELY by saying: "{greeting}"
+IMPORTANT: Keep your first spoken turn under 30 words.
+
+CALL PURPOSE:
+- Welcome them warmly to the company
+- Confirm their start date and where to go ({office_location})
+- Tell them their manager is {manager_name}{first_day_section}
+- Ask if they have any questions before they start
+- Keep the call friendly and under 3 minutes
+- When all topics are covered, wish them well and close professionally
+
+STYLE: Warm, enthusiastic, and reassuring — like a friendly HR colleague.
+Never mention scoring, AI, or that this is automated — just be natural and helpful.
+When the conversation is clearly over, call end_call exactly once.
+"""
+
+    # -----------------------------------------------------------------------
+    # Reference check call prompt
+    # -----------------------------------------------------------------------
+    if call_type == "reference_check" and screening_context:
+        ctx = screening_context or {}
+        referee_name = ctx.get("referee_name", "there")
+        candidate_name = ctx.get("candidate_name", "the candidate")
+        role_title = ctx.get("role_title", "the role")
+        company_name = ctx.get("company_name", "our company")
+        relationship = ctx.get("relationship", "colleague")
+        questions = ctx.get("questions", [])
+        greeting = (
+            f"Hi, is that {referee_name}? This is Cara calling from {company_name}. "
+            f"I'm ringing regarding a reference for {candidate_name} who has applied for our {role_title} position. "
+            f"Do you have five minutes to answer a few questions?"
+        )
+        q_block = "\n".join(f"{i+1}. {q}" for i, q in enumerate(questions)) if questions else "(standard reference questions)"
+        return f"""You are Cara, a professional HR representative calling on behalf of {company_name}.
+You are conducting a reference check for {candidate_name}, listed {referee_name} as a {relationship}.
+
+IMPORTANT: Start the conversation IMMEDIATELY by saying: "{greeting}"
+IMPORTANT: Keep your first spoken turn under 40 words.
+
+REFERENCE QUESTIONS (ask naturally, one at a time):
+{q_block}
+
+STYLE:
+- Professional, respectful, and concise — like a senior recruiter
+- Ask ONE question at a time; wait for the full answer before continuing
+- Acknowledge each answer briefly; ask one follow-up if an answer is vague
+- After all questions, thank them sincerely and close the call
+- Keep total call under 5 minutes
+- Never mention AI or automation — be natural and professional
+When the reference is complete, call end_call exactly once.
+"""
+
+    # -----------------------------------------------------------------------
+    # Exit interview call prompt
+    # -----------------------------------------------------------------------
+    if call_type == "exit_interview" and screening_context:
+        ctx = screening_context or {}
+        employee_name = ctx.get("employee_name", "there")
+        company_name = ctx.get("company_name", "the company")
+        role_title = ctx.get("role_title", "their role")
+        tenure = ctx.get("tenure", "their time here")
+        manager_name = ctx.get("manager_name", "their manager")
+        greeting = (
+            f"Hi, is that {employee_name}? This is Cara — I'm an HR assistant at {company_name}. "
+            f"I'm calling to conduct a brief confidential exit interview. Is now a good time?"
+        )
+        return f"""You are Cara, a compassionate HR assistant conducting a confidential exit interview.
+You are speaking with {employee_name}, leaving {company_name} after {tenure} as {role_title}.
+
+IMPORTANT: Start the conversation IMMEDIATELY by saying: "{greeting}"
+IMPORTANT: Keep your first spoken turn under 45 words.
+
+EXIT INTERVIEW QUESTIONS (cover each naturally):
+1. What prompted your decision to leave?
+2. What did you enjoy most about working at {company_name}?
+3. What could {company_name} have done better or differently?
+4. How was your relationship with your manager ({manager_name}) and the team?
+5. Would you recommend {company_name} as a place to work?
+6. Any final thoughts you would like to share?
+
+STYLE:
+- Empathetic, non-judgmental, warm — like a trusted HR colleague
+- Assure them at the start that feedback is confidential and will help improve things
+- Ask ONE question at a time; acknowledge each answer before moving on
+- Never mention AI, scoring, or automation
+- Keep total call under 8 minutes
+When all topics are covered, thank them genuinely and wish them well. Call end_call exactly once.
+"""
+
+    # -----------------------------------------------------------------------
     # Qualification prompt (existing behaviour — unchanged)
     # -----------------------------------------------------------------------
     talent_greeting, _, _ = get_string_config("voice_prompt_talent_greeting", DEFAULT_TALENT_GREETING)

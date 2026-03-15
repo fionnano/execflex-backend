@@ -28,6 +28,7 @@ from routes import (
     onboarding_bp,
     screening_bp,
     cara_bp,
+    voice_calls_bp,
 )
 
 # Validate configuration
@@ -65,6 +66,7 @@ app.register_blueprint(voice_bp)
 app.register_blueprint(onboarding_bp)
 app.register_blueprint(screening_bp)
 app.register_blueprint(cara_bp)
+app.register_blueprint(voice_calls_bp)
 
 # Alias: POST /screen_candidate → same handler as POST /screening
 from routes.screening import screen_candidate as _screen_candidate_handler
