@@ -815,7 +815,6 @@ def _connect_openai_sync(
         session_config = {
             "type": "session.update",
             "session": {
-                "type": "realtime",
                 "model": realtime_model,
                 "instructions": system_prompt,
                 "temperature": 0.9,
@@ -869,10 +868,12 @@ def _connect_openai_sync(
             event_type = update_data.get("type")
             print(f"OpenAI update response: {event_type}", flush=True)
             if event_type == "error":
+                error_detail = update_data.get("error", {})
+                print(f"OpenAI session.update ERROR: {json.dumps(error_detail)[:500]}", flush=True)
                 _append_job_debug_event(
                     job_id,
                     "openai_connect_error",
-                    {"stage": "session_update", "error": update_data.get("error")},
+                    {"stage": "session_update", "error": error_detail},
                 )
                 break
             if event_type == "session.updated":
