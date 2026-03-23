@@ -5,6 +5,7 @@ After a candidate_chat or employer_brief call completes, uses GPT-4o to
 extract structured data from the transcript and updates the database.
 """
 import json
+import time
 import threading
 from datetime import datetime, timezone
 from typing import Optional
@@ -16,12 +17,15 @@ from config.clients import supabase_client, gpt_client
 # Candidate extraction
 # ---------------------------------------------------------------------------
 
-_CANDIDATE_EXTRACTION_PROMPT = """You are analysing a recruitment conversation between a consultant and a candidate.
+_CANDIDATE_EXTRACTION_PROMPT = """You are analysing a recruitment conversation between a consultant (Dan) and a candidate.
 
 Full call transcript:
 {transcript}
 
-Extract structured data from this conversation. Only include fields where the candidate clearly provided information — leave others as null.
+Extract ALL structured data from this conversation. Be thorough — pull out every detail the candidate mentioned, even if stated casually or indirectly. If they mentioned a number, include it. If they named a skill, include it. If they described experience, estimate years.
+
+For fields where the candidate did NOT provide information at all, use null.
+For list fields where they mentioned nothing, use an empty array [].
 
 Respond ONLY with valid JSON matching this structure:
 {{
@@ -36,12 +40,15 @@ Respond ONLY with valid JSON matching this structure:
   "summary": "2-3 sentence summary of who this candidate is and what they want"
 }}"""
 
-_EMPLOYER_EXTRACTION_PROMPT = """You are analysing a recruitment conversation between a consultant and a hiring manager.
+_EMPLOYER_EXTRACTION_PROMPT = """You are analysing a recruitment conversation between a consultant (Dan) and a hiring manager.
 
 Full call transcript:
 {transcript}
 
-Extract the role brief from this conversation. Only include fields where the employer clearly provided information — leave others as null.
+Extract ALL details about the role brief from this conversation. Be thorough — pull out every requirement, preference, and detail mentioned.
+
+For fields where the employer did NOT provide information at all, use null.
+For list fields where they mentioned nothing, use an empty array [].
 
 Respond ONLY with valid JSON matching this structure:
 {{
@@ -59,18 +66,106 @@ Respond ONLY with valid JSON matching this structure:
   "summary": "2-3 sentence summary of what this employer needs"
 }}"""
 
+# Max seconds to wait for transcript turns to finish writing
+_TRANSCRIPT_WAIT_TIMEOUT = 15
+_TRANSCRIPT_POLL_INTERVAL = 2
+
+
+def _wait_for_transcript(interaction_id: str) -> str:
+    """
+    Wait for transcript turns to be fully written, then build transcript.
+
+    The WebSocket handler writes turns in a background thread that may still
+    be flushing when the Twilio status callback arrives. Poll until we see
+    turns or timeout.
+    """
+    deadline = time.time() + _TRANSCRIPT_WAIT_TIMEOUT
+    best_transcript = ""
+    prev_turn_count = 0
+
+    while time.time() < deadline:
+        try:
+            turns_resp = (
+                supabase_client.table("interaction_turns")
+                .select("speaker, text, turn_sequence")
+                .eq("interaction_id", interaction_id)
+                .order("turn_sequence", desc=False)
+                .execute()
+            )
+            turns = turns_resp.data or []
+            turn_count = len(turns)
+
+            if turn_count > 0:
+                lines = []
+                for t in turns:
+                    speaker = (t.get("speaker") or "").capitalize()
+                    text = (t.get("text") or "").strip()
+                    if text:
+                        lines.append(f"{speaker}: {text}")
+                best_transcript = "\n".join(lines)
+
+                # If turn count hasn't changed since last poll, transcript is likely complete
+                if turn_count == prev_turn_count and turn_count >= 2:
+                    print(
+                        f"[Extraction] Transcript stable at {turn_count} turns for {interaction_id}",
+                        flush=True,
+                    )
+                    break
+                prev_turn_count = turn_count
+
+        except Exception as e:
+            print(f"[Extraction] Error polling turns for {interaction_id}: {e}", flush=True)
+
+        time.sleep(_TRANSCRIPT_POLL_INTERVAL)
+
+    if not best_transcript:
+        # Last resort: try interaction.transcript_text (finalized by status callback)
+        try:
+            ix_resp = (
+                supabase_client.table("interactions")
+                .select("transcript_text")
+                .eq("id", interaction_id)
+                .limit(1)
+                .execute()
+            )
+            if ix_resp.data:
+                best_transcript = (ix_resp.data[0] or {}).get("transcript_text") or ""
+                if best_transcript:
+                    print(
+                        f"[Extraction] Using fallback transcript_text for {interaction_id} "
+                        f"({len(best_transcript)} chars)",
+                        flush=True,
+                    )
+        except Exception:
+            pass
+
+    return best_transcript
+
 
 def extract_candidate_profile(interaction_id: str, job_id: str) -> Optional[dict]:
     """Extract candidate data from transcript and update people_profiles."""
+    print(f"[Extraction] Starting candidate extraction: interaction={interaction_id}, job={job_id}", flush=True)
+
     if not supabase_client or not gpt_client:
-        print("Supabase or OpenAI client not available for extraction", flush=True)
+        print("[Extraction] FAILED: Supabase or OpenAI client not available", flush=True)
         return None
 
     try:
-        transcript = _build_transcript(interaction_id)
+        transcript = _wait_for_transcript(interaction_id)
         if not transcript:
-            print(f"Empty transcript for extraction: interaction_id={interaction_id}", flush=True)
+            print(f"[Extraction] FAILED: Empty transcript after waiting: interaction={interaction_id}", flush=True)
+            _store_extraction_in_artifacts(interaction_id, "candidate_extraction", {
+                "error": "empty_transcript",
+                "message": "No transcript turns found after waiting",
+            })
             return None
+
+        print(
+            f"[Extraction] Transcript ready ({len(transcript)} chars, "
+            f"{transcript.count(chr(10)) + 1} lines). Sending to GPT-4o...",
+            flush=True,
+        )
+        print(f"[Extraction] Transcript preview: {transcript[:500]}...", flush=True)
 
         prompt = _CANDIDATE_EXTRACTION_PROMPT.format(transcript=transcript)
         completion = gpt_client.chat.completions.create(
@@ -79,37 +174,66 @@ def extract_candidate_profile(interaction_id: str, job_id: str) -> Optional[dict
             response_format={"type": "json_object"},
             temperature=0,
         )
-        result = json.loads(completion.choices[0].message.content)
-        print(f"Candidate extraction result: {json.dumps(result)[:300]}", flush=True)
+        raw_response = completion.choices[0].message.content
+        print(f"[Extraction] GPT-4o raw response: {raw_response[:600]}", flush=True)
+
+        result = json.loads(raw_response)
+
+        # Count non-null extracted fields
+        extracted_fields = [k for k, v in result.items() if v is not None and v != [] and v != ""]
+        print(
+            f"[Extraction] Extracted {len(extracted_fields)} non-empty fields: {extracted_fields}",
+            flush=True,
+        )
 
         # Store extraction in interaction artifacts
         _store_extraction_in_artifacts(interaction_id, "candidate_extraction", result)
+        print(f"[Extraction] Stored extraction in artifacts for interaction {interaction_id}", flush=True)
 
         # Update people_profiles if we have a user_id
         user_id = _get_user_id_from_job(job_id)
         if user_id:
             _update_candidate_profile(user_id, result)
+        else:
+            print(f"[Extraction] No user_id found for job {job_id}, skipping profile update", flush=True)
 
         return result
 
     except Exception as e:
-        print(f"Error extracting candidate profile: {e}", flush=True)
+        print(f"[Extraction] ERROR extracting candidate profile: {e}", flush=True)
         import traceback
         traceback.print_exc()
+        _store_extraction_in_artifacts(interaction_id, "candidate_extraction", {
+            "error": str(type(e).__name__),
+            "message": str(e)[:500],
+        })
         return None
 
 
 def extract_employer_brief(interaction_id: str, job_id: str) -> Optional[dict]:
     """Extract employer role brief from transcript and create opportunity."""
+    print(f"[Extraction] Starting employer extraction: interaction={interaction_id}, job={job_id}", flush=True)
+
     if not supabase_client or not gpt_client:
-        print("Supabase or OpenAI client not available for extraction", flush=True)
+        print("[Extraction] FAILED: Supabase or OpenAI client not available", flush=True)
         return None
 
     try:
-        transcript = _build_transcript(interaction_id)
+        transcript = _wait_for_transcript(interaction_id)
         if not transcript:
-            print(f"Empty transcript for extraction: interaction_id={interaction_id}", flush=True)
+            print(f"[Extraction] FAILED: Empty transcript after waiting: interaction={interaction_id}", flush=True)
+            _store_extraction_in_artifacts(interaction_id, "employer_extraction", {
+                "error": "empty_transcript",
+                "message": "No transcript turns found after waiting",
+            })
             return None
+
+        print(
+            f"[Extraction] Transcript ready ({len(transcript)} chars, "
+            f"{transcript.count(chr(10)) + 1} lines). Sending to GPT-4o...",
+            flush=True,
+        )
+        print(f"[Extraction] Transcript preview: {transcript[:500]}...", flush=True)
 
         prompt = _EMPLOYER_EXTRACTION_PROMPT.format(transcript=transcript)
         completion = gpt_client.chat.completions.create(
@@ -118,23 +242,42 @@ def extract_employer_brief(interaction_id: str, job_id: str) -> Optional[dict]:
             response_format={"type": "json_object"},
             temperature=0,
         )
-        result = json.loads(completion.choices[0].message.content)
-        print(f"Employer extraction result: {json.dumps(result)[:300]}", flush=True)
+        raw_response = completion.choices[0].message.content
+        print(f"[Extraction] GPT-4o raw response: {raw_response[:600]}", flush=True)
+
+        result = json.loads(raw_response)
+
+        extracted_fields = [k for k, v in result.items() if v is not None and v != [] and v != ""]
+        print(
+            f"[Extraction] Extracted {len(extracted_fields)} non-empty fields: {extracted_fields}",
+            flush=True,
+        )
 
         # Store extraction in interaction artifacts
         _store_extraction_in_artifacts(interaction_id, "employer_extraction", result)
+        print(f"[Extraction] Stored extraction in artifacts for interaction {interaction_id}", flush=True)
 
         # Create opportunity record
         user_id = _get_user_id_from_job(job_id)
         if user_id and result.get("role_title"):
             _create_opportunity_from_brief(user_id, result)
+        else:
+            print(
+                f"[Extraction] Skipping opportunity creation: user_id={user_id}, "
+                f"role_title={result.get('role_title')}",
+                flush=True,
+            )
 
         return result
 
     except Exception as e:
-        print(f"Error extracting employer brief: {e}", flush=True)
+        print(f"[Extraction] ERROR extracting employer brief: {e}", flush=True)
         import traceback
         traceback.print_exc()
+        _store_extraction_in_artifacts(interaction_id, "employer_extraction", {
+            "error": str(type(e).__name__),
+            "message": str(e)[:500],
+        })
         return None
 
 
@@ -143,6 +286,7 @@ def extract_employer_brief(interaction_id: str, job_id: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def extract_candidate_profile_async(interaction_id: str, job_id: str):
+    print(f"[Extraction] Launching async candidate extraction thread: interaction={interaction_id}", flush=True)
     threading.Thread(
         target=extract_candidate_profile,
         args=(interaction_id, job_id),
@@ -151,6 +295,7 @@ def extract_candidate_profile_async(interaction_id: str, job_id: str):
 
 
 def extract_employer_brief_async(interaction_id: str, job_id: str):
+    print(f"[Extraction] Launching async employer extraction thread: interaction={interaction_id}", flush=True)
     threading.Thread(
         target=extract_employer_brief,
         args=(interaction_id, job_id),
@@ -162,27 +307,6 @@ def extract_employer_brief_async(interaction_id: str, job_id: str):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_transcript(interaction_id: str) -> str:
-    try:
-        turns_resp = (
-            supabase_client.table("interaction_turns")
-            .select("speaker, text, turn_sequence")
-            .eq("interaction_id", interaction_id)
-            .order("turn_sequence", desc=False)
-            .execute()
-        )
-        lines = []
-        for t in (turns_resp.data or []):
-            speaker = (t.get("speaker") or "").capitalize()
-            text = (t.get("text") or "").strip()
-            if text:
-                lines.append(f"{speaker}: {text}")
-        return "\n".join(lines)
-    except Exception as e:
-        print(f"Could not build transcript for {interaction_id}: {e}", flush=True)
-        return ""
-
-
 def _get_user_id_from_job(job_id: str) -> Optional[str]:
     try:
         resp = (
@@ -193,9 +317,11 @@ def _get_user_id_from_job(job_id: str) -> Optional[str]:
             .execute()
         )
         if resp.data:
-            return resp.data[0].get("user_id")
-    except Exception:
-        pass
+            uid = resp.data[0].get("user_id")
+            print(f"[Extraction] Resolved user_id={uid} from job {job_id}", flush=True)
+            return uid
+    except Exception as e:
+        print(f"[Extraction] Failed to resolve user_id from job {job_id}: {e}", flush=True)
     return None
 
 
@@ -216,12 +342,13 @@ def _store_extraction_in_artifacts(interaction_id: str, key: str, data: dict):
         supabase_client.table("interactions").update(
             {"artifacts": artifacts}
         ).eq("id", interaction_id).execute()
+        print(f"[Extraction] Saved {key} to interaction {interaction_id} artifacts", flush=True)
     except Exception as e:
-        print(f"Failed to store extraction in artifacts: {e}", flush=True)
+        print(f"[Extraction] FAILED to store {key} in artifacts for {interaction_id}: {e}", flush=True)
 
 
 def _update_candidate_profile(user_id: str, extraction: dict):
-    """Update or create people_profiles with extracted candidate data."""
+    """Update people_profiles with extracted candidate data."""
     try:
         update = {}
         if extraction.get("industries"):
@@ -242,9 +369,11 @@ def _update_candidate_profile(user_id: str, extraction: dict):
             update["availability_type"] = extraction["availability"]
 
         if not update:
+            print(f"[Extraction] No fields to update for user {user_id} (all null)", flush=True)
             return
 
-        # Only update fields that are currently empty (don't overwrite existing data)
+        print(f"[Extraction] Candidate profile update payload ({len(update)} fields): {list(update.keys())}", flush=True)
+
         existing = (
             supabase_client.table("people_profiles")
             .select("*")
@@ -254,25 +383,40 @@ def _update_candidate_profile(user_id: str, extraction: dict):
         )
         if existing.data:
             profile = existing.data[0] or {}
+            # Update fields: overwrite empty fields, and also overwrite fields that
+            # were previously set by voice_call extraction (allow re-extraction to improve)
             filtered = {}
             for key, value in update.items():
                 existing_val = profile.get(key)
-                if not existing_val or (isinstance(existing_val, list) and len(existing_val) == 0):
+                is_empty = (
+                    not existing_val
+                    or (isinstance(existing_val, list) and len(existing_val) == 0)
+                    or existing_val == "Not provided"
+                )
+                # Also overwrite if profile_source is voice_call (our own previous extraction)
+                is_our_data = profile.get("profile_source") == "voice_call"
+                if is_empty or is_our_data:
                     filtered[key] = value
+
             if filtered:
+                filtered["profile_source"] = "voice_call"
                 supabase_client.table("people_profiles").update(
                     filtered
                 ).eq("user_id", user_id).execute()
-                print(f"Updated candidate profile for {user_id}: {list(filtered.keys())}", flush=True)
+                print(f"[Extraction] Updated profile for {user_id}: {list(filtered.keys())}", flush=True)
+            else:
+                print(f"[Extraction] All fields already populated for {user_id}, skipping update", flush=True)
         else:
             # Create profile
             update["user_id"] = user_id
             update["profile_source"] = "voice_call"
             supabase_client.table("people_profiles").insert(update).execute()
-            print(f"Created candidate profile for {user_id}", flush=True)
+            print(f"[Extraction] Created new profile for {user_id}", flush=True)
 
     except Exception as e:
-        print(f"Failed to update candidate profile for {user_id}: {e}", flush=True)
+        print(f"[Extraction] FAILED to update profile for {user_id}: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
 
 
 def _create_opportunity_from_brief(user_id: str, extraction: dict):
@@ -325,7 +469,9 @@ def _create_opportunity_from_brief(user_id: str, extraction: dict):
         }
         resp = supabase_client.table("opportunities").insert(opp_payload).execute()
         if resp.data:
-            print(f"Created opportunity from voice brief: {resp.data[0].get('id')}", flush=True)
+            print(f"[Extraction] Created opportunity: {resp.data[0].get('id')}", flush=True)
 
     except Exception as e:
-        print(f"Failed to create opportunity from brief: {e}", flush=True)
+        print(f"[Extraction] FAILED to create opportunity: {e}", flush=True)
+        import traceback
+        traceback.print_exc()

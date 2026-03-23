@@ -381,6 +381,7 @@ def voice_status():
         if call_status == "completed" and interaction_id:
             job_artifacts = job.get("artifacts", {}) or {}
             call_type = job_artifacts.get("call_type")
+            print(f"[PostCall] call_type={call_type!r}, job_id={job_id}, interaction_id={interaction_id}", flush=True)
             try:
                 if call_type == "screening":
                     from services.screening_service import score_screening_call_async
