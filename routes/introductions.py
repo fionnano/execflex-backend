@@ -27,6 +27,13 @@ def request_intro():
       }
     """
     try:
+        # Tier quota check
+        from services.billing_service import check_quota
+        quota_user_id = request.environ.get("authenticated_user_id")
+        allowed, quota_msg = check_quota(quota_user_id, "intros_made")
+        if not allowed:
+            return bad(quota_msg, 403, error_code="upgrade_required", upgrade_url="/pricing")
+
         data = request.get_json(force=True, silent=True) or {}
         required = ["user_type", "requester_name", "requester_email", "match_id"]
         missing = [f for f in required if not data.get(f)]

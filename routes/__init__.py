@@ -21,3 +21,6 @@ from routes.cara_voice import cara_bp  # noqa
 # Cara outbound voice calls (onboarding, reference, exit interview)
 from routes.voice_calls import voice_calls_bp  # noqa
 
+# Billing and placements
+from routes.billing import billing_bp  # noqa
+

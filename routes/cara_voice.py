@@ -12,6 +12,7 @@ import uuid
 import time
 import threading
 from flask import Blueprint, request, jsonify
+from utils.auth_helpers import require_auth
 
 cara_bp = Blueprint("cara", __name__)
 
@@ -66,6 +67,7 @@ _cleanup_thread.start()
 # ── REST endpoint ─────────────────────────────────────────────────────────────
 
 @cara_bp.route("/voice-session/cara", methods=["POST"])
+@require_auth
 def create_voice_session():
     """
     POST /voice-session/cara

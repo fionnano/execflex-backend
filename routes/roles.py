@@ -14,6 +14,13 @@ from config.clients import supabase_client
 def post_role():
     """Submit a new executive role posting."""
     try:
+        # Tier quota check
+        user_id = request.environ.get("authenticated_user_id")
+        from services.billing_service import check_quota
+        allowed, quota_msg = check_quota(user_id, "roles_posted")
+        if not allowed:
+            return bad(quota_msg, 403, error_code="upgrade_required", upgrade_url="/pricing")
+
         data = request.get_json(force=True, silent=True) or {}
         print("🚀 /post-role payload:", data)
 

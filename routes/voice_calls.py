@@ -15,11 +15,13 @@ from services.voice_call_service import (
     create_reference_call_job,
     create_exit_interview_call_job,
 )
+from utils.auth_helpers import require_auth
 
 voice_calls_bp = Blueprint("voice_calls", __name__, url_prefix="/voice-call")
 
 
 @voice_calls_bp.route("/onboarding", methods=["POST"])
+@require_auth
 def onboarding_welcome_call():
     """
     POST /voice-call/onboarding
@@ -64,6 +66,7 @@ def onboarding_welcome_call():
 
 
 @voice_calls_bp.route("/reference", methods=["POST"])
+@require_auth
 def reference_check_call():
     """
     POST /voice-call/reference
@@ -118,6 +121,7 @@ def reference_check_call():
 
 
 @voice_calls_bp.route("/exit-interview", methods=["POST"])
+@require_auth
 def exit_interview_call():
     """
     POST /voice-call/exit-interview

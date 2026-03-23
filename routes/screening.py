@@ -1,13 +1,42 @@
 """
 Screening routes: enqueue candidate screening calls and poll for results.
+
+Rate limited: max 10 screening calls per hour per authenticated user.
 """
+import time
+import threading
 from flask import request, jsonify
 from routes import screening_bp
 from services.screening_service import create_screening_job
+from utils.auth_helpers import require_auth
+
+# ── Per-user rate limiting for screening calls ────────────────────────────────
+# Tracks {user_id: [timestamp, ...]} — sliding window, 10 per hour.
+_screening_rate: dict = {}
+_screening_rate_lock = threading.Lock()
+_SCREENING_RATE_LIMIT = 10
+_SCREENING_RATE_WINDOW = 3600  # 1 hour in seconds
+
+
+def _check_screening_rate(user_id: str) -> bool:
+    """Return True if the user is within the rate limit, False if exceeded."""
+    now = time.time()
+    cutoff = now - _SCREENING_RATE_WINDOW
+    with _screening_rate_lock:
+        timestamps = _screening_rate.get(user_id, [])
+        # Prune old entries
+        timestamps = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= _SCREENING_RATE_LIMIT:
+            _screening_rate[user_id] = timestamps
+            return False
+        timestamps.append(now)
+        _screening_rate[user_id] = timestamps
+        return True
 
 
 @screening_bp.route("", methods=["POST"])
 @screening_bp.route("/screen_candidate", methods=["POST"])
+@require_auth
 def screen_candidate():
     """
     POST /screen_candidate
@@ -23,7 +52,19 @@ def screen_candidate():
 
     Returns:
         201 { job_id, thread_id, interaction_id, status }
+
+    Rate limit: 10 calls per hour per authenticated user. Returns 429 if exceeded.
     """
+    user_id = request.environ.get("authenticated_user_id", "unknown")
+    if not _check_screening_rate(user_id):
+        return jsonify({"error": "Rate limit exceeded: max 10 screening calls per hour"}), 429
+
+    # Tier quota check
+    from services.billing_service import check_quota
+    allowed, quota_msg = check_quota(user_id, "screenings_done")
+    if not allowed:
+        return jsonify({"error": quota_msg, "error_code": "upgrade_required", "upgrade_url": "/pricing"}), 403
+
     data = request.get_json(force=True) or {}
 
     required = ("candidate_phone", "candidate_name", "role_title", "company_name", "questions")
@@ -53,6 +94,7 @@ def screen_candidate():
 
 
 @screening_bp.route("/<job_id>/status", methods=["GET"])
+@require_auth
 def screening_status(job_id: str):
     """
     GET /screening/<job_id>/status

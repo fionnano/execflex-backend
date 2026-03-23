@@ -79,3 +79,4 @@ flask-sock==0.7.0
 simple-websocket==1.0.0
 websocket-client==1.8.0
 cryptography==44.0.0
+stripe==11.4.1

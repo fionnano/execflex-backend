@@ -29,6 +29,7 @@ from routes import (
     screening_bp,
     cara_bp,
     voice_calls_bp,
+    billing_bp,
 )
 
 # Validate configuration
@@ -41,13 +42,19 @@ app = Flask(__name__, static_folder="static")
 # Initialize WebSocket support for realtime voice streaming
 sock = Sock(app)
 
-# Configure CORS to allow requests from frontend domain
+# Configure CORS to allow requests from frontend domains only
 # Flask-CORS will automatically handle OPTIONS preflight requests
 CORS(app, resources={
     r"/*": {
-        "origins": ["https://execflex.ai", "http://localhost:5173", "http://localhost:3000", "*"],
+        "origins": [
+            "https://execflex.ai",
+            "https://ainm.ai",
+            "https://www.ainm.ai",
+            "http://localhost:5173",
+            "http://localhost:3000",
+        ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With", "X-Service-Key"],
         "expose_headers": ["Content-Type"],
         "supports_credentials": True,
         "max_age": 3600
@@ -67,6 +74,7 @@ app.register_blueprint(onboarding_bp)
 app.register_blueprint(screening_bp)
 app.register_blueprint(cara_bp)
 app.register_blueprint(voice_calls_bp)
+app.register_blueprint(billing_bp)
 
 # Alias: POST /screen_candidate → same handler as POST /screening
 from routes.screening import screen_candidate as _screen_candidate_handler
@@ -80,7 +88,7 @@ init_voice_websocket(sock)
 from routes.cara_websocket import init_cara_websocket
 init_cara_websocket(sock)
 
-# Rate limiting can be applied to specific endpoints here if needed
+# Rate limiting on screening endpoint is applied in routes/screening.py
 
 # Debug: Print registered routes at startup
 with app.app_context():

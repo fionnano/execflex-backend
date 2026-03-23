@@ -35,6 +35,17 @@ LINKEDIN_CALLBACK_URL = os.getenv("LINKEDIN_CALLBACK_URL")
 LINKEDIN_ENCRYPTION_KEY = os.getenv("LINKEDIN_ENCRYPTION_KEY")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://execflex.ai")
 
+# Service-to-service authentication (e.g. Ainm backend → ExecFlex)
+AINM_SERVICE_KEY = os.getenv("AINM_SERVICE_KEY")
+
+# JWT signature verification (Supabase Dashboard → Settings → API → JWT Secret)
+SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
+
+# Stripe billing (optional)
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+STRIPE_GROWTH_PRICE_ID = os.getenv("STRIPE_GROWTH_PRICE_ID")
+
 
 def validate_config():
     """Validate required configuration."""
@@ -55,6 +66,9 @@ def print_config_status():
     print(f"  ElevenLabs configured? {bool(ELEVEN_API_KEY and ELEVEN_VOICE_ID)}")
     print(f"  OpenAI configured? {bool(OPENAI_API_KEY)}")
     print(f"  LinkedIn OAuth configured? {bool(LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET)}")
+    print(f"  Ainm Service Key configured? {bool(AINM_SERVICE_KEY)}")
+    print(f"  JWT signature verification? {bool(SUPABASE_JWT_SECRET)}")
+    print(f"  Stripe configured? {bool(STRIPE_SECRET_KEY)}")
     print(f"  Frontend URL={FRONTEND_URL}")
     print("--------------------------------------------------")
 
