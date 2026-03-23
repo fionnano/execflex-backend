@@ -998,7 +998,11 @@ def _get_system_prompt(
             "- Keep the tone encouraging and respectful throughout\n"
             "- When the call is clearly over, call end_call exactly once"
         )
-        screening_system, _, _ = get_string_config("screening_interview", default_screening_system)
+        screening_system, cfg_updated, _ = get_string_config("screening_interview", default_screening_system)
+        if cfg_updated:
+            print(f"[Prompt] Using platform_config override for screening_interview (updated {cfg_updated})", flush=True)
+        else:
+            print("[Prompt] Using code-level default screening prompt", flush=True)
 
         # Build numbered question list for context
         q_lines = []
@@ -1184,11 +1188,23 @@ When all topics are covered, thank them genuinely and wish them well. Call end_c
             f"and reference what you already know rather than re-asking."
         )
 
-    # Select system prompt
+    # Select system prompt — code-level prompts always take priority.
+    # platform_config can add supplementary context but never replaces the core prompt.
     if effective_purpose == "employer_brief":
-        system_body, _, _ = get_string_config("voice_prompt_employer_brief", DEFAULT_EMPLOYER_BRIEF_PROMPT)
+        system_body = DEFAULT_EMPLOYER_BRIEF_PROMPT
+        config_key = "voice_prompt_employer_brief"
     else:
-        system_body, _, _ = get_string_config("voice_prompt_candidate_chat", DEFAULT_CANDIDATE_CHAT_PROMPT)
+        system_body = DEFAULT_CANDIDATE_CHAT_PROMPT
+        config_key = "voice_prompt_candidate_chat"
+
+    # Check if platform_config has additional instructions (appended, not replacing)
+    extra_instructions, _, _ = get_string_config(f"{config_key}_extra", "")
+    extra_block = ""
+    if extra_instructions and extra_instructions.strip():
+        extra_block = f"\n\nADDITIONAL INSTRUCTIONS:\n{extra_instructions.strip()}"
+        print(f"[Prompt] Appending platform_config extra instructions for {config_key} ({len(extra_instructions)} chars)", flush=True)
+
+    print(f"[Prompt] Using code-level {config_key} prompt ({len(system_body)} chars), purpose={effective_purpose}", flush=True)
 
     return f"""You are Dan, a recruitment consultant at Ainm Search.
 {returning_context}
@@ -1196,7 +1212,7 @@ When all topics are covered, thank them genuinely and wish them well. Call end_c
 IMPORTANT: Start the conversation IMMEDIATELY by saying: "{greeting}"
 IMPORTANT: For your first spoken turn only, keep your total response under 30 words.
 
-{system_body}
+{system_body}{extra_block}
 """
 
 
