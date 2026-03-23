@@ -398,6 +398,16 @@ def voice_status():
                     from services.voice_call_service import process_exit_interview_call_async
                     process_exit_interview_call_async(interaction_id, job_id)
                     print(f"✅ Exit interview analysis queued: interaction_id={interaction_id}")
+                elif call_type in ("candidate_chat", "qualification"):
+                    # Extract candidate profile from conversation
+                    from services.call_extraction_service import extract_candidate_profile_async
+                    extract_candidate_profile_async(interaction_id, job_id)
+                    print(f"✅ Candidate profile extraction queued: interaction_id={interaction_id}")
+                elif call_type == "employer_brief":
+                    # Extract employer role brief from conversation
+                    from services.call_extraction_service import extract_employer_brief_async
+                    extract_employer_brief_async(interaction_id, job_id)
+                    print(f"✅ Employer brief extraction queued: interaction_id={interaction_id}")
             except Exception as scoring_exc:
                 print(f"⚠️ Could not queue post-call processing ({call_type}): {scoring_exc}")
 

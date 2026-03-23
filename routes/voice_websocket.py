@@ -304,9 +304,11 @@ def init_voice_websocket(sock: Sock):
                                 prompt_vars = {}
                                 user_name = None
                                 first_name = None
+                                is_returning_caller = False
+                                profile_summary = ""
                                 try:
                                     profile_resp = supabase_client.table("people_profiles")\
-                                        .select("first_name, last_name")\
+                                        .select("first_name, last_name, headline, industries, expertise, location, bio, years_experience, rate_range, availability_type")\
                                         .eq("user_id", job.get("user_id"))\
                                         .limit(1)\
                                         .execute()
@@ -316,8 +318,46 @@ def init_voice_websocket(sock: Sock):
                                         last_name = (profile.get("last_name") or "").strip()
                                         if first_name or last_name:
                                             user_name = f"{first_name or ''} {last_name or ''}".strip()
+                                        # Build profile summary for returning caller context
+                                        summary_parts = []
+                                        if profile.get("headline"):
+                                            summary_parts.append(f"Role: {profile['headline']}")
+                                        if profile.get("industries"):
+                                            ind = profile["industries"]
+                                            if isinstance(ind, list):
+                                                ind = ", ".join(ind)
+                                            summary_parts.append(f"Industries: {ind}")
+                                        if profile.get("expertise"):
+                                            exp = profile["expertise"]
+                                            if isinstance(exp, list):
+                                                exp = ", ".join(exp)
+                                            summary_parts.append(f"Skills: {exp}")
+                                        if profile.get("location"):
+                                            summary_parts.append(f"Location: {profile['location']}")
+                                        if profile.get("years_experience"):
+                                            summary_parts.append(f"Experience: {profile['years_experience']} years")
+                                        if profile.get("availability_type"):
+                                            summary_parts.append(f"Availability: {profile['availability_type']}")
+                                        if profile.get("bio"):
+                                            summary_parts.append(f"Bio: {str(profile['bio'])[:200]}")
+                                        if summary_parts:
+                                            profile_summary = "; ".join(summary_parts)
+                                            is_returning_caller = True
                                 except Exception as profile_exc:
                                     print(f"Failed loading profile for prompt variables: {profile_exc}", flush=True)
+                                # Fallback: check phone number in channel_identities for returning callers
+                                if not is_returning_caller and job.get("phone_e164"):
+                                    try:
+                                        ci_resp = supabase_client.table("channel_identities")\
+                                            .select("user_id")\
+                                            .eq("channel", "phone")\
+                                            .eq("value", job["phone_e164"])\
+                                            .limit(1)\
+                                            .execute()
+                                        if ci_resp.data:
+                                            is_returning_caller = True
+                                    except Exception:
+                                        pass
                                 if not first_name or not user_name:
                                     try:
                                         auth_user_resp = supabase_client.schema("auth").table("users")\
@@ -341,6 +381,10 @@ def init_voice_websocket(sock: Sock):
                                     prompt_vars["user_name"] = user_name
                                 if first_name:
                                     prompt_vars["first_name"] = first_name
+                                if is_returning_caller:
+                                    prompt_vars["is_returning_caller"] = True
+                                if profile_summary:
+                                    prompt_vars["profile_summary"] = profile_summary
 
                                 # Create session
                                 session = session_manager.create_session(
@@ -682,7 +726,7 @@ def _connect_openai_sync(
         return None
 
     realtime_model = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
-    realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "ash")
+    realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "ballad")
     effective_vad = vad_config or {
         "type": "server_vad",
         "threshold": 0.5,
@@ -848,43 +892,43 @@ def _connect_openai_sync(
         return None
 
 
-DEFAULT_TALENT_GREETING = (
-    "Hi, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive opportunities. "
-    "Have I caught you at a bad time?"
-)
-DEFAULT_COMPANY_GREETING = (
-    "Hello, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive talent for your organization. "
-    "Have I caught you at a bad time?"
-)
-DEFAULT_FALLBACK_GREETING = (
-    "Hello, this is A I Dan from ExecFlex. I noticed you just signed up. "
-    "Are you looking to hire executive talent, or are you an executive looking for opportunities?"
-)
-DEFAULT_GENERAL_SYSTEM_PROMPT = """CONVERSATION STYLE:
-- Be warm, professional, and concise
-- Ask ONE question at a time
-- Keep responses under 20 seconds when spoken (about 50-70 words max)
-- Listen actively and acknowledge what the user says
-- Don't repeat questions that have been answered
+DEFAULT_CANDIDATE_CHAT_PROMPT = """You are Dan, a friendly recruitment consultant at Ainm Search. You're having a relaxed, warm conversation to get to know this person — NOT a formal screening interview.
 
-CONVERSATION GOALS:
-1. Confirm their intent (hiring vs job seeking)
-2. Understand their motivation (why ExecFlex, why now)
-3. Learn about role preferences (titles, industries)
-4. Understand location and availability preferences
-5. Identify any constraints or deal-breakers
-6. Be witty.
-7. To progress up the levels of conversation from cliche, to facts, to opinions, to feelings, to needs/identity (dreams)
+Your goal: understand who they are, what they do, what they're good at, and what they're looking for next. Build rapport first, then naturally work through these topics:
+- What they currently do and their background (2-3 minutes)
+- Their key skills and strengths
+- What kind of role or opportunity they're looking for
+- Salary expectations and location preferences
+- When they're available to start
 
-IMPORTANT RULES:
-- Never ask for information already provided
-- If the user wants to end the call, thank them politely and close
-- After 8-10 minutes or when enough info is gathered, begin closing the conversation
-- Be natural and conversational, not robotic
-- When the call has clearly concluded, call the end_call tool exactly once.
-- Do not repeat goodbye lines in a loop.
-- Use Mirroring if they dont seem quite finished. Repeat back the last few words of what they said without embellishment in an upward tone.
-- Use Labelling of the potential emption, if they express an opinion or feeling. e.g. 'That sounds like it was exciting!'"""
+Style: conversational, warm, curious. Use short sentences. React naturally — 'That's really interesting' or 'I can see why you'd want that'. Ask one question at a time. Don't rush. Don't sound like you're reading from a list. If they go off on a tangent, let them — you'll learn something useful.
+
+At the end: 'Brilliant, I've got a really good picture of what you're about. I'll have a look through our open roles and if there's a good match, I'll make an introduction. Your first one is completely free. Thanks for the chat!'
+
+NEVER say: 'screening', 'assessment', 'evaluate', 'score', 'test'. This is a conversation, not an exam.
+Keep the call to 5-8 minutes.
+When the conversation is clearly finished, call end_call exactly once. Do not repeat goodbye lines."""
+
+DEFAULT_EMPLOYER_BRIEF_PROMPT = """You are Dan, a sharp recruitment consultant at Ainm Search. You're having a focused conversation with a hiring manager to understand exactly what they need.
+
+Your goal: take a proper brief so you can find the right person. Be professional but friendly — like a trusted advisor, not a salesperson.
+
+Cover these topics naturally:
+- What's the role and why is it open?
+- What does the team look like?
+- Must-have skills and experience
+- Nice-to-have qualities
+- What does success look like in the first 90 days?
+- Salary range and package
+- Location, remote/hybrid options
+- Start date urgency
+
+Style: confident, knowledgeable, efficient. Ask smart follow-up questions that show you understand recruitment. 'What's been the biggest challenge filling this role so far?' or 'What would make you say no to an otherwise strong candidate?'
+
+At the end: 'Great brief. I'll start searching our talent pool straight away and come back to you with AI-screened candidates. Your first introduction is completely free. I'll be in touch.'
+
+Keep the call to 5-8 minutes.
+When the conversation is clearly finished, call end_call exactly once. Do not repeat goodbye lines."""
 
 
 def _get_system_prompt(
@@ -1070,34 +1114,61 @@ When all topics are covered, thank them genuinely and wish them well. Call end_c
 """
 
     # -----------------------------------------------------------------------
-    # Qualification prompt (existing behaviour — unchanged)
+    # Candidate chat / Employer brief / Qualification (default)
     # -----------------------------------------------------------------------
-    talent_greeting, _, _ = get_string_config("voice_prompt_talent_greeting", DEFAULT_TALENT_GREETING)
-    company_greeting, _, _ = get_string_config("voice_prompt_company_greeting", DEFAULT_COMPANY_GREETING)
-    fallback_greeting, _, _ = get_string_config("voice_prompt_fallback_greeting", DEFAULT_FALLBACK_GREETING)
-    general_prompt, _, _ = get_string_config("voice_prompt_general_system", DEFAULT_GENERAL_SYSTEM_PROMPT)
-    first_turn_max_words, _, _ = get_number_config("voice_first_turn_max_words", default=45)
+    vars_ = prompt_vars or {}
+    first_name = vars_.get("first_name", "")
+    user_name = vars_.get("user_name", "")
+    is_returning = bool(vars_.get("is_returning_caller"))
+    profile_summary = vars_.get("profile_summary", "")
 
-    if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
-        mode_context = "The user is an executive looking for job opportunities."
-        greeting = talent_greeting
-    elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
-        mode_context = "The user is looking to hire executive talent for their organization."
-        greeting = company_greeting
+    # Determine effective call purpose from call_type or signup_mode
+    effective_purpose = call_type  # e.g. "candidate_chat", "employer_brief", "qualification"
+    if effective_purpose in (None, "qualification"):
+        # Map legacy signup_mode to new call purpose
+        if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
+            effective_purpose = "candidate_chat"
+        elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
+            effective_purpose = "employer_brief"
+        else:
+            effective_purpose = "candidate_chat"  # Default to candidate
+
+    # Build greeting
+    display_name = first_name or "there"
+    if effective_purpose == "employer_brief":
+        if is_returning and first_name:
+            greeting = f"Hey {first_name}, it's Dan from Ainm Search. Good to hear from you again! What role are you looking to fill?"
+        else:
+            greeting = f"Hi {display_name}, this is Dan from Ainm Search. I'm calling to take a quick brief on what you're looking for. Have I caught you at a good time?"
     else:
-        mode_context = "Determine whether the user is looking to hire executives or is an executive seeking opportunities."
-        greeting = fallback_greeting
-    greeting = _render_prompt_template(greeting, prompt_vars or {})
-    general_prompt = _render_prompt_template(general_prompt, prompt_vars or {})
+        if is_returning and first_name:
+            greeting = f"Hey {first_name}, it's Dan from Ainm Search again. How are things? I wanted to catch up and see where you're at."
+        else:
+            greeting = f"Hi {display_name}, this is Dan from Ainm Search. Thanks for signing up — I just wanted to have a quick chat to get to know you a bit. Is now a good time?"
 
-    return f"""You are Ai-dan, a friendly voice assistant for ExecFlex, a platform connecting companies with executive talent.
+    # Build returning caller context
+    returning_context = ""
+    if is_returning and profile_summary:
+        returning_context = (
+            f"\nYou're speaking with {user_name or first_name} again. "
+            f"Here's what you know about them from previous conversations: {profile_summary}\n"
+            f"Acknowledge that you remember them — 'Good to hear from you again' — "
+            f"and reference what you already know rather than re-asking."
+        )
 
-{mode_context}
+    # Select system prompt
+    if effective_purpose == "employer_brief":
+        system_body, _, _ = get_string_config("voice_prompt_employer_brief", DEFAULT_EMPLOYER_BRIEF_PROMPT)
+    else:
+        system_body, _, _ = get_string_config("voice_prompt_candidate_chat", DEFAULT_CANDIDATE_CHAT_PROMPT)
+
+    return f"""You are Dan, a recruitment consultant at Ainm Search.
+{returning_context}
 
 IMPORTANT: Start the conversation IMMEDIATELY by saying: "{greeting}"
-IMPORTANT: For your first spoken turn only, keep your total response under {max(10, int(first_turn_max_words))} words.
+IMPORTANT: For your first spoken turn only, keep your total response under 30 words.
 
-{general_prompt}
+{system_body}
 """
 
 
@@ -1478,7 +1549,7 @@ def _stream_text_via_elevenlabs_to_twilio(
 
 def _fallback_to_openai_audio_mode(openai_ws, assistant_text: str, bridge_state, state_lock, log_fn) -> bool:
     """Disable ElevenLabs mode for this call and continue with OpenAI audio output."""
-    realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "ash")
+    realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "ballad")
     session_update = {
         "type": "session.update",
         "session": {
