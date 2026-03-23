@@ -169,6 +169,8 @@ def init_voice_websocket(sock: Sock):
         openai_ws = None
         forwarded_audio_frames = 0
         state_lock = threading.Lock()
+        silence_stop_event = threading.Event()
+        stream_sid_ref: dict = {"sid": None}  # Mutable ref for silence thread
         bridge_state = {
             "greeting_completed": False,
             "awaiting_response": False,
@@ -271,12 +273,16 @@ def init_voice_websocket(sock: Sock):
                     job_id = custom_params.get("job_id")
                     prompt_vars = {}
 
+                    stream_sid_ref["sid"] = stream_sid
                     print(f"Stream started: stream_sid={stream_sid}, call_sid={call_sid}, job_id={job_id}", flush=True)
                     _append_job_debug_event(job_id, "twilio_stream_start", {
                         "stream_sid": stream_sid,
                         "call_sid": call_sid,
                         "manual_vad_fallback_enabled": VOICE_MANUAL_VAD_FALLBACK_ENABLED,
                     })
+
+                    # Start silence padding to keep Twilio Media Stream alive during idle periods
+                    _start_silence_padding_thread(ws, stream_sid_ref, bridge_state, state_lock, silence_stop_event)
 
                     # Get call context from database
                     if job_id:
@@ -568,6 +574,8 @@ def init_voice_websocket(sock: Sock):
         finally:
             print(f"Entering finally block, will close OpenAI connection. Total Twilio messages: {message_count}", flush=True)
             _append_job_debug_event(job_id, "voice_ws_finally", {"message_count": message_count, "call_sid": call_sid})
+            # Stop silence padding thread
+            silence_stop_event.set()
             # Clean up
             if openai_ws:
                 try:
@@ -589,22 +597,70 @@ def _start_keepalive_thread(ws, interval=20):
     import time
 
     def keepalive_loop():
+        consecutive_failures = 0
         while True:
             try:
                 time.sleep(interval)
                 if ws.connected:
                     ws.ping()
-                    print("Sent WebSocket ping to OpenAI", flush=True)
+                    consecutive_failures = 0
                 else:
-                    print("WebSocket disconnected, stopping keepalive thread", flush=True)
+                    print("OpenAI WebSocket disconnected, stopping keepalive", flush=True)
                     break
             except Exception as e:
-                print(f"Keepalive thread error: {e}", flush=True)
-                break
+                consecutive_failures += 1
+                print(f"Keepalive ping error ({consecutive_failures}): {e}", flush=True)
+                if consecutive_failures >= 3:
+                    print("Keepalive: 3 consecutive failures, stopping", flush=True)
+                    break
 
     keepalive_thread = threading.Thread(target=keepalive_loop, daemon=True)
     keepalive_thread.start()
     return keepalive_thread
+
+
+# Pre-computed 20ms of mu-law silence (0xFF = zero-level in mu-law encoding).
+# Twilio Media Streams expects base64-encoded mu-law at 8kHz = 160 samples per 20ms.
+_MULAW_SILENCE_20MS = base64.b64encode(b"\xff" * 160).decode("ascii")
+
+
+def _start_silence_padding_thread(twilio_ws, stream_sid_ref, bridge_state, state_lock, stop_event):
+    """
+    Send silence frames to Twilio when the assistant is NOT speaking.
+
+    Twilio Media Streams can drop the connection if it receives no media
+    from the server for an extended period. This thread sends 20ms mu-law
+    silence frames every 200ms during idle periods to keep the stream alive.
+    """
+    import time
+
+    def silence_loop():
+        while not stop_event.is_set():
+            try:
+                time.sleep(0.2)  # Send silence every 200ms
+                if stop_event.is_set():
+                    break
+                with state_lock:
+                    is_playing = bool(bridge_state.get("assistant_playback_active"))
+                    sid = stream_sid_ref.get("sid")
+                if is_playing or not sid:
+                    # Assistant audio is actively being sent, or stream not ready — skip
+                    continue
+                try:
+                    twilio_ws.send(json.dumps({
+                        "event": "media",
+                        "streamSid": sid,
+                        "media": {"payload": _MULAW_SILENCE_20MS},
+                    }))
+                except Exception:
+                    # Twilio WebSocket closed — exit silently
+                    break
+            except Exception:
+                break
+
+    t = threading.Thread(target=silence_loop, daemon=True)
+    t.start()
+    return t
 
 
 def _connect_openai_sync(
@@ -2071,12 +2127,22 @@ def _handle_openai_responses(
                 exit_reason = f"websocket_timeout: {e}"
                 log(f"OpenAI WebSocket timeout: {e}")
                 continue
+            except json.JSONDecodeError as e:
+                log(f"Failed to parse OpenAI message as JSON: {e}")
+                continue
             except Exception as e:
                 import traceback
-                exit_reason = f"exception: {type(e).__name__}: {e}"
                 log(f"Error handling OpenAI message: {type(e).__name__}: {e}")
                 traceback.print_exc()
-                break
+                debug_event("openai_handler_recoverable_error", {
+                    "error_type": type(e).__name__,
+                    "error": str(e)[:200],
+                })
+                # Only break on connection-level errors; continue on message-processing errors
+                if isinstance(e, (ConnectionError, OSError, BrokenPipeError)):
+                    exit_reason = f"connection_error: {type(e).__name__}: {e}"
+                    break
+                continue
 
     except Exception as e:
         import traceback
