@@ -17,28 +17,34 @@ from config.clients import supabase_client, gpt_client
 # Candidate extraction
 # ---------------------------------------------------------------------------
 
-_CANDIDATE_EXTRACTION_PROMPT = """You are analysing a recruitment conversation between a consultant (Dan) and a candidate.
+_CANDIDATE_EXTRACTION_PROMPT = """You are extracting structured candidate profile data from a recruitment conversation transcript. Extract EVERY piece of information mentioned, even if it was said casually or in passing. Be thorough — if they mentioned a city, that's their location. If they mentioned a number or range, that's their salary expectation. If they mentioned an industry or sector, add it to industries.
 
 Full call transcript:
 {transcript}
 
-Extract ALL structured data from this conversation. Be thorough — pull out every detail the candidate mentioned, even if stated casually or indirectly. If they mentioned a number, include it. If they named a skill, include it. If they described experience, estimate years.
-
-For fields where the candidate did NOT provide information at all, use null.
-For list fields where they mentioned nothing, use an empty array [].
-
-Respond ONLY with valid JSON matching this structure:
+Extract this JSON:
 {{
-  "skills": ["skill1", "skill2"],
-  "industries": ["industry1"],
+  "skills": ["list every skill, technology, or competency mentioned"],
+  "industries": ["every industry or sector mentioned — e.g. technology, healthcare, finance"],
   "experience_years": null,
-  "current_role": null,
-  "desired_role": null,
-  "salary_expectation": null,
-  "location": null,
-  "availability": null,
-  "summary": "2-3 sentence summary of who this candidate is and what they want"
-}}"""
+  "current_role": "their current or most recent job title",
+  "desired_role": "what they said they're looking for — NEVER use 'General Screening' or 'Not provided'",
+  "salary_expectation": "any salary, rate, or compensation mentioned — include the range if given",
+  "location": "any city, country, or region mentioned as where they are or want to work",
+  "availability": "when they can start — immediately, notice period, specific date",
+  "summary": "2-3 sentence summary of who this person is and what they want"
+}}
+
+Rules:
+- If they didn't mention something, set it to null — NEVER use 'Not provided', 'General Screening', 'N/A', or any placeholder text
+- Extract from the FULL transcript, not just direct answers to questions
+- If they said 'I'm based in Cork' at any point, location is 'Cork, Ireland'
+- If they said 'around 80k' at any point, salary_expectation is '€80,000'
+- If they mentioned working in 'tech' or 'fintech', add those to industries
+- Be generous in extraction — capture everything possible
+- For desired_role, use what the candidate ACTUALLY said they want, not the type of call
+
+Return ONLY valid JSON, no markdown."""
 
 _EMPLOYER_EXTRACTION_PROMPT = """You are analysing a recruitment conversation between a consultant (Dan) and a hiring manager.
 
@@ -142,6 +148,79 @@ def _wait_for_transcript(interaction_id: str) -> str:
     return best_transcript
 
 
+_PLACEHOLDER_VALUES = {
+    "general screening", "not provided", "n/a", "none", "unknown",
+    "not mentioned", "not specified", "not discussed", "not applicable",
+}
+
+
+def _clean_extraction_result(result: dict) -> dict:
+    """Remove placeholder values that GPT sometimes generates instead of null."""
+    for key, value in result.items():
+        if isinstance(value, str) and value.strip().lower() in _PLACEHOLDER_VALUES:
+            result[key] = None
+    return result
+
+
+def _second_pass_extraction(transcript: str, first_result: dict, missing_fields: list) -> dict:
+    """Re-read transcript to fill fields the first pass missed."""
+    if not gpt_client or not missing_fields:
+        return first_result
+
+    fields_desc = ", ".join(missing_fields)
+    print(f"[Extraction] Pass 2: attempting to fill missing fields: {missing_fields}", flush=True)
+
+    second_prompt = f"""The following fields were NOT found in an initial extraction from this recruitment conversation. Re-read the transcript very carefully and try to find ANY mention of these fields, even casual or indirect references.
+
+Missing fields to find: {fields_desc}
+
+Full transcript:
+{transcript}
+
+Extraction hints:
+- "salary_expectation": ANY mention of money, pay, rate, package, compensation, or numbers with k/K
+- "location": ANY city, town, county, country, or area mentioned
+- "industries": ANY sector, field, or industry the person works in or mentioned
+- "availability": ANY mention of when they can start, notice period, or timeline
+- "desired_role": What they said they WANT to do next — a job title or type of work
+- "current_role": Their CURRENT or most recent job title
+- "skills": ANY skill, technology, tool, or competency mentioned
+
+Return ONLY a JSON object with the fields you found. Only include fields where you found actual information. Do NOT include fields that genuinely weren't mentioned. Do NOT use placeholder values like 'Not provided'.
+
+Example: {{"location": "Dublin, Ireland", "salary_expectation": "€90,000-€100,000"}}"""
+
+    try:
+        completion = gpt_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": second_prompt}],
+            response_format={"type": "json_object"},
+            temperature=0,
+        )
+        raw = completion.choices[0].message.content
+        print(f"[Extraction] Pass 2 response: {raw[:400]}", flush=True)
+        second_result = json.loads(raw)
+
+        filled = []
+        for key, value in second_result.items():
+            if value is not None and value != [] and value != "":
+                if isinstance(value, str) and value.strip().lower() in _PLACEHOLDER_VALUES:
+                    continue
+                if first_result.get(key) is None or first_result.get(key) == []:
+                    first_result[key] = value
+                    filled.append(key)
+
+        if filled:
+            print(f"[Extraction] Pass 2 filled {len(filled)} fields: {filled}", flush=True)
+        else:
+            print("[Extraction] Pass 2 found no additional data", flush=True)
+
+    except Exception as e:
+        print(f"[Extraction] Pass 2 failed: {e}", flush=True)
+
+    return first_result
+
+
 def extract_candidate_profile(interaction_id: str, job_id: str) -> Optional[dict]:
     """Extract candidate data from transcript and update people_profiles."""
     print(f"[Extraction] Starting candidate extraction: interaction={interaction_id}, job={job_id}", flush=True)
@@ -182,9 +261,18 @@ def extract_candidate_profile(interaction_id: str, job_id: str) -> Optional[dict
         # Count non-null extracted fields
         extracted_fields = [k for k, v in result.items() if v is not None and v != [] and v != ""]
         print(
-            f"[Extraction] Extracted {len(extracted_fields)} non-empty fields: {extracted_fields}",
+            f"[Extraction] Pass 1: extracted {len(extracted_fields)} non-empty fields: {extracted_fields}",
             flush=True,
         )
+
+        # Second pass: try to fill missing key fields
+        key_fields = ["skills", "industries", "salary_expectation", "location", "availability", "desired_role", "current_role"]
+        missing_fields = [f for f in key_fields if result.get(f) is None or result.get(f) == []]
+        if missing_fields and transcript:
+            result = _second_pass_extraction(transcript, result, missing_fields)
+
+        # Clean up placeholder values GPT might still produce
+        result = _clean_extraction_result(result)
 
         # Store extraction in interaction artifacts
         _store_extraction_in_artifacts(interaction_id, "candidate_extraction", result)
