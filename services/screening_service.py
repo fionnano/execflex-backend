@@ -23,6 +23,7 @@ def create_screening_job(
     questions: List[Dict[str, Any]],
     callback_url: Optional[str],
     source_candidate_id: Optional[str],
+    purpose: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create an outbound_call_job for a candidate screening call.
@@ -63,7 +64,7 @@ def create_screening_job(
         "created_at": now_iso,
         "updated_at": now_iso,
         "artifacts": {
-            "call_type": "screening",
+            "call_type": purpose if purpose in ("candidate_chat", "employer_brief") else "screening",
             "created_at": now_iso,
             "screening_context": {
                 "candidate_name": candidate_name,

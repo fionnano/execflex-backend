@@ -970,12 +970,19 @@ def _get_system_prompt(
     call_type: Optional[str] = None,
     screening_context: Optional[dict] = None,
 ) -> str:
-    """Get the system prompt for the call (qualification or screening)."""
+    """Get the system prompt for the call."""
 
     # -----------------------------------------------------------------------
-    # Screening prompt
+    # Candidate chat / employer brief — checked FIRST so they take priority.
+    # Jump straight to the warm conversational prompt section at the bottom.
     # -----------------------------------------------------------------------
-    if call_type == "screening" and screening_context:
+    if call_type in ("candidate_chat", "employer_brief"):
+        print(f"[PROMPT DEBUG] Using {call_type.upper()} prompt path — skipping to warm prompt", flush=True)
+        # Skip all specialized prompt blocks — fall through to the bottom
+    # -----------------------------------------------------------------------
+    # Screening prompt (formal structured interview with specific questions)
+    # -----------------------------------------------------------------------
+    elif call_type == "screening" and screening_context:
         print(f"[PROMPT DEBUG] Using SCREENING prompt path (call_type={call_type!r})", flush=True)
         ctx = screening_context or {}
         candidate_name = ctx.get("candidate_name", "the candidate")
