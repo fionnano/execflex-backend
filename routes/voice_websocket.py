@@ -821,7 +821,6 @@ def _connect_openai_sync(
                 "type": "realtime",
                 "model": realtime_model,
                 "instructions": system_prompt,
-                "temperature": 0.9,
                 "output_modalities": ["text"] if output_text_only else ["audio"],
                 "tools": [
                     {
