@@ -1616,7 +1616,9 @@ def _fallback_to_openai_audio_mode(openai_ws, assistant_text: str, bridge_state,
 def _persist_transcript_turn(interaction_id: Optional[str], speaker: str, text: str, turn_sequence: int, raw_payload: dict) -> None:
     """Persist a transcript turn row for realtime voice calls."""
     if not interaction_id or not text:
+        print(f"[Turn] SKIPPED: interaction_id={interaction_id}, text empty={not text}", flush=True)
         return
+    print(f"[Turn] SAVING: speaker={speaker}, seq={turn_sequence}, text={text[:80]!r}", flush=True)
     try:
         from config.clients import supabase_client
         resp = supabase_client.table("interaction_turns").insert({
@@ -1626,15 +1628,17 @@ def _persist_transcript_turn(interaction_id: Optional[str], speaker: str, text: 
             "turn_sequence": turn_sequence,
             "artifacts_json": raw_payload or {},
         }).execute()
-        if not resp.data:
+        if resp.data:
+            print(f"[Turn] SAVED OK: speaker={speaker}, seq={turn_sequence}", flush=True)
+        else:
             print(
-                f"⚠️ interaction_turns insert returned no data: interaction_id={interaction_id} "
+                f"[Turn] WARNING: insert returned no data: interaction_id={interaction_id} "
                 f"speaker={speaker} turn_sequence={turn_sequence}",
                 flush=True,
             )
     except Exception as e:
         print(
-            f"❌ Failed to persist transcript turn interaction_id={interaction_id} "
+            f"[Turn] FAILED: interaction_id={interaction_id} "
             f"speaker={speaker} turn_sequence={turn_sequence}: {e}",
             flush=True,
         )
