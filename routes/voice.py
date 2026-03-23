@@ -107,19 +107,36 @@ def voice_stream():
     Returns:
         TwiML Response with <Connect><Stream> directive
     """
+    print(f"[voice/stream] HIT: method={request.method}, url={request.url}", flush=True)
+
     if not VoiceResponse:
+        print("[voice/stream] FAILED: VoiceResponse not available", flush=True)
         return Response("Voice features not available", mimetype="text/plain"), 503
 
     # Verify Twilio signature
     from utils.twilio_helpers import verify_twilio_signature
     app_env = os.getenv("APP_ENV", "prod").lower()
 
-    if not verify_twilio_signature():
+    sig_valid = verify_twilio_signature()
+    print(f"[voice/stream] Signature check: valid={sig_valid}, env={app_env}", flush=True)
+    if not sig_valid:
         if app_env != "dev":
-            print("Invalid Twilio signature in production mode (stream)")
-            return Response("Invalid signature", status=403), 403
+            # Use the canonical HTTPS URL for signature verification (Render proxy strips https)
+            base_url = (
+                os.getenv("API_BASE_URL") or
+                os.getenv("RENDER_EXTERNAL_URL") or
+                "https://execflex-backend-1.onrender.com"
+            )
+            canonical_url = f"{base_url}/voice/stream"
+            if request.query_string:
+                canonical_url += f"?{request.query_string.decode()}"
+            sig_valid_retry = verify_twilio_signature(url=canonical_url)
+            print(f"[voice/stream] Signature retry with canonical URL: valid={sig_valid_retry}, url={canonical_url}", flush=True)
+            if not sig_valid_retry:
+                print("[voice/stream] REJECTED: Invalid Twilio signature", flush=True)
+                return Response("Invalid signature", status=403), 403
         else:
-            print("Twilio signature verification failed, but continuing (dev mode) (stream)")
+            print("[voice/stream] Signature failed but continuing (dev mode)", flush=True)
 
     call_sid = request.values.get("CallSid") or request.args.get("CallSid") or "unknown"
     job_id = request.values.get("job_id") or request.args.get("job_id")
