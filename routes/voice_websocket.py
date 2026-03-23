@@ -307,9 +307,12 @@ def init_voice_websocket(sock: Sock):
                                 is_returning_caller = False
                                 profile_summary = ""
                                 try:
+                                    job_user_id = job.get("user_id")
+                                    if not job_user_id:
+                                        raise ValueError("No user_id on job — skipping profile lookup")
                                     profile_resp = supabase_client.table("people_profiles")\
                                         .select("first_name, last_name, headline, industries, expertise, location, bio, years_experience, rate_range, availability_type")\
-                                        .eq("user_id", job.get("user_id"))\
+                                        .eq("user_id", job_user_id)\
                                         .limit(1)\
                                         .execute()
                                     if profile_resp.data:
@@ -358,7 +361,7 @@ def init_voice_websocket(sock: Sock):
                                             is_returning_caller = True
                                     except Exception:
                                         pass
-                                if not first_name or not user_name:
+                                if (not first_name or not user_name) and job.get("user_id"):
                                     try:
                                         auth_user_resp = supabase_client.schema("auth").table("users")\
                                             .select("raw_user_meta_data")\
@@ -815,6 +818,7 @@ def _connect_openai_sync(
         session_config = {
             "type": "session.update",
             "session": {
+                "type": "realtime",
                 "model": realtime_model,
                 "instructions": system_prompt,
                 "temperature": 0.9,
