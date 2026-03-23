@@ -809,12 +809,15 @@ def _connect_openai_sync(
             return None
 
         # Now configure the session
+        print(f"[CALL TYPE DEBUG] call_type={call_type!r}, signup_mode={signup_mode!r}", flush=True)
         system_prompt = _get_system_prompt(
             signup_mode,
             prompt_vars=prompt_vars,
             call_type=call_type,
             screening_context=screening_context,
         )
+        print(f"[PROMPT DEBUG] Full system prompt being sent to OpenAI ({len(system_prompt)} chars): {system_prompt[:500]}", flush=True)
+        print(f"[VOICE DEBUG] Voice: {realtime_voice}, Model: {realtime_model}", flush=True)
         session_config = {
             "type": "session.update",
             "session": {
@@ -860,7 +863,9 @@ def _connect_openai_sync(
             }
         }
 
-        ws.send(json.dumps(session_config))
+        session_json = json.dumps(session_config)
+        print(f"[SESSION DEBUG] Session config ({len(session_json)} chars): {session_json[:500]}", flush=True)
+        ws.send(session_json)
         print("Session.update sent, waiting for session.updated...", flush=True)
         saw_session_updated = False
         for _ in range(30):
@@ -971,6 +976,7 @@ def _get_system_prompt(
     # Screening prompt
     # -----------------------------------------------------------------------
     if call_type == "screening" and screening_context:
+        print(f"[PROMPT DEBUG] Using SCREENING prompt path (call_type={call_type!r})", flush=True)
         ctx = screening_context or {}
         candidate_name = ctx.get("candidate_name", "the candidate")
         role_title = ctx.get("role_title", "the role")
@@ -1164,6 +1170,7 @@ When all topics are covered, thank them genuinely and wish them well. Call end_c
             effective_purpose = "employer_brief"
         else:
             effective_purpose = "candidate_chat"  # Default to candidate
+    print(f"[PROMPT DEBUG] effective_purpose={effective_purpose!r} (from call_type={call_type!r}, signup_mode={signup_mode!r})", flush=True)
 
     # Build greeting
     display_name = first_name or "there"
@@ -1177,6 +1184,8 @@ When all topics are covered, thank them genuinely and wish them well. Call end_c
             greeting = f"Hey {first_name}, it's Dan from Ainm Search again. How are things? I wanted to catch up and see where you're at."
         else:
             greeting = f"Hi {display_name}, this is Dan from Ainm Search. Thanks for signing up — I just wanted to have a quick chat to get to know you a bit. Is now a good time?"
+
+    print(f"[GREETING DEBUG] Greeting: {greeting[:200]}", flush=True)
 
     # Build returning caller context
     returning_context = ""
