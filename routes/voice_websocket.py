@@ -726,7 +726,7 @@ def _connect_openai_sync(
         return None
 
     realtime_model = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
-    realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "shimmer")
+    realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "echo")
     effective_vad = vad_config or {
         "type": "server_vad",
         "threshold": 0.5,
@@ -1549,7 +1549,7 @@ def _stream_text_via_elevenlabs_to_twilio(
 
 def _fallback_to_openai_audio_mode(openai_ws, assistant_text: str, bridge_state, state_lock, log_fn) -> bool:
     """Disable ElevenLabs mode for this call and continue with OpenAI audio output."""
-    realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "shimmer")
+    realtime_voice = os.getenv("OPENAI_REALTIME_VOICE", "echo")
     session_update = {
         "type": "session.update",
         "session": {
