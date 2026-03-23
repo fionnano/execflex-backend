@@ -404,6 +404,10 @@ def voice_status():
                     from services.screening_service import score_screening_call_async
                     score_screening_call_async(interaction_id, job_id)
                     print(f"✅ Screening scoring queued: interaction_id={interaction_id}, job_id={job_id}")
+                    # Also extract candidate profile from screening conversation
+                    from services.call_extraction_service import extract_candidate_profile_async
+                    extract_candidate_profile_async(interaction_id, job_id)
+                    print(f"✅ Candidate extraction also queued for screening call: interaction_id={interaction_id}")
                 elif call_type == "onboarding_welcome":
                     from services.voice_call_service import process_onboarding_call_async
                     process_onboarding_call_async(interaction_id, job_id)
@@ -426,6 +430,11 @@ def voice_status():
                     from services.call_extraction_service import extract_employer_brief_async
                     extract_employer_brief_async(interaction_id, job_id)
                     print(f"✅ Employer brief extraction queued: interaction_id={interaction_id}")
+                else:
+                    # Unknown call_type — default to candidate extraction
+                    print(f"[PostCall] Unknown call_type={call_type!r}, defaulting to candidate extraction", flush=True)
+                    from services.call_extraction_service import extract_candidate_profile_async
+                    extract_candidate_profile_async(interaction_id, job_id)
             except Exception as scoring_exc:
                 print(f"⚠️ Could not queue post-call processing ({call_type}): {scoring_exc}")
 

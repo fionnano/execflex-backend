@@ -163,7 +163,7 @@ def screening_status(job_id: str):
         if status == "completed" and interaction_id:
             interaction_resp = (
                 supabase_client.table("interactions")
-                .select("transcript_text, screening_scores, screening_recommendation")
+                .select("transcript_text, screening_scores, screening_recommendation, artifacts")
                 .eq("id", interaction_id)
                 .limit(1)
                 .execute()
@@ -173,6 +173,12 @@ def screening_status(job_id: str):
                 response["transcript"] = ix.get("transcript_text")
                 response["scores"] = ix.get("screening_scores")
                 response["recommendation"] = ix.get("screening_recommendation")
+                # Include extracted profile/brief data from post-call analysis
+                ix_artifacts = ix.get("artifacts") or {}
+                if ix_artifacts.get("candidate_extraction"):
+                    response["candidate_profile"] = ix_artifacts["candidate_extraction"]
+                if ix_artifacts.get("employer_extraction"):
+                    response["employer_brief"] = ix_artifacts["employer_extraction"]
 
         return jsonify(response), 200
 
