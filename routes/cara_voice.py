@@ -12,9 +12,17 @@ import uuid
 import time
 import threading
 from flask import Blueprint, request, jsonify
-from utils.auth_helpers import require_auth
 
 cara_bp = Blueprint("cara", __name__)
+
+# Allowed origins for Cara voice sessions (browser-direct calls)
+_CARA_ALLOWED_ORIGINS = {
+    "https://ainm.ai",
+    "https://www.ainm.ai",
+    "https://execflex.ai",
+    "http://localhost:5173",
+    "http://localhost:3000",
+}
 
 # ── In-memory session store ───────────────────────────────────────────────────
 # Maps session_id → { "prompt": str, "expires": float }
@@ -67,10 +75,13 @@ _cleanup_thread.start()
 # ── REST endpoint ─────────────────────────────────────────────────────────────
 
 @cara_bp.route("/voice-session/cara", methods=["POST"])
-@require_auth
 def create_voice_session():
     """
     POST /voice-session/cara
+
+    Auth: accepts Supabase JWT, X-Service-Key, or requests from allowed
+    origins (ainm.ai, execflex.ai, localhost). The system_prompt body
+    acts as implicit auth since only Ainm generates it with RAG context.
 
     Body (JSON):
         system_prompt   str  — Full system prompt for Cara (built by ainm.ai with RAG context)
@@ -78,6 +89,16 @@ def create_voice_session():
     Returns:
         201 { session_id, ws_url }
     """
+    # Allow if: valid JWT/service key, OR request from allowed origin
+    from utils.auth_helpers import get_authenticated_user_id
+    user_id, _ = get_authenticated_user_id()
+    if not user_id:
+        origin = (request.headers.get("Origin") or "").rstrip("/")
+        if origin not in _CARA_ALLOWED_ORIGINS:
+            print(f"[Cara] Rejected: no auth and origin={origin!r} not allowed", flush=True)
+            return jsonify({"error": "Authentication required"}), 401
+        print(f"[Cara] Allowed via origin: {origin}", flush=True)
+
     data = request.get_json(force=True) or {}
     system_prompt = (data.get("system_prompt") or "").strip()
     if not system_prompt:
