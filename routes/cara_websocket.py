@@ -31,7 +31,7 @@ from flask_sock import Sock
 from simple_websocket import Server as SimpleWebSocket
 
 from config.app_config import OPENAI_API_KEY
-from routes.cara_voice import decode_system_prompt
+from routes.cara_voice import get_session_prompt
 
 _OPENAI_REALTIME_VOICE = "shimmer"  # Warm female voice
 _OPENAI_REALTIME_MODEL_DEFAULT = "gpt-4o-realtime-preview-2024-12-17"
@@ -47,19 +47,13 @@ def init_cara_websocket(sock: Sock):
 
         print(f"[Cara] WebSocket connection opened for session {session_id}", flush=True)
 
-        # ── Extract system prompt from URL query param (stateless — works across instances) ──
-        sp_encoded = flask_request.args.get("sp", "")
-        if not sp_encoded:
-            print(f"[Cara] No system prompt in URL for session {session_id}", flush=True)
+        # ── Look up system prompt from server-side session store ──────────────
+        system_prompt = get_session_prompt(session_id)
+        if not system_prompt:
+            print(f"[Cara] Session not found or expired: {session_id}", flush=True)
             _safe_send(ws, {"type": "error", "message": "Session not found or expired"})
             return
-        try:
-            system_prompt = decode_system_prompt(sp_encoded)
-            print(f"[Cara] Decoded system_prompt len={len(system_prompt)} for session {session_id}", flush=True)
-        except Exception as e:
-            print(f"[Cara] Failed to decode system_prompt: {e}", flush=True)
-            _safe_send(ws, {"type": "error", "message": "Invalid session data"})
-            return
+        print(f"[Cara] Retrieved system_prompt len={len(system_prompt)} for session {session_id}", flush=True)
 
         if not OPENAI_API_KEY:
             _safe_send(ws, {"type": "error", "message": "OpenAI not configured on server"})

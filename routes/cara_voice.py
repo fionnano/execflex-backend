@@ -4,28 +4,63 @@ Cara voice session management.
 POST /voice-session/cara — create a session with a system prompt.
 Returns session_id + WebSocket URL for the browser to connect to.
 
-The system prompt is encoded directly in the WebSocket URL as a compressed
-base64url query parameter — stateless, works across multiple Render instances.
+The system prompt is stored server-side in a TTL dict keyed by session_id.
+The WebSocket URL contains only the session_id — no prompt in the URL.
 """
 import os
 import uuid
-import zlib
-import base64
+import time
+import threading
 from flask import Blueprint, request, jsonify
 
 cara_bp = Blueprint("cara", __name__)
 
+# ── In-memory session store ───────────────────────────────────────────────────
+# Maps session_id → { "prompt": str, "expires": float }
+# TTL of 5 minutes — plenty of time for the browser to open the WebSocket.
+_SESSION_TTL = 300  # seconds
+_sessions: dict = {}
+_sessions_lock = threading.Lock()
 
-def encode_system_prompt(system_prompt: str) -> str:
-    """Compress and base64url-encode a system prompt for embedding in a URL."""
-    compressed = zlib.compress(system_prompt.encode("utf-8"), level=9)
-    return base64.urlsafe_b64encode(compressed).decode("ascii")
+
+def _store_session(session_id: str, system_prompt: str) -> None:
+    with _sessions_lock:
+        _sessions[session_id] = {
+            "prompt": system_prompt,
+            "expires": time.time() + _SESSION_TTL,
+        }
 
 
-def decode_system_prompt(encoded: str) -> str:
-    """Decode and decompress a system prompt from a URL parameter."""
-    compressed = base64.urlsafe_b64decode(encoded)
-    return zlib.decompress(compressed).decode("utf-8")
+def get_session_prompt(session_id: str) -> str | None:
+    """Return the system prompt for a session, or None if expired/missing."""
+    with _sessions_lock:
+        entry = _sessions.get(session_id)
+        if not entry:
+            return None
+        if time.time() > entry["expires"]:
+            del _sessions[session_id]
+            return None
+        # Remove after first use — no replay needed
+        del _sessions[session_id]
+        return entry["prompt"]
+
+
+def _cleanup_expired() -> None:
+    """Periodically remove expired sessions to avoid memory leaks."""
+    while True:
+        time.sleep(120)
+        now = time.time()
+        with _sessions_lock:
+            expired = [k for k, v in _sessions.items() if now > v["expires"]]
+            for k in expired:
+                del _sessions[k]
+        if expired:
+            print(f"[Cara] Cleaned up {len(expired)} expired sessions", flush=True)
+
+
+# Start background cleanup thread
+_cleanup_thread = threading.Thread(target=_cleanup_expired, daemon=True)
+_cleanup_thread.start()
 
 
 # ── REST endpoint ─────────────────────────────────────────────────────────────
@@ -48,9 +83,8 @@ def create_voice_session():
 
     session_id = str(uuid.uuid4())
 
-    # Encode system prompt directly into the WebSocket URL so any Render instance
-    # can handle the connection — no shared in-memory state required.
-    encoded_prompt = encode_system_prompt(system_prompt)
+    # Store system prompt server-side — keeps the WebSocket URL short and clean
+    _store_session(session_id, system_prompt)
 
     base_url = os.getenv("EXECFLEX_BASE_URL", "wss://execflex-backend-1.onrender.com")
     base_url = base_url.rstrip("/")
@@ -59,9 +93,9 @@ def create_voice_session():
     elif base_url.startswith("http://"):
         base_url = "ws://" + base_url[7:]
 
-    ws_url = f"{base_url}/voice/cara/ws/{session_id}?sp={encoded_prompt}"
+    ws_url = f"{base_url}/voice/cara/ws/{session_id}"
 
-    print(f"[Cara] Created session {session_id}, encoded prompt len={len(encoded_prompt)}", flush=True)
+    print(f"[Cara] Created session {session_id}, prompt len={len(system_prompt)}", flush=True)
 
     return jsonify({
         "session_id": session_id,
