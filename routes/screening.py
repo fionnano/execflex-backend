@@ -86,6 +86,7 @@ def screen_candidate():
             callback_url=data.get("callback_url"),
             source_candidate_id=data.get("source_candidate_id"),
             purpose=data.get("purpose"),
+            user_id=user_id if user_id != "unknown" else None,
         )
         return jsonify(result), 201
     except Exception as e:

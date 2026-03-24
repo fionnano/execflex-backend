@@ -24,6 +24,7 @@ def create_screening_job(
     callback_url: Optional[str],
     source_candidate_id: Optional[str],
     purpose: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create an outbound_call_job for a candidate screening call.
@@ -56,7 +57,7 @@ def create_screening_job(
     interaction_id = interaction_resp.data[0]["id"] if interaction_resp.data else None
 
     # Job
-    job_resp = supabase_client.table("outbound_call_jobs").insert({
+    job_payload = {
         "phone_e164": phone,
         "status": "queued",
         "thread_id": thread_id,
@@ -75,7 +76,10 @@ def create_screening_job(
                 "source_candidate_id": source_candidate_id,
             },
         },
-    }).execute()
+    }
+    if user_id:
+        job_payload["user_id"] = user_id
+    job_resp = supabase_client.table("outbound_call_jobs").insert(job_payload).execute()
     job_id = job_resp.data[0]["id"] if job_resp.data else None
 
     return {
