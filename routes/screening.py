@@ -95,6 +95,52 @@ def screen_candidate():
         return jsonify({"error": str(e)}), 500
 
 
+@screening_bp.route("/<job_id>/retry-extraction", methods=["POST"])
+@require_auth
+def retry_extraction(job_id: str):
+    """
+    POST /screening/<job_id>/retry-extraction
+
+    Manually retry extraction for a completed call. Use when the automatic
+    post-call extraction failed due to connection errors.
+    """
+    try:
+        from config.clients import supabase_client
+        if not supabase_client:
+            return jsonify({"error": "Database not available"}), 503
+
+        job_resp = (
+            supabase_client.table("outbound_call_jobs")
+            .select("id, interaction_id, artifacts")
+            .eq("id", job_id)
+            .limit(1)
+            .execute()
+        )
+        if not job_resp.data:
+            return jsonify({"error": "Job not found"}), 404
+
+        job = job_resp.data[0]
+        interaction_id = job.get("interaction_id")
+        if not interaction_id:
+            return jsonify({"error": "No interaction found for this job"}), 404
+
+        call_type = (job.get("artifacts") or {}).get("call_type", "screening")
+        print(f"[RetryExtraction] job={job_id}, interaction={interaction_id}, call_type={call_type}", flush=True)
+
+        from services.call_extraction_service import extract_candidate_profile_async, extract_employer_brief_async
+        if call_type == "employer_brief":
+            extract_employer_brief_async(interaction_id, job_id)
+        else:
+            extract_candidate_profile_async(interaction_id, job_id)
+
+        return jsonify({"status": "extraction_queued", "interaction_id": interaction_id}), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 @screening_bp.route("/<job_id>/status", methods=["GET"])
 @require_auth
 def screening_status(job_id: str):

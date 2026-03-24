@@ -346,11 +346,26 @@ def voice_status():
             else:
                 update_data["last_error"] = "No-answer retry limit reached"
         
-        supabase_client.table("outbound_call_jobs")\
-            .update(update_data)\
-            .eq("id", job_id)\
-            .execute()
-        
+        # Update job status — retry once on connection error
+        try:
+            supabase_client.table("outbound_call_jobs")\
+                .update(update_data)\
+                .eq("id", job_id)\
+                .execute()
+        except Exception as job_update_err:
+            print(f"⚠️ Job status update failed (attempt 1): {job_update_err}", flush=True)
+            try:
+                import time as _time
+                _time.sleep(2)
+                supabase_client.table("outbound_call_jobs")\
+                    .update(update_data)\
+                    .eq("id", job_id)\
+                    .execute()
+                print(f"✅ Job status update succeeded on retry", flush=True)
+            except Exception as retry_err:
+                print(f"❌ Job status update failed (attempt 2): {retry_err}", flush=True)
+                # Continue — don't let this block interaction finalization or extraction
+
         # Finalize interaction row on terminal call statuses.
         # This keeps ended_at/transcript_text in sync for admin conversation views.
         if interaction_id and call_status in ["completed", "failed", "busy", "no-answer", "canceled"]:
