@@ -297,19 +297,24 @@ def get_platform_config():
     )
     talent_greeting, talent_prompt_updated_at, talent_prompt_updated_by = get_string_config(
         "voice_prompt_talent_greeting",
-        "Hi, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive opportunities. Have I caught you at a bad time?",
+        "Hi, this is Dan from Ainm Search. Thanks for signing up — I just wanted to have a quick chat to get to know you. Is now a good time?",
     )
     company_greeting, company_prompt_updated_at, company_prompt_updated_by = get_string_config(
         "voice_prompt_company_greeting",
-        "Hello, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive talent for your organization. Have I caught you at a bad time?",
+        "Hi, this is Dan from Ainm Search. I'm calling to take a quick brief on what you're looking for. Have I caught you at a good time?",
     )
     fallback_greeting, fallback_prompt_updated_at, fallback_prompt_updated_by = get_string_config(
         "voice_prompt_fallback_greeting",
-        "Hello, this is A I Dan from ExecFlex. I noticed you just signed up. Are you looking to hire executive talent, or are you an executive looking for opportunities?",
+        "Hi, this is Dan from Ainm Search. Thanks for signing up. Are you looking to hire talent, or are you looking for opportunities yourself?",
     )
     general_prompt, general_prompt_updated_at, general_prompt_updated_by = get_string_config(
         "voice_prompt_general_system",
-        "CONVERSATION STYLE:\n- Be warm, professional, and concise\n- Ask ONE question at a time\n- Keep responses under 20 seconds when spoken (about 50-70 words max)\n- Listen actively and acknowledge what the user says\n- Don't repeat questions that have been answered\n\nCONVERSATION GOALS:\n1. Confirm their intent (hiring vs job seeking)\n2. Understand their motivation (why ExecFlex, why now)\n3. Learn about role preferences (titles, industries)\n4. Understand location and availability preferences\n5. Identify any constraints or deal-breakers\n6. Be witty.\n7. To progress up the levels of conversation from cliche, to facts, to opinions, to feelings, to needs/identity (dreams)\n\nIMPORTANT RULES:\n- Never ask for information already provided\n- If the user wants to end the call, thank them politely and close\n- After 8-10 minutes or when enough info is gathered, begin closing the conversation\n- Be natural and conversational, not robotic\n- When the call has clearly concluded, call the end_call tool exactly once.\n- Do not repeat goodbye lines in a loop.\n- Use Mirroring if they dont seem quite finished. Repeat back the last few words of what they said without embellishment in an upward tone.\n- Use Labelling of the potential emption, if they express an opinion or feeling. e.g. 'That sounds like it was exciting!'",
+        "(This prompt is managed in code — see candidate_chat and employer_brief prompts in voice_websocket.py)",
+    )
+    # Twilio outbound phone number (editable via admin config)
+    outbound_phone, outbound_phone_updated_at, outbound_phone_updated_by = get_string_config(
+        "twilio_outbound_phone",
+        TWILIO_PHONE_NUMBER or "",
     )
     return ok({
         "configuration": {
@@ -332,6 +337,7 @@ def get_platform_config():
             "voice_prompt_company_greeting": company_greeting,
             "voice_prompt_fallback_greeting": fallback_greeting,
             "voice_prompt_general_system": general_prompt,
+            "twilio_outbound_phone": outbound_phone,
             "configuration_hints": {
                 "voice_vad_threshold": "Sensitivity of speech detection; lower = more sensitive to quiet speech.",
                 "voice_vad_prefix_padding_ms": "Milliseconds of audio retained before speech start (captures first syllables).",
@@ -369,6 +375,7 @@ def get_platform_config():
                         company_prompt_updated_at,
                         fallback_prompt_updated_at,
                         general_prompt_updated_at,
+                        outbound_phone_updated_at,
                     ] if x
                 ] or [None]
             ),
@@ -392,6 +399,7 @@ def get_platform_config():
                 or company_prompt_updated_by
                 or fallback_prompt_updated_by
                 or general_prompt_updated_by
+                or outbound_phone_updated_by
             ),
         }
     })
@@ -424,6 +432,7 @@ def set_platform_config():
             "voice_prompt_company_greeting",
             "voice_prompt_fallback_greeting",
             "voice_prompt_general_system",
+            "twilio_outbound_phone",
         }
         provided = [k for k in allowed_keys if k in data]
         if not provided:
@@ -640,19 +649,19 @@ def set_platform_config():
         first_turn_max_words, _, _ = get_number_config("voice_first_turn_max_words", default=45)
         talent_greeting, _, _ = get_string_config(
             "voice_prompt_talent_greeting",
-            "Hi, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive opportunities. Have I caught you at a bad time?",
+            "Hi, this is Dan from Ainm Search. Thanks for signing up — I just wanted to have a quick chat to get to know you. Is now a good time?",
         )
         company_greeting, _, _ = get_string_config(
             "voice_prompt_company_greeting",
-            "Hello, this is A I Dan from ExecFlex. I noticed you just signed up looking for executive talent for your organization. Have I caught you at a bad time?",
+            "Hi, this is Dan from Ainm Search. I'm calling to take a quick brief on what you're looking for. Have I caught you at a good time?",
         )
         fallback_greeting, _, _ = get_string_config(
             "voice_prompt_fallback_greeting",
-            "Hello, this is A I Dan from ExecFlex. I noticed you just signed up. Are you looking to hire executive talent, or are you an executive looking for opportunities?",
+            "Hi, this is Dan from Ainm Search. Thanks for signing up. Are you looking to hire talent, or are you looking for opportunities yourself?",
         )
         general_prompt, _, _ = get_string_config(
             "voice_prompt_general_system",
-            "CONVERSATION STYLE:\n- Be warm, professional, and concise\n- Ask ONE question at a time\n- Keep responses under 20 seconds when spoken (about 50-70 words max)\n- Listen actively and acknowledge what the user says\n- Don't repeat questions that have been answered\n\nCONVERSATION GOALS:\n1. Confirm their intent (hiring vs job seeking)\n2. Understand their motivation (why ExecFlex, why now)\n3. Learn about role preferences (titles, industries)\n4. Understand location and availability preferences\n5. Identify any constraints or deal-breakers\n6. Be witty.\n7. To progress up the levels of conversation from cliche, to facts, to opinions, to feelings, to needs/identity (dreams)\n\nIMPORTANT RULES:\n- Never ask for information already provided\n- If the user wants to end the call, thank them politely and close\n- After 8-10 minutes or when enough info is gathered, begin closing the conversation\n- Be natural and conversational, not robotic\n- When the call has clearly concluded, call the end_call tool exactly once.\n- Do not repeat goodbye lines in a loop.\n- Use Mirroring if they dont seem quite finished. Repeat back the last few words of what they said without embellishment in an upward tone.\n- Use Labelling of the potential emption, if they express an opinion or feeling. e.g. 'That sounds like it was exciting!'",
+            "(This prompt is managed in code — see candidate_chat and employer_brief prompts in voice_websocket.py)",
         )
         return ok({
             "configuration": {
@@ -881,7 +890,7 @@ def get_conversation_details(conversation_id: str):
                 "turns": [
                     {
                         "speaker": "assistant",
-                        "text": "Hello, this is ExecFlex...",
+                        "text": "Hello, this is Dan from Ainm Search...",
                         "created_at": "2024-12-15T10:30:00Z",
                         "turn_sequence": 1
                     },

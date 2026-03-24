@@ -162,7 +162,7 @@ class RealtimeVoiceBridge:
         else:
             mode_context = "Determine whether the user is looking to hire executives or is an executive seeking opportunities."
 
-        return f"""You are Ai-dan, a friendly voice assistant for ExecFlex, a platform connecting companies with executive talent.
+        return f"""You are Ai-dan, a friendly voice assistant for Ainm Search, a platform connecting companies with executive talent.
 
 {mode_context}
 
@@ -175,7 +175,7 @@ CONVERSATION STYLE:
 
 CONVERSATION GOALS:
 1. Confirm their intent (hiring vs job seeking)
-2. Understand their motivation (why ExecFlex, why now)
+2. Understand their motivation (why Ainm Search, why now)
 3. Learn about role preferences (titles, industries)
 4. Understand location and availability preferences
 5. Identify any constraints or deal-breakers
@@ -481,17 +481,17 @@ IMPORTANT RULES:
 
         if signup_mode in ("talent", "job_seeker", "executive", "candidate"):
             greeting = (
-                "Hi, this is Ai-dan from ExecFlex. I noticed you just logged in "
+                "Hi, this is Ai-dan from Ainm Search. I noticed you just logged in "
                 "looking for executive opportunities. Have I caught you at a bad time?"
             )
         elif signup_mode in ("hirer", "talent_seeker", "company", "client", "employer"):
             greeting = (
-                "Hello, this is Ai-dan from ExecFlex. I noticed you just logged in "
+                "Hello, this is Ai-dan from Ainm Search. I noticed you just logged in "
                 "looking for executive talent for your organization. Have I caught you at a bad time?"
             )
         else:
             greeting = (
-                "Hello, this is Ai-dan from ExecFlex. I noticed you just logged in. "
+                "Hello, this is Ai-dan from Ainm Search. I noticed you just logged in. "
                 "Are you looking to hire executive talent, or are you an executive "
                 "looking for opportunities?"
             )
