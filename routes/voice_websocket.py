@@ -430,11 +430,12 @@ def init_voice_websocket(sock: Sock):
                         bridge_state["use_elevenlabs_output"] = use_elevenlabs_output
                         bridge_state["assistant_text_parts"] = []
                         bridge_state["vad_config"] = _load_vad_config(job_id)
-                        # Screening calls need longer silence detection so AI doesn't interrupt mid-answer
+                        # Screening calls need much longer silence detection so AI doesn't interrupt mid-answer
                         if call_type == "screening":
-                            bridge_state["vad_config"]["silence_duration_ms"] = 1500
-                            bridge_state["vad_config"]["threshold"] = 0.6
-                            print(f"[VAD] Screening call — silence_duration_ms=1500, threshold=0.6", flush=True)
+                            bridge_state["vad_config"]["silence_duration_ms"] = 2000
+                            bridge_state["vad_config"]["threshold"] = 0.65
+                            bridge_state["vad_config"]["prefix_padding_ms"] = 500
+                            print(f"[VAD] Screening call — silence_duration_ms=2000, threshold=0.65", flush=True)
                         bridge_state["prompt_vars"] = prompt_vars
                         bridge_state["call_type"] = call_type if job_id else "qualification"
                         bridge_state["screening_context"] = screening_context if job_id else None

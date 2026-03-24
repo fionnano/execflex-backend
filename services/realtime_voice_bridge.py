@@ -109,7 +109,7 @@ class BridgeConfig:
     interaction_id: Optional[str] = None
     user_id: Optional[str] = None
     signup_mode: Optional[str] = None
-    max_duration_seconds: int = 900  # 15 minutes
+    max_duration_seconds: int = 1200  # 20 minutes
     system_prompt: Optional[str] = None
 
 
