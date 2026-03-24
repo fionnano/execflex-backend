@@ -83,7 +83,7 @@ class RealtimeSessionState:
     # Call lifecycle
     phase: CallPhase = CallPhase.CONNECTING
     start_time: float = field(default_factory=time.time)
-    max_duration_seconds: int = 600  # 10 minutes
+    max_duration_seconds: int = 900  # 15 minutes
 
     # Question tracking
     questions_asked: Set[str] = field(default_factory=set)
