@@ -180,6 +180,21 @@ def screening_status(job_id: str):
                     response["candidate_profile"] = ix_artifacts["candidate_extraction"]
                 if ix_artifacts.get("employer_extraction"):
                     response["employer_brief"] = ix_artifacts["employer_extraction"]
+                # Tell frontend whether extraction is complete or still processing
+                has_extraction = bool(
+                    ix_artifacts.get("candidate_extraction")
+                    or ix_artifacts.get("employer_extraction")
+                )
+                has_error = bool(
+                    (ix_artifacts.get("candidate_extraction") or {}).get("error")
+                    or (ix_artifacts.get("employer_extraction") or {}).get("error")
+                )
+                if has_extraction and not has_error:
+                    response["extraction_status"] = "complete"
+                elif has_error:
+                    response["extraction_status"] = "failed"
+                else:
+                    response["extraction_status"] = "processing"
 
         return jsonify(response), 200
 

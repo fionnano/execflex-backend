@@ -364,6 +364,13 @@ def voice_status():
                 )
                 turns = turns_resp.data or []
                 transcript_text = _build_transcript_text_from_turns(turns)
+                print(
+                    f"[Transcript] interaction={interaction_id}: {len(turns)} turns, "
+                    f"transcript={len(transcript_text)} chars",
+                    flush=True,
+                )
+                if transcript_text:
+                    print(f"[Transcript] Preview: {transcript_text[:300]}", flush=True)
 
                 interaction_payload = {
                     "ended_at": now_iso,
