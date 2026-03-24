@@ -454,19 +454,28 @@ def _store_extraction_in_artifacts(interaction_id: str, key: str, data: dict):
 def _update_candidate_profile(user_id: str, extraction: dict):
     """Update people_profiles with extracted candidate data."""
     try:
+        # Build bio from summary + skills (skills go in bio, NOT expertise which is an enum)
+        bio_parts = []
+        if extraction.get("summary"):
+            bio_parts.append(extraction["summary"])
+        if extraction.get("skills"):
+            skills_str = ", ".join(extraction["skills"]) if isinstance(extraction["skills"], list) else str(extraction["skills"])
+            bio_parts.append(f"Skills: {skills_str}")
+        if extraction.get("desired_role"):
+            bio_parts.append(f"Looking for: {extraction['desired_role']}")
+
         update = {}
         if extraction.get("industries"):
             update["industries"] = extraction["industries"]
-        if extraction.get("skills"):
-            update["expertise"] = extraction["skills"]
+        # Do NOT write skills to expertise — it's an enum column
         if extraction.get("location"):
             update["location"] = extraction["location"]
         if extraction.get("experience_years"):
             update["years_experience"] = extraction["experience_years"]
         if extraction.get("current_role"):
             update["headline"] = extraction["current_role"]
-        if extraction.get("summary"):
-            update["bio"] = extraction["summary"]
+        if bio_parts:
+            update["bio"] = " | ".join(bio_parts)
         if extraction.get("salary_expectation"):
             update["rate_range"] = extraction["salary_expectation"]
         if extraction.get("availability"):
@@ -487,8 +496,6 @@ def _update_candidate_profile(user_id: str, extraction: dict):
         )
         if existing.data:
             profile = existing.data[0] or {}
-            # Update fields: overwrite empty fields, and also overwrite fields that
-            # were previously set by voice_call extraction (allow re-extraction to improve)
             filtered = {}
             for key, value in update.items():
                 existing_val = profile.get(key)
@@ -497,25 +504,37 @@ def _update_candidate_profile(user_id: str, extraction: dict):
                     or (isinstance(existing_val, list) and len(existing_val) == 0)
                     or existing_val == "Not provided"
                 )
-                # Also overwrite if profile_source is voice_call (our own previous extraction)
                 is_our_data = profile.get("profile_source") == "voice_call"
                 if is_empty or is_our_data:
                     filtered[key] = value
 
             if filtered:
                 filtered["profile_source"] = "voice_call"
-                supabase_client.table("people_profiles").update(
-                    filtered
-                ).eq("user_id", user_id).execute()
+                # Write each field individually to avoid one bad field blocking all updates
+                for key, value in filtered.items():
+                    try:
+                        supabase_client.table("people_profiles").update(
+                            {key: value}
+                        ).eq("user_id", user_id).execute()
+                    except Exception as field_err:
+                        print(f"[Extraction] Field {key} failed for {user_id}: {field_err}", flush=True)
                 print(f"[Extraction] Updated profile for {user_id}: {list(filtered.keys())}", flush=True)
             else:
                 print(f"[Extraction] All fields already populated for {user_id}, skipping update", flush=True)
         else:
-            # Create profile
+            # Create profile — write safe fields only
             update["user_id"] = user_id
             update["profile_source"] = "voice_call"
-            supabase_client.table("people_profiles").insert(update).execute()
-            print(f"[Extraction] Created new profile for {user_id}", flush=True)
+            try:
+                supabase_client.table("people_profiles").insert(update).execute()
+                print(f"[Extraction] Created new profile for {user_id}", flush=True)
+            except Exception as insert_err:
+                print(f"[Extraction] Profile insert failed, trying without problematic fields: {insert_err}", flush=True)
+                # Retry with only safe text fields
+                safe = {k: v for k, v in update.items() if k in ("user_id", "profile_source", "headline", "bio", "location", "rate_range")}
+                if safe.get("user_id"):
+                    supabase_client.table("people_profiles").insert(safe).execute()
+                    print(f"[Extraction] Created profile with safe fields: {list(safe.keys())}", flush=True)
 
     except Exception as e:
         print(f"[Extraction] FAILED to update profile for {user_id}: {e}", flush=True)
