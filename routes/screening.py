@@ -56,14 +56,18 @@ def screen_candidate():
     Rate limit: 10 calls per hour per authenticated user. Returns 429 if exceeded.
     """
     user_id = request.environ.get("authenticated_user_id", "unknown")
-    if not _check_screening_rate(user_id):
-        return jsonify({"error": "Rate limit exceeded: max 10 screening calls per hour"}), 429
+    is_service = user_id.startswith("service:") if user_id else False
 
-    # Tier quota check
-    from services.billing_service import check_quota
-    allowed, quota_msg = check_quota(user_id, "screenings_done")
-    if not allowed:
-        return jsonify({"error": quota_msg, "error_code": "upgrade_required", "upgrade_url": "/pricing"}), 403
+    # Skip rate limit and quota for service-to-service calls (e.g. Ainm backend)
+    if not is_service:
+        if not _check_screening_rate(user_id):
+            return jsonify({"error": "Rate limit exceeded: max 10 screening calls per hour"}), 429
+
+        # Tier quota check
+        from services.billing_service import check_quota
+        allowed, quota_msg = check_quota(user_id, "screenings_done")
+        if not allowed:
+            return jsonify({"error": quota_msg, "error_code": "upgrade_required", "upgrade_url": "/pricing"}), 403
 
     data = request.get_json(force=True) or {}
 
@@ -86,7 +90,7 @@ def screen_candidate():
             callback_url=data.get("callback_url"),
             source_candidate_id=data.get("source_candidate_id"),
             purpose=data.get("purpose"),
-            user_id=user_id if user_id != "unknown" else None,
+            user_id=user_id if user_id not in ("unknown", None) and not user_id.startswith("service:") else None,
         )
         return jsonify(result), 201
     except Exception as e:
