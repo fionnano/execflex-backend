@@ -170,9 +170,25 @@ def _second_pass_extraction(transcript: str, first_result: dict, missing_fields:
     fields_desc = ", ".join(missing_fields)
     print(f"[Extraction] Pass 2: attempting to fill missing fields: {missing_fields}", flush=True)
 
-    second_prompt = f"""The following fields were NOT found in an initial extraction from this recruitment conversation. Re-read the transcript very carefully and try to find ANY mention of these fields, even casual or indirect references.
+    # Build targeted hints for each missing field
+    field_hints = {
+        "salary_expectation": "any mention of salary, compensation, rate, package, money, pay, earnings, or numbers with k/K/thousand",
+        "experience_years": "any mention of years, time in role, career length, started in [year], or phrases like 'for the last X years'",
+        "location": "any city, town, county, country, or area mentioned",
+        "industries": "any sector, field, or industry the person works in or mentioned",
+        "availability": "any mention of when they can start, notice period, or timeline",
+        "desired_role": "what they said they WANT to do next — a job title or type of work",
+        "current_role": "their CURRENT or most recent job title",
+        "skills": "any skill, technology, tool, or competency mentioned",
+    }
+    hints_block = "\n".join(
+        f"- {f}: {field_hints.get(f, 'any mention of ' + f)}"
+        for f in missing_fields
+    )
 
-Missing fields to find: {fields_desc}
+    second_prompt = f"""The following fields were not extracted from the conversation. Re-read the transcript carefully — the person may have mentioned these casually or in passing:
+
+{hints_block}
 
 Full transcript:
 {transcript}
