@@ -153,6 +153,28 @@ def score_screening_call(interaction_id: str, job_id: str) -> Optional[Dict[str,
             print(f"⚠️ Empty transcript for interaction {interaction_id}, skipping scoring")
             return None
 
+        # Guard: don't score incomplete calls (too short)
+        user_turns = [t for t in turns if (t.get("speaker") or "").lower() == "user"]
+        if len(user_turns) < 3 or call_duration_seconds < 60:
+            print(f"⚠️ Incomplete call: {len(user_turns)} user turns, {call_duration_seconds}s duration — skipping scoring")
+            # Fire callback with incomplete status
+            if callback_url:
+                _fire_callback(
+                    callback_url=callback_url,
+                    payload={
+                        "source_candidate_id": source_candidate_id,
+                        "transcript": transcript,
+                        "scores": [],
+                        "overall_score": None,
+                        "recommendation": "incomplete",
+                        "candidate_summary": "Call ended early — insufficient data for scoring. Recommend rescheduling.",
+                        "call_duration_seconds": call_duration_seconds,
+                        "call_status": "incomplete",
+                    },
+                    job_id=job_id,
+                )
+            return None
+
         # Score via OpenAI
         questions_json = json.dumps(questions, indent=2)
         scoring_prompt = f"""You are scoring a candidate screening call for the role of {role_title} at {company_name}.
