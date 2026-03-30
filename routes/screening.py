@@ -562,3 +562,92 @@ def feedback_request():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@screening_bp.route("/candidate-status", methods=["GET"])
+def candidate_status():
+    """
+    GET /screening/candidate-status?token=<uuid>
+
+    Candidate portal — returns screening summary for the given token.
+    No auth required (token acts as auth).
+    Returns 404 if not found, 410 if older than 90 days.
+    """
+    token = request.args.get("token", "").strip()
+    if not token:
+        return jsonify({"error": "token query parameter is required"}), 400
+
+    try:
+        from config.clients import supabase_client
+        from datetime import datetime, timezone, timedelta
+        if not supabase_client:
+            return jsonify({"error": "Service unavailable"}), 503
+
+        ix_resp = (
+            supabase_client.table("interactions")
+            .select("id, started_at, ended_at, screening_recommendation, created_at")
+            .eq("candidate_token", token)
+            .limit(1)
+            .execute()
+        )
+        if not ix_resp.data:
+            return jsonify({"error": "Screening not found for this token"}), 404
+
+        ix = ix_resp.data[0]
+        interaction_id = ix["id"]
+
+        # Check 90-day expiry
+        created_str = ix.get("created_at") or ix.get("started_at")
+        if created_str:
+            try:
+                created_dt = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
+                if datetime.now(timezone.utc) - created_dt > timedelta(days=90):
+                    return jsonify({"error": "This screening link has expired (older than 90 days)"}), 410
+            except (ValueError, TypeError):
+                pass
+
+        # Get job context
+        job_resp = (
+            supabase_client.table("outbound_call_jobs")
+            .select("artifacts")
+            .eq("interaction_id", interaction_id)
+            .limit(1)
+            .execute()
+        )
+        candidate_name = "Candidate"
+        role_title = "the role"
+        company_name = "the company"
+        duration_seconds = 0
+
+        if job_resp.data:
+            artifacts = (job_resp.data[0] or {}).get("artifacts") or {}
+            ctx = artifacts.get("screening_context") or {}
+            candidate_name = ctx.get("candidate_name", candidate_name)
+            role_title = ctx.get("role_title", role_title)
+            company_name = ctx.get("company_name", company_name)
+            duration_seconds = int(artifacts.get("call_duration") or 0)
+
+        # Map recommendation to candidate-friendly status
+        rec = ix.get("screening_recommendation")
+        status_map = {
+            "strong_proceed": "progressed",
+            "proceed": "progressed",
+            "hold": "under_review",
+            "reject": "not_progressed",
+            "incomplete": "under_review",
+        }
+
+        return jsonify({
+            "candidate_name": candidate_name,
+            "role_title": role_title,
+            "company_name": company_name,
+            "screening_date": ix.get("started_at") or ix.get("created_at"),
+            "duration_seconds": duration_seconds,
+            "status": status_map.get(rec, "under_review"),
+            "token": token,
+        }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500

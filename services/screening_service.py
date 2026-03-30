@@ -252,12 +252,16 @@ Respond ONLY with valid JSON:
         candidate_summary = result.get("candidate_summary", "")
         bias_flags = result.get("bias_flags", [])
 
-        # Persist to interaction
+        # Persist to interaction + generate candidate portal token
+        import uuid
+        candidate_token = str(uuid.uuid4())
         now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
         supabase_client.table("interactions").update({
             "screening_scores": scores,
             "screening_recommendation": recommendation,
+            "candidate_token": candidate_token,
         }).eq("id", interaction_id).execute()
+        print(f"[Screening] Generated candidate_token={candidate_token} for interaction={interaction_id}", flush=True)
 
         print(
             f"✅ Scored screening: interaction_id={interaction_id}, "
@@ -297,6 +301,8 @@ Respond ONLY with valid JSON:
                     "call_duration_seconds": call_duration_seconds,
                     "recording_url": recording_url,
                     "call_status": call_status,
+                    "candidate_token": candidate_token,
+                    "candidate_portal_url": f"https://execflex.ai/my-screening?token={candidate_token}",
                 },
                 job_id=job_id,
             )
@@ -307,6 +313,7 @@ Respond ONLY with valid JSON:
             "recommendation": recommendation,
             "candidate_summary": candidate_summary,
             "bias_flags": bias_flags,
+            "candidate_token": candidate_token,
         }
 
     except Exception as e:
