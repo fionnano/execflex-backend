@@ -91,6 +91,7 @@ def screen_candidate():
             source_candidate_id=data.get("source_candidate_id"),
             purpose=data.get("purpose"),
             user_id=user_id if user_id not in ("unknown", None) and not user_id.startswith("service:") else None,
+            role_id=data.get("role_id"),
         )
         return jsonify(result), 201
     except Exception as e:
@@ -253,3 +254,117 @@ def screening_status(job_id: str):
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+# ── Bias audit and policy endpoints (EU AI Act compliance) ───────────────────
+
+@screening_bp.route("/bias-audit/<role_id>", methods=["GET"])
+@require_auth
+def bias_audit(role_id: str):
+    """
+    GET /screening/bias-audit/<role_id>
+
+    Returns bias audit summary and records for a given role.
+    """
+    try:
+        from config.clients import supabase_client
+        if not supabase_client:
+            return jsonify({"error": "Database not available"}), 503
+
+        limit = min(int(request.args.get("limit", 50)), 200)
+        offset = int(request.args.get("offset", 0))
+
+        resp = (
+            supabase_client.table("screening_bias_audit")
+            .select("*", count="exact")
+            .or_(f"role_id.eq.{role_id},role_title.eq.{role_id}")
+            .order("created_at", desc=True)
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
+        records = resp.data or []
+        total = resp.count if resp.count is not None else len(records)
+
+        if not records:
+            return jsonify({"role_id": role_id, "total_screenings": 0, "summary": {}, "records": []}), 200
+
+        scored = [r for r in records if r.get("overall_score") is not None]
+        avg_score = sum(r["overall_score"] for r in scored) / max(len(scored), 1)
+        all_flags = []
+        for r in records:
+            all_flags.extend(r.get("bias_flags") or [])
+        question_consistency = sum(
+            1 for r in records
+            if r.get("questions_asked") == r.get("questions_expected") and r.get("question_order_preserved")
+        ) / max(total, 1)
+        disclosure_count = sum(1 for r in records if r.get("ai_disclosure_given"))
+        consent_count = sum(1 for r in records if r.get("candidate_consented"))
+
+        if question_consistency >= 0.95 and len(all_flags) == 0:
+            risk_rating = "Low"
+        elif question_consistency >= 0.8 and len(all_flags) <= 2:
+            risk_rating = "Medium"
+        else:
+            risk_rating = "High"
+
+        return jsonify({
+            "role_id": role_id,
+            "total_screenings": total,
+            "summary": {
+                "average_score": round(avg_score, 2),
+                "question_consistency_rate": round(question_consistency, 2),
+                "ai_disclosure_rate": round(disclosure_count / max(total, 1), 2),
+                "consent_rate": round(consent_count / max(total, 1), 2),
+                "total_bias_flags": len(all_flags),
+                "unique_bias_flags": list(set(all_flags)),
+                "bias_risk_rating": risk_rating,
+            },
+            "compliance_statement": (
+                "This screening process is designed in accordance with EU AI Act "
+                "requirements for high-risk AI in recruitment (Annex III) and EU "
+                "Employment Equality legislation."
+            ),
+            "records": records,
+        }), 200
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@screening_bp.route("/bias-policy", methods=["GET"])
+def bias_policy():
+    """
+    GET /screening/bias-policy
+
+    Public transparency endpoint — EU AI Act bias prevention policy.
+    No authentication required.
+    """
+    return jsonify({
+        "policy_version": "1.0",
+        "effective_date": "2026-03-30",
+        "framework": "EU AI Act (Regulation 2024/1689)",
+        "classification": "High-risk AI system — employment and recruitment (Article 6, Annex III)",
+        "ai_system": {"name": "AI Dan", "provider": "Ainm Search", "purpose": "Initial candidate screening via structured voice interview"},
+        "controls": {
+            "question_consistency": "All candidates for the same role receive identical questions in identical order.",
+            "language_neutrality": "Plain, neutral, competency-based language only. Gender-coded terms banned.",
+            "protected_characteristics": "Absolutely prohibited from asking about age, gender, race, ethnicity, religion, disability, sexual orientation, marital status, pregnancy, nationality, or salary history (EU Directive 2023/970 Art. 5).",
+            "accent_accommodation": "Extended silence tolerance (4s+). AI requests repetition rather than guessing. No accent/fluency penalty.",
+            "neurodivergent_accommodation": "Non-linear answers accepted. Extended thinking time (20s). Filler words not penalised.",
+            "scoring_objectivity": "Fixed competency rubric (1-5). Only relevance, evidence, outcome. Style/confidence/accent excluded.",
+            "ai_disclosure": "Candidates told they're speaking with AI. Can decline and speak to a human.",
+            "human_oversight": "All AI scores reviewed by human recruiter before any hiring decision.",
+            "data_processing": "Recorded and processed under GDPR. Candidates can request deletion.",
+            "bias_self_check": "Scoring AI self-checks: would identical scores be given with different name/accent/style?",
+        },
+        "scoring_rubric": {"1": "No relevant evidence", "2": "Limited evidence", "3": "Meets expectations", "4": "Strong evidence", "5": "Exceptional evidence"},
+        "candidate_rights": {
+            "right_to_know": "Informed they are assessed by AI (EU AI Act Article 50)",
+            "right_to_decline": "Can opt out and speak to a human",
+            "right_to_explanation": "Can request feedback (EU AI Act Article 86)",
+            "right_to_deletion": "Can request data deletion (GDPR Article 17)",
+        },
+        "audit_trail": "Every screening generates a bias audit record: GET /screening/bias-audit/{role_id}",
+        "contact": "compliance@ainm.ai",
+    }), 200

@@ -25,6 +25,7 @@ def create_screening_job(
     source_candidate_id: Optional[str],
     purpose: Optional[str] = None,
     user_id: Optional[str] = None,
+    role_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create an outbound_call_job for a candidate screening call.
@@ -74,6 +75,7 @@ def create_screening_job(
                 "questions": questions,
                 "callback_url": callback_url,
                 "source_candidate_id": source_candidate_id,
+                "role_id": role_id,
             },
         },
     }
@@ -175,11 +177,26 @@ def score_screening_call(interaction_id: str, job_id: str) -> Optional[Dict[str,
                 )
             return None
 
-        # Score via OpenAI
+        # Score via OpenAI — EU AI Act compliant competency-only rubric
         questions_json = json.dumps(questions, indent=2)
-        scoring_prompt = f"""You are scoring a candidate screening call for the role of {role_title} at {company_name}.
+        scoring_prompt = f"""You are an impartial scoring engine for a candidate screening call. Score ONLY job-relevant competencies demonstrated in the answers. You must NOT consider or be influenced by any protected characteristics.
 
-Candidate: {candidate_name}
+Role: {role_title} at {company_name}
+
+SCORING RULES — CRITICAL:
+1. Score ONLY on the competency each question assesses. Nothing else.
+2. Base scores EXCLUSIVELY on the SUBSTANCE — relevant experience, knowledge, and examples provided.
+3. Do NOT consider or penalise: accent, fluency, grammar, filler words, pauses, speaking speed, confidence level, communication style, or answer structure.
+4. Do NOT infer or consider: age, gender, race, ethnicity, nationality, disability, religion, sexual orientation, or any protected characteristic — even if voluntarily mentioned.
+5. If a question was not answered (e.g. call ended early), mark as "not_assessed" with score null.
+6. A score of 3 means the answer meets expectations — it is the baseline, not mediocre.
+
+SCORING RUBRIC:
+1 = No relevant evidence: No relevant experience, knowledge, or examples for this competency.
+2 = Limited evidence: Some awareness but lacked specific examples or depth.
+3 = Meets expectations: Relevant experience and at least one concrete example.
+4 = Strong evidence: Multiple relevant examples with clear impact and depth.
+5 = Exceptional evidence: Outstanding expertise with compelling, detailed examples.
 
 Screening questions:
 {questions_json}
@@ -187,19 +204,23 @@ Screening questions:
 Full call transcript:
 {transcript}
 
-For each screening question that was addressed in the call, extract:
+For each question, extract:
 - "question": the question text
-- "competency": the competency being assessed (use value from questions list if provided, otherwise infer)
-- "weight": the weight (use value from questions list if provided, otherwise 1.0)
-- "response_summary": 2-3 sentence summary of the candidate's response
-- "score": integer 1-5 (1=Poor, 2=Below Expected, 3=Meets Expected, 4=Strong, 5=Exceptional)
+- "competency": the competency assessed (from questions list if provided, otherwise infer)
+- "weight": the weight (from questions list if provided, otherwise 1.0)
+- "response_summary": 2-3 sentence factual summary of the answer (substance only — no commentary on delivery style)
+- "score": integer 1-5 per rubric, or null if not assessed
+- "score_justification": 1 sentence explaining which rubric level applies, referencing specific answer content
 
 Also provide:
-- "overall_score": weighted average of individual scores, as a float
-- "recommendation": one of: "strong_proceed", "proceed", "hold", "reject"
-- "candidate_summary": 2-3 sentence overall candidate summary
+- "overall_score": weighted average of scored questions (exclude not_assessed), float rounded to 1 decimal
+- "recommendation": one of "strong_proceed", "proceed", "hold", "reject" — based SOLELY on competency scores
+- "candidate_summary": 2-3 sentence summary of demonstrated competencies only. Do NOT reference communication style, accent, or personal characteristics.
+- "bias_flags": list of any potential bias concerns detected (empty list if none). Examples: "candidate voluntarily disclosed age", "question was skipped"
 
-Respond ONLY with valid JSON matching this exact structure:
+BIAS SELF-CHECK: Before finalising, review — would you give identical scores if this candidate had a different name, accent, or communication style but gave identical answers? If not, revise.
+
+Respond ONLY with valid JSON:
 {{
   "scores": [
     {{
@@ -207,12 +228,14 @@ Respond ONLY with valid JSON matching this exact structure:
       "competency": "...",
       "weight": 1.0,
       "response_summary": "...",
-      "score": 4
+      "score": 4,
+      "score_justification": "..."
     }}
   ],
   "overall_score": 3.5,
   "recommendation": "proceed",
-  "candidate_summary": "..."
+  "candidate_summary": "...",
+  "bias_flags": []
 }}"""
 
         completion = gpt_client.chat.completions.create(
@@ -227,6 +250,7 @@ Respond ONLY with valid JSON matching this exact structure:
         overall_score = float(result.get("overall_score", 0))
         recommendation = result.get("recommendation", "hold")
         candidate_summary = result.get("candidate_summary", "")
+        bias_flags = result.get("bias_flags", [])
 
         # Persist to interaction
         now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
@@ -237,7 +261,24 @@ Respond ONLY with valid JSON matching this exact structure:
 
         print(
             f"✅ Scored screening: interaction_id={interaction_id}, "
-            f"overall_score={overall_score}, recommendation={recommendation}"
+            f"overall_score={overall_score}, recommendation={recommendation}, "
+            f"bias_flags={bias_flags}"
+        )
+
+        # Log bias audit record
+        _log_bias_audit(
+            interaction_id=interaction_id,
+            job_id=job_id,
+            role_id=ctx.get("role_id"),
+            role_title=role_title,
+            company_name=company_name,
+            questions=questions,
+            scores=scores,
+            overall_score=overall_score,
+            recommendation=recommendation,
+            bias_flags=bias_flags,
+            transcript=transcript,
+            call_duration_seconds=call_duration_seconds,
         )
 
         # Fire callback
@@ -252,6 +293,7 @@ Respond ONLY with valid JSON matching this exact structure:
                     "overall_score": overall_score,
                     "recommendation": recommendation,
                     "candidate_summary": candidate_summary,
+                    "bias_flags": bias_flags,
                     "call_duration_seconds": call_duration_seconds,
                     "recording_url": recording_url,
                     "call_status": call_status,
@@ -264,6 +306,7 @@ Respond ONLY with valid JSON matching this exact structure:
             "overall_score": overall_score,
             "recommendation": recommendation,
             "candidate_summary": candidate_summary,
+            "bias_flags": bias_flags,
         }
 
     except Exception as e:
@@ -281,6 +324,97 @@ def score_screening_call_async(interaction_id: str, job_id: str):
         daemon=True,
     )
     t.start()
+
+
+# ---------------------------------------------------------------------------
+# Bias audit logging (EU AI Act compliance)
+# ---------------------------------------------------------------------------
+
+def _log_bias_audit(
+    interaction_id: str,
+    job_id: str,
+    role_id: Optional[str],
+    role_title: str,
+    company_name: str,
+    questions: list,
+    scores: list,
+    overall_score: float,
+    recommendation: str,
+    bias_flags: list,
+    transcript: str,
+    call_duration_seconds: int,
+):
+    """Log bias audit record for EU AI Act compliance."""
+    try:
+        import statistics
+
+        questions_expected = len(questions)
+        questions_asked = len([s for s in scores if s.get("score") is not None])
+        questions_skipped = questions_expected - questions_asked
+
+        # Check question order preserved
+        score_questions = [s.get("question", "").lower().strip() for s in scores if s.get("score") is not None]
+        expected_questions = []
+        for q in questions:
+            if isinstance(q, dict):
+                expected_questions.append(q.get("question", "").lower().strip())
+            else:
+                expected_questions.append(str(q).lower().strip())
+        order_preserved = True
+        last_idx = -1
+        for sq in score_questions:
+            for idx, eq in enumerate(expected_questions):
+                if sq in eq or eq in sq:
+                    if idx < last_idx:
+                        order_preserved = False
+                    last_idx = idx
+                    break
+
+        # Score standard deviation
+        numeric_scores = [s["score"] for s in scores if isinstance(s.get("score"), (int, float))]
+        std_dev = round(statistics.stdev(numeric_scores), 2) if len(numeric_scores) >= 2 else 0.0
+
+        # AI disclosure check
+        transcript_lower = transcript.lower()
+        ai_disclosure = (
+            "artificial intelligence" in transcript_lower
+            or "i am an ai" in transcript_lower
+            or "ai screening assistant" in transcript_lower
+        )
+
+        # Consent check
+        consented = None
+        if ai_disclosure:
+            consented = any(
+                phrase in transcript_lower
+                for phrase in ["yes", "sure", "sounds good", "ok", "okay", "go ahead", "yeah"]
+            )
+
+        supabase_client.table("screening_bias_audit").insert({
+            "interaction_id": interaction_id,
+            "job_id": job_id,
+            "role_id": role_id,
+            "role_title": role_title,
+            "company_name": company_name,
+            "questions_asked": questions_asked,
+            "questions_expected": questions_expected,
+            "questions_skipped": questions_skipped,
+            "question_order_preserved": order_preserved,
+            "overall_score": overall_score,
+            "recommendation": recommendation,
+            "score_std_deviation": std_dev,
+            "bias_flags": bias_flags,
+            "ai_disclosure_given": ai_disclosure,
+            "candidate_consented": consented,
+            "scoring_model": "gpt-4o",
+            "prompt_version": "v1_eu_ai_act",
+            "transcript_length": len(transcript),
+            "call_duration_seconds": call_duration_seconds,
+        }).execute()
+
+        print(f"[BiasAudit] Logged: interaction={interaction_id}, questions={questions_asked}/{questions_expected}, disclosure={ai_disclosure}, consent={consented}", flush=True)
+    except Exception as e:
+        print(f"[BiasAudit] ERROR: {e}", flush=True)
 
 
 # ---------------------------------------------------------------------------
