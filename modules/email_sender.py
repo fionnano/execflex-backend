@@ -190,3 +190,122 @@ def send_intro_email(client_name: str,
             thread_id=thread_id
         )
         return False
+
+
+def send_screening_feedback_email(
+    candidate_email: str,
+    candidate_name: str,
+    role_title: str,
+    company_name: str,
+    overall_score: float,
+    scores: list,
+    recommendation: str,
+) -> bool:
+    """
+    Send screening feedback to a candidate (EU AI Act Article 86 compliance).
+    """
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        print("[Feedback] Email not configured, cannot send feedback")
+        return False
+    if not _is_valid_email(candidate_email):
+        print(f"[Feedback] Invalid email: {candidate_email}")
+        return False
+
+    # Build score breakdown
+    score_lines_plain = []
+    score_rows_html = ""
+    rubric = {1: "No relevant evidence", 2: "Limited evidence", 3: "Meets expectations", 4: "Strong evidence", 5: "Exceptional evidence"}
+    for s in scores:
+        q = s.get("question", "Question")
+        sc = s.get("score")
+        justification = s.get("score_justification") or s.get("response_summary", "")
+        if sc is not None:
+            label = rubric.get(sc, f"Score {sc}")
+            score_lines_plain.append(f"  - {q}\n    Score: {sc}/5 ({label})\n    Rationale: {justification}")
+            score_rows_html += f"""
+            <tr>
+              <td style="padding:8px; border-bottom:1px solid #eee;">{q}</td>
+              <td style="padding:8px; border-bottom:1px solid #eee; text-align:center;"><b>{sc}/5</b><br/><small>{label}</small></td>
+              <td style="padding:8px; border-bottom:1px solid #eee; font-size:13px;">{justification}</td>
+            </tr>"""
+        else:
+            score_lines_plain.append(f"  - {q}\n    Not assessed")
+
+    recommendation_label = {
+        "strong_proceed": "Strong Proceed",
+        "proceed": "Proceed",
+        "hold": "Hold",
+        "reject": "Not proceeding at this stage",
+    }.get(recommendation, recommendation)
+
+    subject = f"Your Screening Feedback — {role_title} at {company_name}"
+
+    msg = EmailMessage()
+    msg["From"] = formataddr(("Ainm Search", EMAIL_ADDRESS))
+    msg["To"] = candidate_email
+    msg["Subject"] = subject
+
+    plain_body = f"""Hi {candidate_name},
+
+Thank you for taking part in the AI screening for the {role_title} role at {company_name}. As required under EU AI Act Article 86, here is your screening feedback.
+
+Overall Score: {overall_score}/5
+Outcome: {recommendation_label}
+
+Question-by-Question Breakdown:
+{chr(10).join(score_lines_plain)}
+
+How You Were Assessed:
+You were assessed on relevance of experience, specific examples given, and outcomes described only. Accent, name, communication style, confidence level, and all personal characteristics were explicitly excluded from scoring. Every candidate for this role was asked the same questions in the same order.
+
+If you have questions about your screening, contact: compliance@ainm.ai
+
+Best regards,
+Ainm Search
+"""
+    msg.set_content(plain_body)
+
+    html_body = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; color: #333; max-width: 700px; margin: auto;">
+        <div style="padding: 20px; border: 1px solid #eee; border-radius: 8px;">
+          <h2 style="color: #2c3e50;">Your Screening Feedback</h2>
+          <p>Hi {candidate_name},</p>
+          <p>Thank you for taking part in the AI screening for the <b>{role_title}</b> role at <b>{company_name}</b>. As required under EU AI Act Article 86, here is your screening feedback.</p>
+
+          <div style="background: #f8f9fa; padding: 16px; border-radius: 6px; margin: 16px 0;">
+            <p style="margin:0;"><b>Overall Score:</b> {overall_score}/5</p>
+            <p style="margin:4px 0 0;"><b>Outcome:</b> {recommendation_label}</p>
+          </div>
+
+          <h3>Question-by-Question Breakdown</h3>
+          <table style="width:100%; border-collapse: collapse;">
+            <tr style="background: #f1f3f5;">
+              <th style="padding:8px; text-align:left;">Question</th>
+              <th style="padding:8px; text-align:center;">Score</th>
+              <th style="padding:8px; text-align:left;">Rationale</th>
+            </tr>
+            {score_rows_html}
+          </table>
+
+          <div style="background: #e8f5e9; padding: 12px; border-radius: 6px; margin: 16px 0;">
+            <p style="margin:0; font-size: 13px;"><b>How you were assessed:</b> You were assessed on relevance of experience, specific examples given, and outcomes described only. Accent, name, communication style, confidence level, and all personal characteristics were explicitly excluded from scoring. Every candidate for this role was asked the same questions in the same order.</p>
+          </div>
+
+          <p style="font-size: 13px; color: #666;">If you have questions about your screening, contact: <a href="mailto:compliance@ainm.ai">compliance@ainm.ai</a></p>
+
+          <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;"/>
+          <small style="color:#999;">This feedback was generated in accordance with EU AI Act Article 86 (right to explanation). Ainm Search | {datetime.utcnow().isoformat()}</small>
+        </div>
+      </body>
+    </html>
+    """
+    msg.add_alternative(html_body, subtype="html")
+
+    try:
+        _send_message(msg)
+        print(f"[Feedback] Sent screening feedback to {candidate_email} for {role_title}")
+        return True
+    except Exception as e:
+        print(f"[Feedback] Failed to send feedback email: {e}")
+        return False

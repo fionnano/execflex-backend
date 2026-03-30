@@ -368,3 +368,197 @@ def bias_policy():
         "audit_trail": "Every screening generates a bias audit record: GET /screening/bias-audit/{role_id}",
         "contact": "compliance@ainm.ai",
     }), 200
+
+
+@screening_bp.route("/feedback-request", methods=["POST"])
+def feedback_request():
+    """
+    POST /screening/feedback-request
+
+    Candidate self-service: request an explanation of their screening outcome.
+    EU AI Act Article 86 compliance.
+
+    Body (JSON):
+        email   str — candidate's email address
+        phone   str — candidate's phone (optional, alternative lookup)
+
+    No auth required — candidates may not have an account.
+    """
+    data = request.get_json(force=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    phone = (data.get("phone") or "").strip()
+
+    if not email and not phone:
+        return jsonify({"error": "email or phone is required"}), 400
+
+    try:
+        from config.clients import supabase_client
+        from datetime import datetime, timezone
+        if not supabase_client:
+            return jsonify({"error": "Service unavailable"}), 503
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Look up the most recent screening for this candidate
+        # Search by phone in outbound_call_jobs, or by email in channel_identities
+        interaction_id = None
+        job_id = None
+        candidate_name = "Candidate"
+        role_title = "the role"
+        company_name = "the company"
+        scores = []
+        overall_score = None
+        recommendation = None
+
+        # Try phone lookup first (most screening calls are by phone)
+        if phone:
+            normalized_phone = phone if phone.startswith("+") else "+" + phone.replace(" ", "").replace("-", "")
+            job_resp = (
+                supabase_client.table("outbound_call_jobs")
+                .select("id, interaction_id, artifacts")
+                .eq("phone_e164", normalized_phone)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if job_resp.data:
+                job = job_resp.data[0]
+                job_id = job["id"]
+                interaction_id = job.get("interaction_id")
+                ctx = (job.get("artifacts") or {}).get("screening_context") or {}
+                candidate_name = ctx.get("candidate_name", candidate_name)
+                role_title = ctx.get("role_title", role_title)
+                company_name = ctx.get("company_name", company_name)
+
+        # Fallback: try email lookup via channel_identities → user → jobs
+        if not interaction_id and email:
+            ci_resp = (
+                supabase_client.table("channel_identities")
+                .select("user_id")
+                .eq("channel", "email")
+                .eq("value", email)
+                .limit(1)
+                .execute()
+            )
+            if ci_resp.data:
+                user_id = ci_resp.data[0].get("user_id")
+                if user_id:
+                    job_resp = (
+                        supabase_client.table("outbound_call_jobs")
+                        .select("id, interaction_id, artifacts")
+                        .eq("user_id", user_id)
+                        .order("created_at", desc=True)
+                        .limit(1)
+                        .execute()
+                    )
+                    if job_resp.data:
+                        job = job_resp.data[0]
+                        job_id = job["id"]
+                        interaction_id = job.get("interaction_id")
+                        ctx = (job.get("artifacts") or {}).get("screening_context") or {}
+                        candidate_name = ctx.get("candidate_name", candidate_name)
+                        role_title = ctx.get("role_title", role_title)
+                        company_name = ctx.get("company_name", company_name)
+
+        if not interaction_id:
+            # Log the request even if no screening found
+            supabase_client.table("screening_feedback_requests").insert({
+                "candidate_email": email or phone,
+                "candidate_phone": phone,
+                "status": "no_data",
+                "error_message": "No screening found for this candidate",
+                "requested_at": now_iso,
+            }).execute()
+            return jsonify({
+                "status": "no_screening_found",
+                "message": "We couldn't find a screening record for this email/phone. Please contact compliance@ainm.ai for assistance.",
+            }), 404
+
+        # Get scores from interaction
+        ix_resp = (
+            supabase_client.table("interactions")
+            .select("screening_scores, screening_recommendation")
+            .eq("id", interaction_id)
+            .limit(1)
+            .execute()
+        )
+        if ix_resp.data:
+            ix = ix_resp.data[0] or {}
+            scores = ix.get("screening_scores") or []
+            recommendation = ix.get("screening_recommendation")
+            # Calculate overall from scores
+            numeric = [s["score"] for s in scores if isinstance(s.get("score"), (int, float))]
+            overall_score = round(sum(numeric) / max(len(numeric), 1), 1) if numeric else None
+
+        if not scores:
+            supabase_client.table("screening_feedback_requests").insert({
+                "candidate_email": email or phone,
+                "candidate_phone": phone,
+                "interaction_id": interaction_id,
+                "job_id": job_id,
+                "role_title": role_title,
+                "status": "no_data",
+                "error_message": "Screening found but scores not yet available",
+                "requested_at": now_iso,
+            }).execute()
+            return jsonify({
+                "status": "scores_not_ready",
+                "message": "Your screening has been found but scores are still being processed. Please try again in a few minutes.",
+            }), 202
+
+        # Send feedback email
+        feedback_email = email
+        if not feedback_email:
+            supabase_client.table("screening_feedback_requests").insert({
+                "candidate_email": phone,
+                "candidate_phone": phone,
+                "interaction_id": interaction_id,
+                "job_id": job_id,
+                "role_title": role_title,
+                "status": "failed",
+                "error_message": "No email address available to send feedback",
+                "requested_at": now_iso,
+            }).execute()
+            return jsonify({
+                "status": "email_required",
+                "message": "Please provide your email address so we can send the feedback.",
+            }), 400
+
+        from modules.email_sender import send_screening_feedback_email
+        sent = send_screening_feedback_email(
+            candidate_email=feedback_email,
+            candidate_name=candidate_name,
+            role_title=role_title,
+            company_name=company_name,
+            overall_score=overall_score or 0,
+            scores=scores,
+            recommendation=recommendation or "pending",
+        )
+
+        supabase_client.table("screening_feedback_requests").insert({
+            "candidate_email": feedback_email,
+            "candidate_phone": phone,
+            "interaction_id": interaction_id,
+            "job_id": job_id,
+            "role_title": role_title,
+            "status": "sent" if sent else "failed",
+            "sent_at": now_iso if sent else None,
+            "error_message": None if sent else "Email delivery failed",
+            "requested_at": now_iso,
+        }).execute()
+
+        if sent:
+            return jsonify({
+                "status": "sent",
+                "message": f"Screening feedback has been sent to {feedback_email}. Check your inbox.",
+            }), 200
+        else:
+            return jsonify({
+                "status": "failed",
+                "message": "We found your screening but could not send the email. Please contact compliance@ainm.ai.",
+            }), 500
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
