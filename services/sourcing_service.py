@@ -31,7 +31,7 @@ PDL_SEARCH_URL = "https://api.peopledatalabs.com/v5/person/search"
 # Module-load marker — appears once in Render logs at process start.
 # If you post a role and DO NOT see this line above the [SOURCING] logs,
 # the running process is importing a stale/cached module.
-_MODULE_BUILD_TAG = "sourcing_service@sql-v7"
+_MODULE_BUILD_TAG = "sourcing_service@sql-v8"
 print(f"[SOURCING] module loaded: {_MODULE_BUILD_TAG}", flush=True)
 
 # NOTE: PDL_API_KEY is deliberately read inside each function at call time
@@ -262,6 +262,28 @@ def _map_pdl_person(person: dict, opportunity_id: str) -> dict:
     linkedin_url = person.get("linkedin_url") if isinstance(person.get("linkedin_url"), str) else None
     pdl_id = person.get("id") if isinstance(person.get("id"), str) else None
 
+    has_email_flag = bool(person.get("work_email") or person.get("personal_email"))
+
+    source_metadata = {
+        "apollo_id": pdl_id,  # reused field for dedup
+        "opportunity_id": opportunity_id,
+        "has_email": has_email_flag,
+        "has_phone": "Yes" if person.get("mobile_phone") or person.get("phone_numbers") else "No",
+        "organization_name": company or None,
+        "provider": "pdl",
+    }
+
+    # Flag candidates where PDL says an email exists but search results
+    # do not include it (PDL free-tier search never returns emails even
+    # when has_email=true). These rows are worth enriching with the paid
+    # PDL enrichment endpoint later — tag them so admin can filter.
+    if has_email_flag:
+        source_metadata["outreach_ready"] = True
+        source_metadata["next_action"] = "enrich_for_email"
+    else:
+        source_metadata["outreach_ready"] = False
+        source_metadata["next_action"] = "none"
+
     return {
         "name": full_name,
         "headline": headline.strip() or None,
@@ -270,14 +292,7 @@ def _map_pdl_person(person: dict, opportunity_id: str) -> dict:
         "linkedin_url": linkedin_url,
         "approved": False,
         "source": "apollo",  # kept for DB compatibility with existing queries
-        "source_metadata": {
-            "apollo_id": pdl_id,  # reused field for dedup
-            "opportunity_id": opportunity_id,
-            "has_email": bool(person.get("work_email") or person.get("personal_email")),
-            "has_phone": "Yes" if person.get("mobile_phone") or person.get("phone_numbers") else "No",
-            "organization_name": company or None,
-            "provider": "pdl",
-        },
+        "source_metadata": source_metadata,
     }
 
 
@@ -366,6 +381,9 @@ def source_and_upsert(
                     sm["has_phone"] = cand_sm.get("has_phone", sm.get("has_phone", "No"))
                     sm["organization_name"] = cand_sm.get("organization_name") or sm.get("organization_name")
                     sm["provider"] = cand_sm.get("provider") or sm.get("provider")
+                    # FIX 6: propagate outreach_ready / next_action flags
+                    sm["outreach_ready"] = cand_sm.get("outreach_ready", sm.get("outreach_ready", False))
+                    sm["next_action"] = cand_sm.get("next_action", sm.get("next_action", "none"))
 
                     supabase_client.table("people_profiles").update({
                         "source_metadata": sm,
