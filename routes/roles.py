@@ -5,7 +5,7 @@ from datetime import datetime
 from flask import request, jsonify
 from routes import roles_bp
 from utils.response_helpers import ok, bad
-from utils.auth_helpers import require_auth
+from utils.auth_helpers import require_auth, require_admin
 from config.clients import supabase_client
 
 
@@ -220,4 +220,55 @@ def sourced_candidates(opportunity_id: str):
         return jsonify(candidates), 200
     except Exception as e:
         print(f"❌ /roles/{opportunity_id}/sourced-candidates error: {e}")
+        return bad(str(e), 500)
+
+
+@roles_bp.route("/admin/sourced-candidates", methods=["GET"])
+@require_admin
+def admin_all_sourced_candidates():
+    """
+    GET /admin/sourced-candidates
+
+    Admin-only. Return ALL Apollo-sourced candidates across every
+    opportunity, ordered by created_at DESC, limit 50. Used by the
+    employer dashboard's SourcedCandidatesPanel "Show all" toggle
+    so admins can see the full pool when a specific role's
+    source_metadata->>opportunity_id filter comes up empty.
+    """
+    try:
+        if not supabase_client:
+            return bad("Database not available", 503)
+
+        resp = (
+            supabase_client.table("people_profiles")
+            .select(
+                "id, first_name, last_name, headline, location, "
+                "years_experience, approved, source_metadata, created_at"
+            )
+            .eq("source", "apollo")
+            .order("created_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        rows = resp.data or []
+
+        candidates = []
+        for r in rows:
+            first = r.get("first_name") or ""
+            last = r.get("last_name") or ""
+            name = (f"{first} {last}").strip() or None
+            candidates.append({
+                "id": r.get("id"),
+                "name": name,
+                "headline": r.get("headline"),
+                "location": r.get("location"),
+                "years_experience": r.get("years_experience"),
+                "approved": r.get("approved"),
+                "source_metadata": r.get("source_metadata") or {},
+                "created_at": r.get("created_at"),
+            })
+
+        return jsonify({"candidates": candidates, "total": len(candidates)}), 200
+    except Exception as e:
+        print(f"❌ /admin/sourced-candidates error: {e}")
         return bad(str(e), 500)
