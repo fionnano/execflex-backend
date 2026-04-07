@@ -979,6 +979,104 @@ CONVERSATION RULES — FOLLOW THESE EXACTLY:
 When the conversation is clearly finished, call end_call exactly once. Do not repeat goodbye lines."""
 
 
+# ── Role-type detection + default question sets ─────────────────────────────
+
+import re as _role_re
+
+
+def _detect_role_type(role_title: str) -> str:
+    """
+    Heuristically map a role title to a role type bucket so we can inject
+    role-appropriate screening questions when the caller didn't supply any.
+
+    Returns one of: cfo, cmo, cto, coo, ned, general.
+
+    Short acronyms (cfo/cto/cmo/coo/ned) are matched as whole words via
+    regex boundaries to avoid false positives like "cto" matching inside
+    "director" — which in turn would mis-classify a non-executive
+    director as a CTO.
+    """
+    if not role_title:
+        return "general"
+    t = role_title.lower()
+
+    def _has_acronym(acronym: str) -> bool:
+        # Word-boundary match: acronym must be delimited by start/end or non-word chars.
+        return bool(_role_re.search(rf"\b{acronym}\b", t))
+
+    # Non-executive director / board — check FIRST because "director" is a
+    # common substring that could otherwise be captured by a CTO match.
+    if _has_acronym("ned") or "non-exec" in t or "non exec" in t \
+            or "chair" in t or "board member" in t or "advisor" in t:
+        return "ned"
+
+    # Finance
+    if _has_acronym("cfo") or "finance" in t or "financial" in t \
+            or "controller" in t or "treasurer" in t:
+        return "cfo"
+
+    # Technology
+    if _has_acronym("cto") or "vp engineering" in t or "head of engineering" in t \
+            or "technology" in t or "engineering" in t:
+        return "cto"
+
+    # Marketing
+    if _has_acronym("cmo") or "marketing" in t or "brand" in t or "growth" in t:
+        return "cmo"
+
+    # Operations
+    if _has_acronym("coo") or "operations" in t or "chief operating" in t:
+        return "coo"
+
+    return "general"
+
+
+_ROLE_QUESTIONS: dict = {
+    "cfo": [
+        {"question": "Walk me through your experience owning a P&L — what was the scope and what were the biggest levers you had to pull?", "competency": "commercial_ownership", "weight": 1.0},
+        {"question": "Tell me about your board reporting experience — how often did you present, and what kind of questions did you typically get from directors?", "competency": "board_exposure", "weight": 1.0},
+        {"question": "Have you been involved in any fundraising rounds — debt, equity, or otherwise? What was your role and what was the outcome?", "competency": "fundraising_experience", "weight": 1.0},
+        {"question": "What's the largest finance team you've built and managed, and how did you structure it?", "competency": "team_leadership", "weight": 1.0},
+    ],
+    "cmo": [
+        {"question": "Tell me about a brand you've built or repositioned — what was the starting point, and what changed under your leadership?", "competency": "brand_building", "weight": 1.0},
+        {"question": "Talk me through your experience with demand generation — which channels have you run, and what metrics did you measure success by?", "competency": "demand_gen", "weight": 1.0},
+        {"question": "What's the largest marketing budget you've owned and how did you decide where to deploy it?", "competency": "budget_ownership", "weight": 1.0},
+        {"question": "Tell me about leading a marketing team — what's the biggest team you've built, and what was your management style?", "competency": "team_leadership", "weight": 1.0},
+    ],
+    "cto": [
+        {"question": "Walk me through your build-versus-buy philosophy — when do you build in-house and when do you choose off-the-shelf?", "competency": "technical_strategy", "weight": 1.0},
+        {"question": "Tell me about a time you scaled an engineering team — what was the headcount journey and what were the hardest parts?", "competency": "team_scaling", "weight": 1.0},
+        {"question": "How do you approach technical debt — when do you pay it down, and how do you justify that to non-technical stakeholders?", "competency": "technical_debt_management", "weight": 1.0},
+        {"question": "Describe how you communicate with non-technical executives and boards about complex technology decisions.", "competency": "stakeholder_management", "weight": 1.0},
+    ],
+    "coo": [
+        {"question": "Tell me about a significant process improvement you led — what was broken, what did you change, and what was the measurable outcome?", "competency": "process_improvement", "weight": 1.0},
+        {"question": "Describe your experience leading cross-functional initiatives — how do you align teams that don't report into you?", "competency": "cross_functional_leadership", "weight": 1.0},
+        {"question": "What KPI or operating frameworks have you introduced in previous roles, and how did you embed them?", "competency": "operational_frameworks", "weight": 1.0},
+        {"question": "Walk me through how you structure your week when you're running a complex operation with multiple functions reporting in.", "competency": "operational_rigour", "weight": 1.0},
+    ],
+    "ned": [
+        {"question": "Tell me about your prior board or advisory experience — what kinds of boards, and what was your contribution?", "competency": "governance_experience", "weight": 1.0},
+        {"question": "What sector expertise do you bring to a board role, and how recently was it front-line operational experience?", "competency": "sector_expertise", "weight": 1.0},
+        {"question": "How many board or advisory commitments do you currently hold, and how much time can you realistically give to a new role?", "competency": "time_commitment", "weight": 1.0},
+        {"question": "Tell me about a time you had to challenge a management team at board level — how did you approach it?", "competency": "board_independence", "weight": 1.0},
+    ],
+    "general": [
+        {"question": "Tell me about a significant leadership moment in your career — what was the situation and what did you learn from it?", "competency": "leadership", "weight": 1.0},
+        {"question": "Walk me through a commercial impact you're most proud of — something where you can point to a clear outcome.", "competency": "commercial_impact", "weight": 1.0},
+        {"question": "Describe the kind of company culture where you do your best work, and why.", "competency": "culture_fit", "weight": 1.0},
+    ],
+}
+
+
+def _default_questions_for_role_type(role_type: str) -> list:
+    """Return a fresh copy of the default question set for the given bucket."""
+    questions = _ROLE_QUESTIONS.get(role_type) or _ROLE_QUESTIONS["general"]
+    # Return copies so callers can mutate without poisoning the module-level dict
+    return [dict(q) for q in questions]
+
+
 def _get_system_prompt(
     signup_mode: Optional[str],
     prompt_vars: Optional[dict] = None,
@@ -1003,8 +1101,28 @@ def _get_system_prompt(
         candidate_name = ctx.get("candidate_name", "the candidate")
         role_title = ctx.get("role_title", "the role")
         company_name = ctx.get("company_name", "the company")
-        questions = ctx.get("questions", [])
+        questions = ctx.get("questions", []) or []
         first_name = candidate_name.split()[0] if candidate_name else "there"
+
+        # Role-type detection + auto-fill of role-appropriate questions.
+        # If the caller supplied fewer than 3 questions (typical of the
+        # intro-respond / candidate-chat flow which passes generic
+        # motivation/strengths/fit questions) we replace them with a
+        # role-specific set based on the detected role type. Callers
+        # who supply 3+ questions (e.g. Ainm via POST /screening) keep
+        # control of the list — we never override.
+        detected_role_type = _detect_role_type(role_title)
+        original_question_count = len(questions)
+        auto_filled = False
+        if original_question_count < 3:
+            questions = _default_questions_for_role_type(detected_role_type)
+            auto_filled = True
+        print(
+            f"[PROMPT DEBUG] Screening role_type={detected_role_type!r} "
+            f"role_title={role_title!r} supplied_questions={original_question_count} "
+            f"auto_filled={auto_filled} final_count={len(questions)}",
+            flush=True,
+        )
 
         # Build numbered question list for context
         q_lines = []
