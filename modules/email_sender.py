@@ -361,3 +361,69 @@ def send_lead_notification(email: str,
     except Exception as e:
         print(f"[Lead] Failed to send notification: {e}")
         return False
+
+
+def send_role_posted_notification(role_title: str,
+                                  company_name: str,
+                                  industry: str | None = None,
+                                  location: str | None = None,
+                                  experience_level: str | None = None,
+                                  commitment: str | None = None,
+                                  budget_range: str | None = None,
+                                  contact_name: str | None = None,
+                                  contact_email: str | None = None,
+                                  opportunity_id: str | None = None) -> bool:
+    """
+    Notify EMAIL_USER that a new role has just been posted via /post-role.
+    Best-effort — returns False cleanly if email isn't configured.
+    """
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        print("[RolePosted] Email not configured, cannot send role notification")
+        return False
+
+    msg = EmailMessage()
+    msg["From"] = formataddr(("Ainm Search Roles", EMAIL_ADDRESS))
+    msg["To"] = EMAIL_ADDRESS
+    msg["Subject"] = f"New role: {role_title} at {company_name}"
+
+    admin_link = ""
+    if opportunity_id:
+        # Link to the admin dashboard for this opportunity. Base URL
+        # comes from FRONTEND_URL / EXECFLEX_BASE_URL with a sensible
+        # fallback.
+        base = os.getenv("FRONTEND_URL") or os.getenv("EXECFLEX_BASE_URL") or "https://execflex.ai"
+        admin_link = f"{base.rstrip('/')}/admin/roles/{opportunity_id}"
+
+    lines = [
+        "A new role was just posted.",
+        "",
+        f"Role:             {role_title}",
+        f"Company:          {company_name}",
+        f"Industry:         {industry or '(not provided)'}",
+        f"Location:         {location or '(not provided)'}",
+        f"Experience:       {experience_level or '(not provided)'}",
+        f"Commitment:       {commitment or '(not provided)'}",
+        f"Budget:           {budget_range or '(not provided)'}",
+        "",
+        f"Contact name:     {contact_name or '(not provided)'}",
+        f"Contact email:    {contact_email or '(not provided)'}",
+        "",
+        f"Opportunity ID:   {opportunity_id or '(unknown)'}",
+        f"Posted at:        {datetime.utcnow().isoformat()}Z",
+    ]
+    if admin_link:
+        lines += ["", f"Admin dashboard:  {admin_link}"]
+    lines += [
+        "",
+        "PDL sourcing is running in the background. Check the admin",
+        "dashboard in a few seconds to see the initial candidate pool.",
+    ]
+    msg.set_content("\n".join(lines))
+
+    try:
+        _send_message(msg)
+        print(f"[RolePosted] Notification sent for {role_title} at {company_name}")
+        return True
+    except Exception as e:
+        print(f"[RolePosted] Failed to send notification: {e}")
+        return False

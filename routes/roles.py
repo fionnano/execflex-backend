@@ -127,6 +127,24 @@ def post_role():
                 except Exception as e:
                     print(f"⚠️ Sourcing dispatch failed: {e}")
 
+                # Best-effort admin notification — never blocks the response.
+                try:
+                    from modules.email_sender import send_role_posted_notification
+                    send_role_posted_notification(
+                        role_title=data["role_title"],
+                        company_name=data.get("company_name") or "(company not specified)",
+                        industry=data.get("industry"),
+                        location=clean_optional(data.get("location")),
+                        experience_level=data.get("experience_level"),
+                        commitment=data.get("commitment"),
+                        budget_range=clean_optional(data.get("budget_range")),
+                        contact_name=clean_optional(data.get("contact_name")),
+                        contact_email=clean_optional(data.get("contact_email")),
+                        opportunity_id=created_record.get("id"),
+                    )
+                except Exception as e:
+                    print(f"⚠️ Admin notification dispatch failed: {e}")
+
             if created_record:
                 return ok({
                     "message": "Role posted successfully!",
