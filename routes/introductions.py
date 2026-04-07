@@ -45,6 +45,51 @@ def request_intro():
         if not user_id:
             return bad("Authentication required", 401)
 
+        # Resolve the requester's REAL name and company from the database.
+        # The frontend currently passes the requester's email as
+        # requester_name and the role title as requester_company — both
+        # wrong. Look up the authoritative values here and override the
+        # payload fields. Fall back to whatever the frontend sent if we
+        # can't find a better source.
+        resolved_requester_name = data.get("requester_name")
+        resolved_requester_company = data.get("requester_company")
+        try:
+            req_profile = (
+                supabase_client.table("people_profiles")
+                .select("first_name, last_name")
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            if req_profile.data:
+                pp = req_profile.data[0] or {}
+                first = (pp.get("first_name") or "").strip()
+                last = (pp.get("last_name") or "").strip()
+                full_name = (f"{first} {last}").strip()
+                if full_name:
+                    resolved_requester_name = full_name
+        except Exception as e:
+            print(f"⚠️ Could not resolve requester name from people_profiles: {e}")
+
+        # Company: prefer an organization row the user created themselves.
+        # Fall back to the opportunity's organization if the caller passed
+        # an opportunity_id (handled below after opportunity lookup).
+        try:
+            org_resp = (
+                supabase_client.table("organizations")
+                .select("name")
+                .eq("created_by_user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            if org_resp.data and org_resp.data[0].get("name"):
+                resolved_requester_company = org_resp.data[0]["name"]
+        except Exception as e:
+            print(f"⚠️ Could not resolve requester company from organizations: {e}")
+
+        data["requester_name"] = resolved_requester_name or data.get("requester_name")
+        data["requester_company"] = resolved_requester_company or data.get("requester_company")
+
         # Fetch candidate details from people_profiles
         candidate_name = "an executive"
         candidate_email = None
@@ -103,7 +148,14 @@ def request_intro():
                                 .execute()
                             )
                             if org_resp.data:
-                                opportunity_record["company_name"] = org_resp.data[0].get("name")
+                                opp_org_name = org_resp.data[0].get("name")
+                                opportunity_record["company_name"] = opp_org_name
+                                # Secondary fallback: if we still don't have
+                                # a requester_company, use the opportunity's
+                                # org name (only happens when the hirer
+                                # didn't create the org row themselves).
+                                if opp_org_name and not resolved_requester_company:
+                                    data["requester_company"] = opp_org_name
                         except Exception as e:
                             print(f"⚠️ Could not fetch organisation name: {e}")
             except Exception as e:
