@@ -31,7 +31,7 @@ PDL_SEARCH_URL = "https://api.peopledatalabs.com/v5/person/search"
 # Module-load marker — appears once in Render logs at process start.
 # If you post a role and DO NOT see this line above the [SOURCING] logs,
 # the running process is importing a stale/cached module.
-_MODULE_BUILD_TAG = "sourcing_service@es-json-v2"
+_MODULE_BUILD_TAG = "sourcing_service@no-from-v3"
 print(f"[SOURCING] module loaded: {_MODULE_BUILD_TAG}", flush=True)
 
 # NOTE: PDL_API_KEY is deliberately read inside each function at call time
@@ -170,16 +170,25 @@ def search_candidates(
     seniorities = seniority_levels or get_seniority_from_title(role_title)
     query = build_pdl_query(role_title, location, seniorities)
 
-    body = {
-        "query": query,
-        "size": limit,
-        "pretty": False,
-    }
+    # Fresh dict literal every call — explicitly NO "from" key. PDL dropped
+    # offset pagination in favour of scroll_token; we don't need pagination
+    # at all since size=20 per call is enough.
+    body: dict = {}
+    body["query"] = query
+    body["size"] = limit
+    body["pretty"] = False
+    assert "from" not in body, "PDL body accidentally contains 'from' key"
+
     headers = {
         "Content-Type": "application/json",
         "X-Api-Key": api_key,
     }
 
+    print(
+        f"[SOURCING] PDL request body keys={sorted(body.keys())} "
+        f"size={body['size']} query_len={len(body['query'])}",
+        flush=True,
+    )
     print(f"[SOURCING] PDL request body sent: {json.dumps(body)}", flush=True)
 
     try:

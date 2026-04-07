@@ -89,8 +89,14 @@ def send_intro_email(client_name: str,
                      requester_company: str | None = None,
                      user_type: str = "client",
                      match_id: str | None = None,
-                     thread_id: str | None = None) -> bool:
-    """Send branded intro email and log it."""
+                     thread_id: str | None = None,
+                     plain_body_override: str | None = None) -> bool:
+    """
+    Send branded intro email and log it.
+
+    If plain_body_override is provided, it replaces the static template
+    body entirely — used for LLM-generated outreach emails.
+    """
 
     # Validate addresses
     if not _is_valid_email(client_email):
@@ -113,52 +119,58 @@ def send_intro_email(client_name: str,
     msg["Cc"] = f"{candidate_email}, {EMAIL_ADDRESS}"
     msg["Subject"] = subject
 
-    # Plain text fallback
-    plain_body = [
-        f"Hi {client_name},",
-        "",
-        f"As discussed, here’s your ExecFlex introduction to {candidate_name}, a {role_text} specialising in {industries_text}.",
-        "We believe this could be a valuable conversation for both of you.",
-        "",
-        f"{candidate_name}, meet {client_name}.",
-        "",
-        (body_extra or "I’ll leave you both to take it forward directly."),
-        "",
-        "Best regards,",
-        "Ai-dan",
-        "ExecFlex | Connecting Leaders to Growth",
-    ]
-    msg.set_content("\n".join(plain_body))
+    if plain_body_override:
+        msg.set_content(plain_body_override)
+    else:
+        # Plain text fallback (legacy static template)
+        plain_body = [
+            f"Hi {client_name},",
+            "",
+            f"As discussed, here's your ExecFlex introduction to {candidate_name}, a {role_text} specialising in {industries_text}.",
+            "We believe this could be a valuable conversation for both of you.",
+            "",
+            f"{candidate_name}, meet {client_name}.",
+            "",
+            (body_extra or "I'll leave you both to take it forward directly."),
+            "",
+            "Best regards,",
+            "Ai-dan",
+            "ExecFlex | Connecting Leaders to Growth",
+        ]
+        msg.set_content("\n".join(plain_body))
 
-    # HTML body with simple branding
-    html_body = f"""
-    <html>
-      <body style="font-family: Arial, sans-serif; color: #333;">
-        <table style="max-width:600px; margin:auto; border:1px solid #eee; padding:20px;">
-          <tr>
-            <td>
-              <img src="https://execflex.com/logo.png" alt="ExecFlex Logo" style="width:160px; margin-bottom:20px;" />
-              <p>Hi {client_name},</p>
-              <p>
-                As discussed, here’s your <b>ExecFlex introduction</b> to <b>{candidate_name}</b>, 
-                a <b>{role_text}</b> specialising in {industries_text}.
-              </p>
-              <p>We believe this could be a valuable conversation for both of you.</p>
-              <p><b>{candidate_name}</b>, meet <b>{client_name}</b>.</p>
-              <p>{body_extra or "I’ll leave you both to take it forward directly."}</p>
-              <br/>
-              <p>Best regards,<br/>
-              <b>Ai-dan</b><br/>
-              ExecFlex | Connecting Leaders to Growth</p>
-              <hr/>
-              <small style="color:#999;">This introduction was facilitated via ExecFlex. Timestamp: {datetime.utcnow().isoformat()}</small>
-            </td>
-          </tr>
-        </table>
-      </body>
-    </html>
-    """
-    msg.add_alternative(html_body, subtype="html")
+    # Only attach the branded HTML alternative when using the static template.
+    # For LLM-generated outreach (plain_body_override set) we send plain-text
+    # only — cold outreach performs better without heavy marketing HTML.
+    if not plain_body_override:
+        html_body = f"""
+        <html>
+          <body style="font-family: Arial, sans-serif; color: #333;">
+            <table style="max-width:600px; margin:auto; border:1px solid #eee; padding:20px;">
+              <tr>
+                <td>
+                  <img src="https://execflex.com/logo.png" alt="ExecFlex Logo" style="width:160px; margin-bottom:20px;" />
+                  <p>Hi {client_name},</p>
+                  <p>
+                    As discussed, here's your <b>ExecFlex introduction</b> to <b>{candidate_name}</b>,
+                    a <b>{role_text}</b> specialising in {industries_text}.
+                  </p>
+                  <p>We believe this could be a valuable conversation for both of you.</p>
+                  <p><b>{candidate_name}</b>, meet <b>{client_name}</b>.</p>
+                  <p>{body_extra or "I'll leave you both to take it forward directly."}</p>
+                  <br/>
+                  <p>Best regards,<br/>
+                  <b>Ai-dan</b><br/>
+                  ExecFlex | Connecting Leaders to Growth</p>
+                  <hr/>
+                  <small style="color:#999;">This introduction was facilitated via ExecFlex. Timestamp: {datetime.utcnow().isoformat()}</small>
+                </td>
+              </tr>
+            </table>
+          </body>
+        </html>
+        """
+        msg.add_alternative(html_body, subtype="html")
 
     try:
         _send_message(msg)
