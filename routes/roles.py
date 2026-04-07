@@ -140,6 +140,25 @@ def post_role():
                 except Exception as e:
                     print(f"⚠️ Sourcing dispatch failed: {e}")
 
+                # Fire-and-forget auto-match + outreach against the approved
+                # candidate pool. Runs in parallel with the PDL sourcing
+                # thread above — each is independent. Best-effort.
+                try:
+                    from services.auto_match_service import auto_match_and_outreach_async
+                    auto_match_and_outreach_async(
+                        opportunity_id=created_record["id"],
+                        role_data={
+                            "role_title": data.get("role_title"),
+                            "industry": data.get("industry"),
+                            "location": clean_optional(data.get("location")),
+                            "commitment": data.get("commitment"),
+                            "expertise": data.get("experience_level"),
+                            "role_description": data.get("role_description"),
+                        },
+                    )
+                except Exception as e:
+                    print(f"⚠️ Auto-match dispatch failed: {e}")
+
                 # Best-effort admin notification — never blocks the response.
                 try:
                     from modules.email_sender import send_role_posted_notification
