@@ -76,6 +76,9 @@ def create_screening_job(
                 "callback_url": callback_url,
                 "source_candidate_id": source_candidate_id,
                 "role_id": role_id,
+                # Aidan asks for verbal consent at the start of every
+                # call; the bias-audit logger captures the response.
+                "consent_requested": True,
             },
         },
     }
@@ -269,8 +272,8 @@ Respond ONLY with valid JSON:
             f"bias_flags={bias_flags}"
         )
 
-        # Log bias audit record
-        _log_bias_audit(
+        # Log bias audit record + capture inferred consent
+        consented = _log_bias_audit(
             interaction_id=interaction_id,
             job_id=job_id,
             role_id=ctx.get("role_id"),
@@ -284,6 +287,29 @@ Respond ONLY with valid JSON:
             transcript=transcript,
             call_duration_seconds=call_duration_seconds,
         )
+
+        # FIX 7: If the candidate verbally consented during the AI
+        # disclosure step, flip consent_given on their people_profiles
+        # row. The lookup key is source_candidate_id, which for signup-
+        # path candidates is their auth user_id and matches
+        # people_profiles.user_id.
+        if consented is True and source_candidate_id:
+            try:
+                supabase_client.table("people_profiles").update({
+                    "consent_given": True,
+                    "consent_given_at": now_iso,
+                }).eq("user_id", source_candidate_id).execute()
+                print(
+                    f"[Consent] Set consent_given=True on people_profiles "
+                    f"for user_id={source_candidate_id}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(
+                    f"[Consent] Failed to update people_profiles for "
+                    f"user_id={source_candidate_id}: {e}",
+                    flush=True,
+                )
 
         # Fire callback
         if callback_url:
@@ -350,8 +376,13 @@ def _log_bias_audit(
     bias_flags: list,
     transcript: str,
     call_duration_seconds: int,
-):
-    """Log bias audit record for EU AI Act compliance."""
+) -> Optional[bool]:
+    """
+    Log bias audit record for EU AI Act compliance.
+
+    Returns the inferred `candidate_consented` value (True / False / None)
+    so the caller can propagate consent to people_profiles.
+    """
     try:
         import statistics
 
@@ -420,8 +451,10 @@ def _log_bias_audit(
         }).execute()
 
         print(f"[BiasAudit] Logged: interaction={interaction_id}, questions={questions_asked}/{questions_expected}, disclosure={ai_disclosure}, consent={consented}", flush=True)
+        return consented
     except Exception as e:
         print(f"[BiasAudit] ERROR: {e}", flush=True)
+        return None
 
 
 # ---------------------------------------------------------------------------
