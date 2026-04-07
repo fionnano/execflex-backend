@@ -44,7 +44,7 @@ def _check_rate(user_id: str) -> bool:
 
 # ── System prompt ────────────────────────────────────────────────────────────
 
-_BASE_SYSTEM_PROMPT = (
+_EMPLOYER_SYSTEM_PROMPT = (
     "You are an expert executive recruitment consultant specialising in the "
     "Irish and European market, working for ExecFlex / ai·nm search. You "
     "help hiring managers find and assess senior talent.\n\n"
@@ -55,9 +55,33 @@ _BASE_SYSTEM_PROMPT = (
     "availability patterns.\n"
 )
 
-_CLOSING_GUIDANCE = (
+_CANDIDATE_SYSTEM_PROMPT = (
+    "You are an expert career consultant and executive search advisor "
+    "specialising in the Irish and European market, working for ExecFlex / "
+    "ai·nm search. You are speaking directly with a senior executive "
+    "candidate.\n\n"
+    "Be warm, direct, and genuinely helpful. Give honest advice about their "
+    "career positioning and the market. You know the Irish executive market "
+    "well — typical salary ranges, which sectors are hiring, how to position "
+    "for fractional vs full-time roles, NED board opportunities.\n\n"
+    "You can help with:\n"
+    "- How to position their experience for specific roles\n"
+    "- Realistic salary expectations for their level\n"
+    "- Which sectors are actively hiring senior talent\n"
+    "- Whether fractional/NED/full-time suits their profile\n"
+    "- How to make their profile stand out\n"
+    "- What ExecFlex clients are looking for right now\n"
+    "- Interview preparation for exec roles\n"
+)
+
+_EMPLOYER_CLOSING = (
     "\nKeep responses under 150 words unless detail is essential. "
     "Use bullet points. Be specific to the Irish/EU executive market."
+)
+
+_CANDIDATE_CLOSING = (
+    "\nKeep responses under 150 words. Be specific and honest. "
+    "Never give generic career advice."
 )
 
 
@@ -65,8 +89,61 @@ def _build_system_prompt(
     role_context: Optional[dict],
     candidate_context: Optional[list],
 ) -> str:
-    """Compose the system prompt with optional role + candidate sections."""
-    parts = [_BASE_SYSTEM_PROMPT]
+    """
+    Compose the system prompt.
+
+    Employer mode (default) uses _EMPLOYER_SYSTEM_PROMPT and renders the
+    hiring role + shortlist sections.
+
+    Candidate mode is triggered when role_context.candidate_mode == True.
+    In that case role_context holds the candidate's own profile and the
+    candidate-advisor system prompt is used instead.
+    """
+    is_candidate_mode = (
+        isinstance(role_context, dict)
+        and role_context.get("candidate_mode") is True
+    )
+
+    if is_candidate_mode:
+        parts = [_CANDIDATE_SYSTEM_PROMPT]
+        profile_lines = ["\nCandidate profile context:"]
+        headline = (role_context.get("headline") or "").strip()
+        location = (role_context.get("location") or "").strip()
+        years = role_context.get("years_experience")
+        expertise = role_context.get("expertise")
+        industries = role_context.get("industries")
+        rate_range = role_context.get("rate_range")
+        commitment = (role_context.get("commitment") or "").strip()
+        if headline:
+            profile_lines.append(f"- Headline: {headline}")
+        if location:
+            profile_lines.append(f"- Location: {location}")
+        if years:
+            profile_lines.append(f"- Years of experience: {years}")
+        if isinstance(expertise, list) and expertise:
+            profile_lines.append(f"- Expertise: {', '.join(str(e) for e in expertise[:10])}")
+        elif isinstance(expertise, str) and expertise.strip():
+            profile_lines.append(f"- Expertise: {expertise.strip()}")
+        if isinstance(industries, list) and industries:
+            profile_lines.append(f"- Industries: {', '.join(str(i) for i in industries[:10])}")
+        elif isinstance(industries, str) and industries.strip():
+            profile_lines.append(f"- Industries: {industries.strip()}")
+        if rate_range:
+            profile_lines.append(f"- Rate range: {rate_range}")
+        if commitment:
+            profile_lines.append(f"- Preferred commitment: {commitment}")
+        if len(profile_lines) > 1:
+            parts.append("\n".join(profile_lines))
+        else:
+            parts.append(
+                "\nCandidate profile context: (not yet filled in — encourage "
+                "them to complete their profile for more specific advice)"
+            )
+        parts.append(_CANDIDATE_CLOSING)
+        return "".join(parts)
+
+    # ── Employer mode (default) ──────────────────────────────────────────
+    parts = [_EMPLOYER_SYSTEM_PROMPT]
 
     if isinstance(role_context, dict) and role_context:
         title = (role_context.get("title") or "").strip()
@@ -106,7 +183,7 @@ def _build_system_prompt(
         if len(cand_lines) > 1:
             parts.append("\n".join(cand_lines))
 
-    parts.append(_CLOSING_GUIDANCE)
+    parts.append(_EMPLOYER_CLOSING)
     return "".join(parts)
 
 
