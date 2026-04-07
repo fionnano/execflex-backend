@@ -427,3 +427,73 @@ def send_role_posted_notification(role_title: str,
     except Exception as e:
         print(f"[RolePosted] Failed to send notification: {e}")
         return False
+
+
+def send_talent_network_confirmation(candidate_email: str,
+                                     candidate_name: str,
+                                     phone: str) -> bool:
+    """
+    Confirmation email sent when a candidate opts in to the talent
+    network via POST /talent-network/join. Includes the call
+    expectation, GDPR rights summary, and EU AI Act disclosure.
+    Best-effort — returns False cleanly if email isn't configured
+    or the recipient address is invalid.
+    """
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        print("[TalentNet] Email not configured, cannot send confirmation")
+        return False
+    if not _is_valid_email(candidate_email):
+        print(f"[TalentNet] Invalid recipient email: {candidate_email}")
+        return False
+
+    first_name = (candidate_name or "").strip().split(" ", 1)[0] or "there"
+
+    msg = EmailMessage()
+    msg["From"] = formataddr(("Ainm Search Talent Network", EMAIL_ADDRESS))
+    msg["To"] = candidate_email
+    # Bcc ourselves for the audit trail
+    msg["Bcc"] = EMAIL_ADDRESS
+    msg["Subject"] = "You're joining the ExecFlex talent network"
+
+    lines = [
+        f"Hi {first_name},",
+        "",
+        "Thanks for joining the ExecFlex / Ainm Search executive talent network.",
+        "",
+        f"Aidan — our AI recruitment consultant — will call you at {phone} within the next few",
+        "minutes. The call comes from an Irish number and takes about 4 minutes.",
+        "",
+        "What to expect on the call:",
+        "  - Aidan will identify himself as an AI at the start.",
+        "  - He'll ask whether you're open to new opportunities.",
+        "  - He'll ask about your preferred role type, sectors, salary, and availability.",
+        "  - That's it — no screening questions, no CV upload, no forms.",
+        "",
+        "Your rights under GDPR:",
+        "  - You can request a copy of everything we hold about you.",
+        "  - You can request deletion of your data at any time.",
+        "  - Contact compliance@ainm.ai for either.",
+        "",
+        "EU AI Act disclosure:",
+        "  - You are interacting with an AI system (Article 50).",
+        "  - The call is recorded and a human colleague reviews each transcript",
+        "    before we make any match recommendations.",
+        "  - You can decline the call and speak to a human instead by",
+        "    replying to this email.",
+        "",
+        "If anything goes wrong or you have questions, just reply to this",
+        "email — a human will get back to you within one working day.",
+        "",
+        "Best regards,",
+        "The Ainm Search team",
+        f"Ainm Search | https://execflex.ai | sent {datetime.utcnow().isoformat()}Z",
+    ]
+    msg.set_content("\n".join(lines))
+
+    try:
+        _send_message(msg)
+        print(f"[TalentNet] Confirmation sent to {candidate_email}")
+        return True
+    except Exception as e:
+        print(f"[TalentNet] Failed to send confirmation: {e}")
+        return False

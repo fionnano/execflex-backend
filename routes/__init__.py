@@ -30,3 +30,6 @@ from routes.ai_consultant import ai_consultant_bp  # noqa
 # Admin bulk upload (candidates / clients from CSV / XLSX)
 from routes.upload import upload_bp  # noqa
 
+# Public talent-network opt-in landing page
+from routes.talent_network import talent_network_bp  # noqa
+
