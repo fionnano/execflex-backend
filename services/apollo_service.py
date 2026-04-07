@@ -96,7 +96,6 @@ def search_candidates(
         return []
 
     body = {
-        "api_key": api_key,
         "person_titles": [role_title],
         "person_locations": [location] if location else [],
         "person_seniorities": seniority_levels or get_seniority_from_title(role_title),
@@ -107,6 +106,7 @@ def search_candidates(
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
         "accept": "application/json",
+        "X-Api-Key": api_key,
     }
 
     try:
