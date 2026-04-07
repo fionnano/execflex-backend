@@ -404,6 +404,227 @@ def _set_candidate_approved(candidate_id: str, approved: bool):
         return bad(f"Failed to update candidate: {str(e)}", 500)
 
 
+@billing_bp.route("/admin/roles/<opportunity_id>/send-outreach", methods=["POST"])
+@require_admin
+def send_outreach_bulk(opportunity_id: str):
+    """
+    POST /admin/roles/<opportunity_id>/send-outreach
+
+    Body: {"candidate_ids": ["uuid1", "uuid2", ...]}
+
+    For each candidate_id:
+      - Look up email (channel_identities by user_id/profile_id, then
+        source_metadata.enriched_email, then source_metadata.personal_email)
+      - If no email → skipped with reason 'no_email'
+      - Generate LLM outreach email + append response links
+      - Create a threads row for the outreach
+      - Send the email via send_intro_email
+      - Log an interactions row
+
+    Returns {sent, skipped, total}.
+    """
+    if not supabase_client:
+        return bad("Database not available", 503)
+
+    data = request.get_json(force=True, silent=True) or {}
+    candidate_ids = data.get("candidate_ids")
+    if not isinstance(candidate_ids, list) or not candidate_ids:
+        return bad("candidate_ids must be a non-empty array", 400)
+    candidate_ids = [cid for cid in candidate_ids if isinstance(cid, str) and cid]
+    if not candidate_ids:
+        return bad("candidate_ids contains no valid ids", 400)
+
+    # Fetch the opportunity + org name once for outreach context
+    opportunity_record: dict = {}
+    role_title = "the role"
+    try:
+        opp_resp = (
+            supabase_client.table("opportunities")
+            .select("id, title, description, location, compensation, industry, organization_id, metadata")
+            .eq("id", opportunity_id)
+            .limit(1)
+            .execute()
+        )
+        if not opp_resp.data:
+            return bad("Opportunity not found", 404)
+        opportunity_record = opp_resp.data[0] or {}
+        role_title = opportunity_record.get("title") or role_title
+        org_id = opportunity_record.get("organization_id")
+        if org_id:
+            org_resp = (
+                supabase_client.table("organizations")
+                .select("name")
+                .eq("id", org_id)
+                .limit(1)
+                .execute()
+            )
+            if org_resp.data:
+                opportunity_record["company_name"] = org_resp.data[0].get("name")
+    except Exception as e:
+        print(f"[SEND-OUTREACH] opportunity lookup failed: {e}", flush=True)
+        return bad(f"Failed to fetch opportunity: {e}", 500)
+
+    # Fetch all candidate rows in one query
+    try:
+        cand_resp = (
+            supabase_client.table("people_profiles")
+            .select("id, user_id, first_name, last_name, headline, industries, years_experience, source_metadata")
+            .in_("id", candidate_ids)
+            .execute()
+        )
+        cand_rows = cand_resp.data or []
+    except Exception as e:
+        print(f"[SEND-OUTREACH] people_profiles lookup failed: {e}", flush=True)
+        return bad(f"Failed to fetch candidates: {e}", 500)
+
+    found_ids = {row["id"] for row in cand_rows}
+    missing_ids = [cid for cid in candidate_ids if cid not in found_ids]
+
+    sent: list = []
+    skipped: list = []
+    for mid in missing_ids:
+        skipped.append({"id": mid, "reason": "not_found"})
+
+    from services.outreach_service import generate_outreach_email, append_response_links
+    from modules.email_sender import send_intro_email
+
+    for row in cand_rows:
+        cid = row["id"]
+        first = (row.get("first_name") or "").strip()
+        last = (row.get("last_name") or "").strip()
+        candidate_name = (f"{first} {last}").strip() or "there"
+
+        # Resolve email. Priority:
+        # 1. source_metadata.enriched_email (PDL enrichment result)
+        # 2. source_metadata.personal_email / source_metadata.work_email
+        # 3. channel_identities by user_id
+        email: str | None = None
+        sm = row.get("source_metadata") or {}
+        for key in ("enriched_email", "personal_email", "work_email"):
+            v = sm.get(key)
+            if isinstance(v, str) and "@" in v:
+                email = v
+                break
+        if not email and row.get("user_id"):
+            try:
+                ci = (
+                    supabase_client.table("channel_identities")
+                    .select("value")
+                    .eq("user_id", row["user_id"])
+                    .eq("channel", "email")
+                    .limit(1)
+                    .execute()
+                )
+                if ci.data:
+                    email = ci.data[0].get("value")
+            except Exception as e:
+                print(f"[SEND-OUTREACH] channel_identities lookup failed for {cid}: {e}", flush=True)
+
+        if not email or "@" not in (email or ""):
+            skipped.append({"id": cid, "reason": "no_email"})
+            continue
+
+        # Build outreach email
+        candidate_profile = {
+            "name": candidate_name,
+            "headline": row.get("headline"),
+            "years_experience": row.get("years_experience"),
+            "industries": row.get("industries") or [],
+        }
+        try:
+            outreach = generate_outreach_email(candidate_profile, opportunity_record)
+            outreach_subject = outreach.get("subject")
+            outreach_body = outreach.get("body") or ""
+        except Exception as e:
+            print(f"[SEND-OUTREACH] outreach generation failed for {cid}: {e}", flush=True)
+            skipped.append({"id": cid, "reason": "outreach_generation_failed"})
+            continue
+
+        # Create the thread row first so we can embed its id in the links
+        thread_id = None
+        try:
+            thread_payload = {
+                "subject": f"Opportunity: {role_title}",
+                "status": "outreach_sent",
+                "opportunity_id": opportunity_id,
+                "active": True,
+            }
+            # primary_user_id is only set for signup-path candidates; leave
+            # it null for PDL-sourced rows.
+            if row.get("user_id"):
+                thread_payload["primary_user_id"] = row["user_id"]
+            t_resp = supabase_client.table("threads").insert(thread_payload).execute()
+            if t_resp.data:
+                thread_id = t_resp.data[0].get("id")
+        except Exception as e:
+            print(f"[SEND-OUTREACH] thread insert failed for {cid}: {e}", flush=True)
+            skipped.append({"id": cid, "reason": "thread_create_failed"})
+            continue
+
+        body_with_links = append_response_links(outreach_body, thread_id) if thread_id else outreach_body
+
+        # Send the email
+        try:
+            email_sent = send_intro_email(
+                client_name=candidate_name,
+                client_email=email,
+                candidate_name=candidate_name,
+                candidate_email=email,
+                subject=outreach_subject,
+                candidate_role=row.get("headline"),
+                requester_company=opportunity_record.get("company_name"),
+                user_type="candidate",
+                match_id=cid,
+                thread_id=thread_id,
+                plain_body_override=body_with_links or None,
+            )
+        except Exception as e:
+            print(f"[SEND-OUTREACH] send_intro_email raised for {cid}: {e}", flush=True)
+            email_sent = False
+
+        if not email_sent:
+            skipped.append({"id": cid, "reason": "send_failed"})
+            continue
+
+        # Log the interaction
+        try:
+            supabase_client.table("interactions").insert({
+                "thread_id": thread_id,
+                "user_id": row.get("user_id"),
+                "channel": "email",
+                "direction": "outbound",
+                "provider": "gmail",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+                "summary_text": f"Bulk outreach to {candidate_name} ({email}) for {role_title}",
+                "artifacts": {
+                    "candidate_profile_id": cid,
+                    "candidate_email": email,
+                    "candidate_name": candidate_name,
+                    "outreach_email_subject": outreach_subject,
+                    "outreach_email_body": body_with_links or outreach_body,
+                    "source": "admin_bulk_outreach",
+                },
+            }).execute()
+        except Exception as e:
+            print(f"[SEND-OUTREACH] interaction insert failed for {cid}: {e}", flush=True)
+
+        sent.append(cid)
+
+    print(
+        f"[SEND-OUTREACH] opportunity={opportunity_id} sent={len(sent)} "
+        f"skipped={len(skipped)}",
+        flush=True,
+    )
+
+    return ok({
+        "opportunity_id": opportunity_id,
+        "sent": sent,
+        "skipped": skipped,
+        "total": len(candidate_ids),
+    }, status=200)
+
+
 @billing_bp.route("/admin/roles/<opportunity_id>/approve-sourced", methods=["POST"])
 @require_admin
 def approve_sourced_candidates(opportunity_id: str):
