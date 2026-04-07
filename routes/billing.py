@@ -212,7 +212,7 @@ def create_retainer_payment():
 
     stripe = _get_stripe()
     try:
-        intent = stripe.payment_intents.create(
+        intent = stripe.PaymentIntent.create(
             amount=int(round(amount * 100)),
             currency="eur",
             metadata={
@@ -669,7 +669,7 @@ def admin_revenue():
     try:
         stripe = _get_stripe()
         if stripe and os.getenv("STRIPE_SECRET_KEY"):
-            subs = stripe.subscriptions.list(status="active", limit=100)
+            subs = stripe.Subscription.list(status="active", limit=100)
             total_cents = 0
             for sub in getattr(subs, "auto_paging_iter", lambda: subs.data or [])():
                 items = (sub.get("items") or {}).get("data") or []
