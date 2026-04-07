@@ -1,18 +1,13 @@
 """
-Legacy audio codec helpers — mulaw <-> PCM16 conversion.
+Audio codec helpers — mulaw <-> PCM16 conversion.
 
-Historical note: this file used to contain a full RealtimeVoiceBridge
-class that orchestrated Twilio Media Streams + OpenAI Realtime +
-ElevenLabs TTS. The bridge class and its helpers were superseded by
-the in-line implementation in routes/voice_websocket.py and became
-dead code.
+Used by the Twilio Media Streams bridge to convert between:
+  - mulaw 8kHz (Twilio phone-line format)
+  - PCM16 samples (OpenAI Realtime API format)
 
-Only mulaw_to_pcm16 and pcm16_to_mulaw are still referenced
-externally (by routes/voice_websocket.py). This file now contains
-nothing else so we don't import unused modules or re-export dead APIs.
-
-TODO: move these two functions to services/audio_codec.py in the
-next commit and delete this file.
+Pure-Python implementations — no audioop, no external deps beyond
+`struct` from the standard library. Keeps this module tiny and
+trivially testable.
 """
 import struct
 

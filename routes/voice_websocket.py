@@ -18,8 +18,8 @@ from services.voice_metrics import get_metrics_service
 from services.platform_config_service import get_bool_config, get_number_config, get_string_config
 from config.app_config import OPENAI_API_KEY, ELEVEN_API_KEY, ELEVEN_VOICE_ID
 
-# Import the bridge components
-from services.realtime_voice_bridge import (
+# Audio codec helpers
+from services.audio_codec import (
     mulaw_to_pcm16,
 )
 

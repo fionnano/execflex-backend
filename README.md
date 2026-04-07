@@ -11,7 +11,7 @@ backend/
 │   ├── app_config.py        # Environment variables & config
 │   └── clients.py           # External service clients (Supabase, Twilio, OpenAI)
 ├── services/                # Business logic services
-│   ├── realtime_voice_bridge.py
+│   ├── audio_codec.py          # mulaw <-> PCM16 codec helpers
 │   ├── realtime_session_state.py
 │   ├── voice_metrics.py
 │   └── onboarding_service.py
