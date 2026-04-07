@@ -31,7 +31,7 @@ PDL_SEARCH_URL = "https://api.peopledatalabs.com/v5/person/search"
 # Module-load marker — appears once in Render logs at process start.
 # If you post a role and DO NOT see this line above the [SOURCING] logs,
 # the running process is importing a stale/cached module.
-_MODULE_BUILD_TAG = "sourcing_service@no-from-v3"
+_MODULE_BUILD_TAG = "sourcing_service@no-from-v4"
 print(f"[SOURCING] module loaded: {_MODULE_BUILD_TAG}", flush=True)
 
 # NOTE: PDL_API_KEY is deliberately read inside each function at call time
@@ -100,10 +100,15 @@ def build_pdl_query(
     seniority_levels: Optional[list[str]],
 ) -> str:
     """
-    Build a PDL person-search query as a JSON STRING containing an
-    Elasticsearch query object. PDL wraps the ES query this way: the
-    request body's "query" field must itself be a stringified JSON of
-    {"query": {"bool": {...}}}.
+    Build a PDL person-search query as a JSON STRING containing just
+    the inner Elasticsearch query object. PDL adds its own top-level
+    {"query": ...} wrapper by putting this string into the request
+    body's "query" field, so we MUST NOT wrap it ourselves.
+
+    Correct output:  '{"bool": {"must": [...]}}'
+    Wrong   output:  '{"query": {"bool": {"must": [...]}}}'
+                     (PDL rejects this with
+                      "Query clause [query] not allowed or invalid field name")
 
     Docs: https://docs.peopledatalabs.com/docs/person-search-api
     """
@@ -134,7 +139,7 @@ def build_pdl_query(
     if pdl_levels:
         must.append({"terms": {"job_level": pdl_levels}})
 
-    query_str = json.dumps({"query": {"bool": {"must": must}}})
+    query_str = json.dumps({"bool": {"must": must}})
     print(
         f"[SOURCING] Query type check: {type(query_str).__name__} "
         f"starts_with={query_str[:20]!r}",
