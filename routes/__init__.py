@@ -24,3 +24,6 @@ from routes.voice_calls import voice_calls_bp  # noqa
 # Billing and placements
 from routes.billing import billing_bp  # noqa
 
+# AI Recruitment Consultant chat endpoint
+from routes.ai_consultant import ai_consultant_bp  # noqa
+
