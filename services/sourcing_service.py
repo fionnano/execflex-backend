@@ -31,7 +31,7 @@ PDL_SEARCH_URL = "https://api.peopledatalabs.com/v5/person/search"
 # Module-load marker — appears once in Render logs at process start.
 # If you post a role and DO NOT see this line above the [SOURCING] logs,
 # the running process is importing a stale/cached module.
-_MODULE_BUILD_TAG = "sourcing_service@sql-v5"
+_MODULE_BUILD_TAG = "sourcing_service@sql-v6"
 print(f"[SOURCING] module loaded: {_MODULE_BUILD_TAG}", flush=True)
 
 # NOTE: PDL_API_KEY is deliberately read inside each function at call time
@@ -129,7 +129,7 @@ def build_pdl_sql(
     })
     if pdl_levels:
         level_list = ", ".join(f"'{lvl}'" for lvl in pdl_levels)
-        conditions.append(f"job_level IN ({level_list})")
+        conditions.append(f"job_title_levels IN ({level_list})")
 
     where = " AND ".join(conditions) if conditions else "1=1"
     sql = f"SELECT * FROM person WHERE {where};"
