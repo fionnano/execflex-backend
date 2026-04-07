@@ -1355,157 +1355,18 @@ def _set_candidate_approved(candidate_id: str, approved: bool):
 
 
 # ── Candidate pool management (admin candidate page) ────────────────────────
-
-@billing_bp.route("/admin/candidates/bulk-upload", methods=["POST"])
-@require_admin
-def bulk_upload_candidates():
-    """
-    POST /admin/candidates/bulk-upload
-
-    Body: {
-      candidates: [
-        {first_name?, last_name?, email?, phone?, company?, title?, location?},
-        ...
-      ],
-      source: str  (default: 'manual')
-    }
-
-    For each record:
-      - Build a people_profiles row (headline = "title at company" when both present)
-      - Upsert by email (channel_identities.value where channel='email') if the
-        record has an email; otherwise always insert a new row.
-      - Insert matching channel_identities rows for email/phone.
-
-    Returns: {inserted, updated, skipped, errors[]}
-    """
-    if not supabase_client:
-        return bad("Database not available", 503)
-
-    data = request.get_json(force=True, silent=True) or {}
-    records = data.get("candidates") or []
-    source = data.get("source") or "manual"
-
-    if not isinstance(records, list) or not records:
-        return bad("candidates must be a non-empty list", 400)
-
-    inserted = 0
-    updated = 0
-    skipped = 0
-    errors: list = []
-
-    for idx, rec in enumerate(records):
-        if not isinstance(rec, dict):
-            skipped += 1
-            continue
-
-        first = (rec.get("first_name") or "").strip() or None
-        last = (rec.get("last_name") or "").strip() or None
-        email = (rec.get("email") or "").strip().lower() or None
-        phone = (rec.get("phone") or "").strip() or None
-        company = (rec.get("company") or "").strip() or None
-        title = (rec.get("title") or "").strip() or None
-        location = (rec.get("location") or "").strip() or None
-
-        if not (first or last or email):
-            skipped += 1
-            continue
-
-        headline = None
-        if title and company:
-            headline = f"{title} at {company}"
-        elif title:
-            headline = title
-        elif company:
-            headline = company
-
-        try:
-            # If email is present, check whether we already know this person
-            existing_profile_id = None
-            if email:
-                ch = (
-                    supabase_client.table("channel_identities")
-                    .select("user_id")
-                    .eq("channel", "email")
-                    .eq("value", email)
-                    .limit(1)
-                    .execute()
-                )
-                if ch.data:
-                    existing_profile_id = ch.data[0].get("user_id")
-
-            if existing_profile_id:
-                # Update the existing profile with any new non-null fields
-                update_payload: dict = {}
-                if first: update_payload["first_name"] = first
-                if last: update_payload["last_name"] = last
-                if headline: update_payload["headline"] = headline
-                if location: update_payload["location"] = location
-                if update_payload:
-                    supabase_client.table("people_profiles").update(update_payload).eq(
-                        "id", existing_profile_id
-                    ).execute()
-                profile_id = existing_profile_id
-                updated += 1
-            else:
-                ins = (
-                    supabase_client.table("people_profiles")
-                    .insert({
-                        "first_name": first,
-                        "last_name": last,
-                        "headline": headline,
-                        "location": location,
-                        "source": source,
-                        "approved": False,
-                        "source_metadata": {
-                            "upload_batch": data.get("batch_id"),
-                            "company": company,
-                            "title": title,
-                        },
-                    })
-                    .execute()
-                )
-                if not ins.data:
-                    skipped += 1
-                    errors.append({"row": idx, "reason": "insert_returned_no_data"})
-                    continue
-                profile_id = ins.data[0]["id"]
-                inserted += 1
-
-            # Upsert channel_identities rows for email/phone (best-effort —
-            # duplicates are non-fatal).
-            for channel, value in (("email", email), ("phone", phone)):
-                if not value:
-                    continue
-                try:
-                    supabase_client.table("channel_identities").upsert(
-                        {
-                            "user_id": profile_id,
-                            "channel": channel,
-                            "value": value,
-                            "verified": False,
-                        },
-                        on_conflict="user_id,channel",
-                    ).execute()
-                except Exception as ce:
-                    # Non-fatal — the profile row was still created/updated.
-                    print(f"[BULK-UPLOAD] channel upsert failed row={idx} ch={channel}: {ce}", flush=True)
-
-        except Exception as e:
-            print(f"[BULK-UPLOAD] row {idx} failed: {e}", flush=True)
-            skipped += 1
-            errors.append({"row": idx, "reason": str(e)[:200]})
-            continue
-
-    print(
-        f"[BULK-UPLOAD] done: inserted={inserted} updated={updated} skipped={skipped}",
-        flush=True,
-    )
-    return ok({
-        "inserted": inserted,
-        "updated": updated,
-        "skipped": skipped,
-        "errors": errors[:20],  # cap at 20 so response isn't huge
-    }, status=200)
+#
+# NOTE: A duplicate `bulk_upload_candidates` function lived here until commit
+# 110417a+1. It registered the SAME URL (/admin/candidates/bulk-upload) on the
+# same blueprint as the CSV multipart version higher up in this file, which
+# caused Flask to raise AssertionError: "View function mapping is overwriting
+# an existing endpoint function: billing.bulk_upload_candidates" at import
+# time — crashing gunicorn workers and producing the Render "no open ports
+# detected" deploy failure. The JSON-body variant that lived here has been
+# removed; the CSV multipart endpoint (defined earlier in this file) remains
+# the canonical /admin/candidates/bulk-upload handler. For the newer
+# multi-format (CSV + XLSX) upload with flexible column mapping see
+# routes/upload.py and the POST /admin/upload/candidates endpoint.
 
 
 @billing_bp.route("/admin/candidates/<candidate_id>/enqueue-call", methods=["POST"])
@@ -1586,62 +1447,21 @@ def enqueue_candidate_call(candidate_id: str):
     return ok({"job_id": job_id, "candidate_id": candidate_id, "phone": phone}, status=201)
 
 
-@billing_bp.route("/admin/candidates/enqueue-talent-network-calls", methods=["POST"])
-@require_admin
-def enqueue_talent_network_calls_bulk():
-    """
-    POST /admin/candidates/enqueue-talent-network-calls
-
-    Body: {candidate_ids: ["uuid1", "uuid2", ...]}
-
-    Enqueues talent-network calls for every candidate in the list that has a
-    phone number. Skips ones without. Returns {enqueued, skipped}.
-    """
-    if not supabase_client:
-        return bad("Database not available", 503)
-
-    data = request.get_json(force=True, silent=True) or {}
-    candidate_ids = data.get("candidate_ids") or []
-    if not isinstance(candidate_ids, list) or not candidate_ids:
-        return bad("candidate_ids must be a non-empty list", 400)
-
-    # Batch-fetch phone numbers for all candidates in one query
-    try:
-        ch_resp = (
-            supabase_client.table("channel_identities")
-            .select("user_id, value")
-            .eq("channel", "phone")
-            .in_("user_id", candidate_ids)
-            .execute()
-        )
-    except Exception as e:
-        return bad(f"Failed to fetch phones: {e}", 500)
-
-    phones = {row["user_id"]: row["value"] for row in (ch_resp.data or [])}
-
-    enqueued = 0
-    skipped = 0
-    for cid in candidate_ids:
-        phone = phones.get(cid)
-        if not phone:
-            skipped += 1
-            continue
-        try:
-            supabase_client.table("outbound_call_jobs").insert({
-                "status": "queued",
-                "phone": phone,
-                "artifacts": {
-                    "call_type": "talent_network",
-                    "talent_network_context": {"candidate_id": cid},
-                },
-            }).execute()
-            enqueued += 1
-        except Exception as e:
-            print(f"[BULK-CALL] enqueue failed for {cid}: {e}", flush=True)
-            skipped += 1
-
-    print(f"[BULK-CALL] enqueued={enqueued} skipped={skipped}", flush=True)
-    return ok({"enqueued": enqueued, "skipped": skipped}, status=200)
+# NOTE: A second `enqueue_talent_network_calls_bulk` function registering
+# this same URL used to live here. It was introduced by a concurrent commit
+# alongside the duplicate `bulk_upload_candidates` above, and was broken in
+# two ways:
+#   1. It wrote to outbound_call_jobs.phone instead of phone_e164, so the
+#      call_dispatcher worker would never pick up the rows to dial.
+#   2. It bypassed create_screening_job, so it never created the
+#      interactions row the voice pipeline expects, and never wired the
+#      screening_context.candidate_name that the talent_network prompt
+#      reads at call time.
+# Flask didn't raise an AssertionError for this one because the function
+# had a different name (`_bulk` suffix) so the endpoint name was unique —
+# but Flask still accepted two rules for the same URL+method combination
+# which made routing silently pick whichever was registered first. The
+# canonical handler is the earlier enqueue_talent_network_calls above.
 
 
 @billing_bp.route("/admin/roles/<opportunity_id>/enrich-candidates", methods=["POST"])
