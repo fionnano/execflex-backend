@@ -110,10 +110,11 @@ def post_role():
             # Supabase insert returns the created record(s) in response.data
             created_record = response.data[0] if response.data and len(response.data) > 0 else None
             
-            # Fire-and-forget Apollo sourcing (best-effort, never blocks the response)
+            # Fire-and-forget candidate sourcing (PDL via sourcing_service).
+            # Best-effort — never blocks the /post-role response.
             if created_record and created_record.get("id"):
                 try:
-                    from services.apollo_service import (
+                    from services.sourcing_service import (
                         source_and_upsert_async,
                         get_seniority_from_title,
                     )
@@ -124,7 +125,7 @@ def post_role():
                         seniority_levels=get_seniority_from_title(data["role_title"]),
                     )
                 except Exception as e:
-                    print(f"⚠️ Apollo sourcing dispatch failed: {e}")
+                    print(f"⚠️ Sourcing dispatch failed: {e}")
 
             if created_record:
                 return ok({

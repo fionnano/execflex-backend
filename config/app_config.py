@@ -46,8 +46,11 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 STRIPE_GROWTH_PRICE_ID = os.getenv("STRIPE_GROWTH_PRICE_ID")
 
-# Apollo.io candidate sourcing (optional)
+# Apollo.io candidate sourcing (optional, currently disabled — paid plan required)
 APOLLO_API_KEY = os.getenv("APOLLO_API_KEY")
+
+# People Data Labs candidate sourcing (free tier: 100 searches/month)
+PDL_API_KEY = os.getenv("PDL_API_KEY")
 
 
 def validate_config():
@@ -73,6 +76,7 @@ def print_config_status():
     print(f"  JWT signature verification? {bool(SUPABASE_JWT_SECRET)}")
     print(f"  Stripe configured? {bool(STRIPE_SECRET_KEY)}")
     print(f"  Apollo configured? {bool(APOLLO_API_KEY)}")
+    print(f"  PDL configured? {bool(PDL_API_KEY)}")
     print(f"  Frontend URL={FRONTEND_URL}")
     print("--------------------------------------------------")
 

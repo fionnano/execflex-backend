@@ -1,14 +1,21 @@
 """
+DISABLED — Apollo search requires a paid plan.
+Re-enable by updating routes/roles.py to import from this module
+when upgrading to Apollo Basic or higher. The active sourcing path
+is services/sourcing_service.py, which uses People Data Labs' free
+tier (100 searches/month).
+
+---
+
 Apollo.io candidate sourcing service.
 
 Endpoint: POST https://api.apollo.io/api/v1/mixed_people/api_search
-Auth:     api_key passed in the JSON body (not as a header).
+Auth:     X-Api-Key header.
 
 Notes:
 - Last names in search results are obfuscated (e.g. "Hu***n").
 - No emails or phones are returned from search; enrichment requires
   a separate paid endpoint and is intentionally NOT performed here.
-- This endpoint does not consume credits.
 """
 import json
 import logging
