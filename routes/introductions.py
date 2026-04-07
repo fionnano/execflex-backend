@@ -340,6 +340,81 @@ _RESPONSE_PAGE_ERROR = """<!doctype html>
 </body>
 </html>"""
 
+# Phone-capture page shown when the candidate clicks "Interested" but
+# we don't have a phone number for them yet (typical for PDL-sourced
+# candidates). The JS posts back to /intro/phone-capture with the
+# thread_id from the URL so we can enqueue a screening call.
+_PHONE_CAPTURE_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Great news! — Ainm Search</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           max-width: 400px; margin: 60px auto; padding: 20px; text-align: center;
+           color: #1a1a1a; }
+    h2 { font-size: 26px; font-weight: 600; }
+    p  { font-size: 16px; line-height: 1.55; color: #444; }
+    input { width: 100%; padding: 12px; font-size: 16px;
+            border: 1px solid #ccc; border-radius: 8px;
+            margin: 16px 0; box-sizing: border-box; }
+    button { background: #5B6ABF; color: white; border: none;
+             padding: 14px 28px; font-size: 16px;
+             border-radius: 8px; cursor: pointer; width: 100%; }
+    button:hover { background: #4a58a8; }
+    button:disabled { background: #999; cursor: default; }
+    #msg { color: #2a8a3f; display: none; margin-top: 16px; }
+    #err { color: #c0392b; display: none; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h2>We'd love to tell you more</h2>
+  <p>Enter your number and Aidan, our AI consultant, will call you within
+  the next few minutes.</p>
+  <input type="tel" id="phone" placeholder="+353 87 123 4567">
+  <button id="btn" onclick="submit()">Call me now</button>
+  <p id="msg">Perfect &mdash; expect a call shortly!</p>
+  <p id="err"></p>
+  <script>
+  async function submit() {
+    const phone = document.getElementById('phone').value.trim();
+    const btn = document.getElementById('btn');
+    const err = document.getElementById('err');
+    err.style.display = 'none';
+    if (!phone) { err.textContent = 'Please enter a phone number.'; err.style.display = 'block'; return; }
+    btn.disabled = true;
+    btn.textContent = 'Requesting call...';
+    try {
+      const r = await fetch('/intro/phone-capture', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          thread_id: new URLSearchParams(location.search).get('thread_id'),
+          phone: phone
+        })
+      });
+      if (r.ok) {
+        btn.style.display = 'none';
+        document.getElementById('msg').style.display = 'block';
+      } else {
+        const j = await r.json().catch(() => ({}));
+        err.textContent = j.error || 'Something went wrong. Please try again.';
+        err.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Call me now';
+      }
+    } catch (e) {
+      err.textContent = 'Network error. Please try again.';
+      err.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Call me now';
+    }
+  }
+  </script>
+</body>
+</html>"""
+
 
 @introductions_bp.route("/intro/respond", methods=["GET"])
 def intro_respond():
@@ -400,6 +475,8 @@ def intro_respond():
         try:
             candidate_user_id = thread.get("primary_user_id")
             phone = None
+
+            # First: channel_identities (signup-path candidates)
             if candidate_user_id:
                 ci_resp = (
                     supabase_client.table("channel_identities")
@@ -412,12 +489,38 @@ def intro_respond():
                 if ci_resp.data:
                     phone = ci_resp.data[0].get("value")
 
+            # Second: enriched PDL metadata. The outreach thread was
+            # created for a specific candidate profile_id which we
+            # can't look up directly from the thread, but we can
+            # search people_profiles for a row whose source_metadata
+            # has an enriched_phone set AND a matching opportunity.
+            if not phone:
+                try:
+                    opp_id_for_phone = thread.get("opportunity_id")
+                    if opp_id_for_phone:
+                        pp_resp = (
+                            supabase_client.table("people_profiles")
+                            .select("source_metadata")
+                            .eq("source_metadata->>opportunity_id", opp_id_for_phone)
+                            .not_.is_("source_metadata->>enriched_phone", "null")
+                            .limit(1)
+                            .execute()
+                        )
+                        if pp_resp.data:
+                            sm = pp_resp.data[0].get("source_metadata") or {}
+                            candidate_phone = sm.get("enriched_phone")
+                            if isinstance(candidate_phone, str):
+                                phone = candidate_phone
+                except Exception as e:
+                    print(f"[INTRO RESPOND] enriched_phone lookup failed: {e}", flush=True)
+
             if not phone:
                 print(
-                    f"[INTRO RESPOND] interested but no phone for user={candidate_user_id} "
-                    f"thread={thread_id} — skipping auto-screening",
+                    f"[INTRO RESPOND] interested but no phone for thread={thread_id} "
+                    f"— serving phone-capture page",
                     flush=True,
                 )
+                return Response(_PHONE_CAPTURE_PAGE, mimetype="text/html"), 200
             else:
                 # Fetch opportunity context for the screening call
                 opp_id = thread.get("opportunity_id")
@@ -504,3 +607,191 @@ def intro_respond():
     except Exception as e:
         print(f"[INTRO RESPOND] top-level error: {e}", flush=True)
         return Response(_RESPONSE_PAGE_ERROR, mimetype="text/html"), 500
+
+
+# ── Candidate phone capture (no auth) ────────────────────────────────────────
+
+def _is_valid_e164(phone: str) -> bool:
+    """Phone must start with + and have 8-15 digits after that."""
+    import re
+    if not isinstance(phone, str):
+        return False
+    phone = phone.strip().replace(" ", "").replace("-", "")
+    return bool(re.fullmatch(r"\+\d{8,15}", phone))
+
+
+@introductions_bp.route("/intro/phone-capture", methods=["POST"])
+def intro_phone_capture():
+    """
+    POST /intro/phone-capture
+
+    Body: {"thread_id": "<uuid>", "phone": "+353871234567"}
+
+    Receives a phone number from the /intro/respond phone-capture HTML
+    form when the candidate clicked 'Interested' but we had no phone on
+    file. Validates the phone, enqueues a screening call directly via
+    create_screening_job, and updates the thread status.
+
+    No auth — the thread_id acts as the credential.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    thread_id = (data.get("thread_id") or "").strip()
+    phone_raw = (data.get("phone") or "").strip()
+
+    if not thread_id:
+        return jsonify({"error": "thread_id is required"}), 400
+
+    # Normalise phone: strip spaces/dashes, require leading +
+    phone = phone_raw.replace(" ", "").replace("-", "")
+    if not phone.startswith("+"):
+        phone = "+" + phone.lstrip("0")
+    if not _is_valid_e164(phone):
+        return jsonify({"error": "Please enter a valid international phone number (e.g. +353 87 123 4567)"}), 400
+
+    if not supabase_client:
+        return jsonify({"error": "Service unavailable"}), 503
+
+    try:
+        # Load the thread
+        thread_resp = (
+            supabase_client.table("threads")
+            .select("id, primary_user_id, opportunity_id, subject")
+            .eq("id", thread_id)
+            .limit(1)
+            .execute()
+        )
+        if not thread_resp.data:
+            return jsonify({"error": "Thread not found"}), 404
+        thread = thread_resp.data[0]
+
+        candidate_user_id = thread.get("primary_user_id")
+        opp_id = thread.get("opportunity_id")
+
+        # Best-effort: upsert the phone into channel_identities if we
+        # have a user_id. PDL-sourced candidates have no user_id, so
+        # we store the phone in source_metadata on their people_profiles
+        # row instead.
+        if candidate_user_id:
+            try:
+                supabase_client.table("channel_identities").insert({
+                    "user_id": candidate_user_id,
+                    "channel": "phone",
+                    "value": phone,
+                }).execute()
+            except Exception as e:
+                print(f"[PHONE-CAPTURE] channel_identities insert failed: {e}", flush=True)
+        elif opp_id:
+            try:
+                # Find a PDL-sourced row for this opportunity and stash the phone.
+                pp_resp = (
+                    supabase_client.table("people_profiles")
+                    .select("id, source_metadata")
+                    .eq("source_metadata->>opportunity_id", opp_id)
+                    .eq("source", "apollo")
+                    .limit(1)
+                    .execute()
+                )
+                if pp_resp.data:
+                    row = pp_resp.data[0]
+                    sm = row.get("source_metadata") or {}
+                    sm["enriched_phone"] = phone
+                    sm["has_phone_verified"] = True
+                    sm["phone_source"] = "self_captured"
+                    supabase_client.table("people_profiles").update({
+                        "source_metadata": sm,
+                    }).eq("id", row["id"]).execute()
+            except Exception as e:
+                print(f"[PHONE-CAPTURE] source_metadata update failed: {e}", flush=True)
+
+        # Update thread status
+        try:
+            supabase_client.table("threads").update({
+                "status": "candidate_interested",
+            }).eq("id", thread_id).execute()
+        except Exception as e:
+            print(f"[PHONE-CAPTURE] thread status update failed: {e}", flush=True)
+
+        # Fetch opportunity context for the screening call
+        role_title = "Executive Role"
+        company_name = "Hiring Company"
+        if opp_id:
+            try:
+                opp_resp = (
+                    supabase_client.table("opportunities")
+                    .select("title, organization_id")
+                    .eq("id", opp_id)
+                    .limit(1)
+                    .execute()
+                )
+                if opp_resp.data:
+                    opp = opp_resp.data[0]
+                    role_title = opp.get("title") or role_title
+                    org_id = opp.get("organization_id")
+                    if org_id:
+                        org_resp = (
+                            supabase_client.table("organizations")
+                            .select("name")
+                            .eq("id", org_id)
+                            .limit(1)
+                            .execute()
+                        )
+                        if org_resp.data:
+                            company_name = org_resp.data[0].get("name") or company_name
+            except Exception as e:
+                print(f"[PHONE-CAPTURE] opp fetch failed: {e}", flush=True)
+
+        # Candidate name — best effort
+        candidate_name = "Candidate"
+        try:
+            if candidate_user_id:
+                pp_resp = (
+                    supabase_client.table("people_profiles")
+                    .select("first_name, last_name")
+                    .eq("user_id", candidate_user_id)
+                    .limit(1)
+                    .execute()
+                )
+                if pp_resp.data:
+                    pp = pp_resp.data[0]
+                    first = pp.get("first_name") or ""
+                    last = pp.get("last_name") or ""
+                    candidate_name = (f"{first} {last}").strip() or candidate_name
+        except Exception as e:
+            print(f"[PHONE-CAPTURE] profile fetch failed: {e}", flush=True)
+
+        # Enqueue the screening call
+        try:
+            from services.screening_service import create_screening_job
+            default_questions = [
+                {"question": "Tell me about your current role and what you're looking for next.", "competency": "motivation", "weight": 1.0},
+                {"question": "What would you say are your two or three biggest strengths?", "competency": "self_awareness", "weight": 1.0},
+                {"question": "What kind of salary range and location are you considering?", "competency": "practical_fit", "weight": 1.0},
+            ]
+            create_screening_job(
+                candidate_phone=phone,
+                candidate_name=candidate_name,
+                role_title=role_title,
+                company_name=company_name,
+                questions=default_questions,
+                callback_url=None,
+                source_candidate_id=candidate_user_id,
+                purpose="candidate_chat",
+                role_id=opp_id,
+            )
+            print(
+                f"[PHONE-CAPTURE] screening enqueued: thread={thread_id} "
+                f"phone={phone} role={role_title!r}",
+                flush=True,
+            )
+        except Exception as e:
+            print(f"[PHONE-CAPTURE] create_screening_job failed: {e}", flush=True)
+            return jsonify({"error": "Failed to schedule call, please try again"}), 500
+
+        return jsonify({
+            "status": "calling",
+            "message": "Aidan will call you shortly",
+        }), 200
+
+    except Exception as e:
+        print(f"[PHONE-CAPTURE] top-level error: {e}", flush=True)
+        return jsonify({"error": "Something went wrong"}), 500
