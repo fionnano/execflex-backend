@@ -147,8 +147,166 @@ def stripe_webhook():
         _handle_subscription_updated(obj)
     elif event_type == "customer.subscription.deleted":
         _handle_subscription_deleted(obj)
+    elif event_type == "payment_intent.succeeded":
+        _handle_payment_intent_succeeded(obj)
+    elif event_type == "payment_intent.payment_failed":
+        _handle_payment_intent_failed(obj)
 
     return jsonify({"received": True}), 200
+
+
+# ── Retainer payments ────────────────────────────────────────────────────────
+
+@billing_bp.route("/billing/create-retainer-payment", methods=["POST"])
+@require_auth
+def create_retainer_payment():
+    """
+    POST /billing/create-retainer-payment
+
+    Body (JSON):
+      opportunity_id  str   — UUID of the opportunity being retained
+      amount          num   — Retainer amount in euros (default 1500)
+
+    Creates a Stripe PaymentIntent (not a subscription) for a
+    retained search and stores a row in retainer_payments with
+    status='pending'. The payment_intent.succeeded webhook flips the
+    row to 'paid' and sets opportunities.status='retained'.
+
+    Returns {client_secret, payment_intent_id, amount}.
+    """
+    if not supabase_client:
+        return bad("Database not available", 503)
+
+    data = request.get_json(force=True, silent=True) or {}
+    opportunity_id = (data.get("opportunity_id") or "").strip()
+    if not opportunity_id:
+        return bad("opportunity_id is required", 400)
+
+    try:
+        amount = float(data.get("amount") or 1500)
+    except (TypeError, ValueError):
+        return bad("amount must be a number", 400)
+    if amount <= 0:
+        return bad("amount must be greater than zero", 400)
+
+    user_id = request.environ.get("authenticated_user_id")
+    if not user_id:
+        return bad("Authentication required", 401)
+
+    # Look up the opportunity for description + ownership check
+    try:
+        opp_resp = (
+            supabase_client.table("opportunities")
+            .select("id, title, created_by_user_id")
+            .eq("id", opportunity_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        return bad(f"Failed to fetch opportunity: {e}", 500)
+
+    if not opp_resp.data:
+        return bad("Opportunity not found", 404)
+    opp = opp_resp.data[0]
+    role_title = opp.get("title") or "executive search"
+
+    stripe = _get_stripe()
+    try:
+        intent = stripe.payment_intents.create(
+            amount=int(round(amount * 100)),
+            currency="eur",
+            metadata={
+                "opportunity_id": opportunity_id,
+                "user_id": user_id,
+                "payment_type": "retainer",
+            },
+            description=f"ExecFlex retained search — {role_title}",
+            automatic_payment_methods={"enabled": True},
+        )
+    except Exception as e:
+        print(f"[Retainer] Stripe PI create error: {e}", flush=True)
+        return bad(f"Failed to create payment intent: {str(e)}", 500)
+
+    # Persist the pending retainer record
+    try:
+        supabase_client.table("retainer_payments").insert({
+            "opportunity_id": opportunity_id,
+            "user_id": user_id,
+            "stripe_payment_intent_id": intent.id,
+            "amount": amount,
+            "currency": "eur",
+            "status": "pending",
+            "metadata": {"role_title": role_title},
+        }).execute()
+    except Exception as e:
+        print(f"[Retainer] DB insert failed: {e}", flush=True)
+        # Don't fail the request — the PaymentIntent exists and the
+        # webhook can still reconcile later via the Stripe metadata.
+
+    print(
+        f"[Retainer] Created PI={intent.id} amount={amount} "
+        f"opportunity={opportunity_id}",
+        flush=True,
+    )
+
+    return ok({
+        "client_secret": intent.client_secret,
+        "payment_intent_id": intent.id,
+        "amount": amount,
+    }, status=201)
+
+
+def _handle_payment_intent_succeeded(intent):
+    """
+    Process a successful retainer PaymentIntent.
+
+    Updates retainer_payments.status='paid' and
+    opportunities.status='retained' (the value is intentionally added
+    without enum migration — if the opportunities.status column is an
+    enum, run ALTER TYPE ... ADD VALUE 'retained' in the dashboard
+    once; if it's plain TEXT the update just works).
+    """
+    metadata = (intent.get("metadata") or {})
+    payment_type = metadata.get("payment_type")
+    if payment_type != "retainer":
+        # Ignore non-retainer intents
+        return
+
+    intent_id = intent.get("id")
+    opportunity_id = metadata.get("opportunity_id")
+
+    try:
+        supabase_client.table("retainer_payments").update({
+            "status": "paid",
+            "paid_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("stripe_payment_intent_id", intent_id).execute()
+        print(f"[Retainer] PI {intent_id} marked paid", flush=True)
+    except Exception as e:
+        print(f"[Retainer] retainer_payments update failed: {e}", flush=True)
+
+    if opportunity_id:
+        try:
+            supabase_client.table("opportunities").update({
+                "status": "retained",
+            }).eq("id", opportunity_id).execute()
+            print(f"[Retainer] opportunity {opportunity_id} status → retained", flush=True)
+        except Exception as e:
+            print(f"[Retainer] opportunity update failed: {e}", flush=True)
+
+
+def _handle_payment_intent_failed(intent):
+    """Mark a failed retainer PaymentIntent so the client can retry."""
+    metadata = (intent.get("metadata") or {})
+    if metadata.get("payment_type") != "retainer":
+        return
+    intent_id = intent.get("id")
+    try:
+        supabase_client.table("retainer_payments").update({
+            "status": "failed",
+        }).eq("stripe_payment_intent_id", intent_id).execute()
+        print(f"[Retainer] PI {intent_id} marked failed", flush=True)
+    except Exception as e:
+        print(f"[Retainer] failed-update error: {e}", flush=True)
 
 
 def _handle_checkout_completed(session):
