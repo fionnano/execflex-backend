@@ -94,48 +94,41 @@ def build_pdl_query(
     seniority_levels: Optional[list[str]],
 ) -> str:
     """
-    Build a PDL SQL-like query string combining title, location, and seniority.
+    Build a PDL person-search query as a JSON STRING containing an
+    Elasticsearch query object. PDL wraps the ES query this way: the
+    request body's "query" field must itself be a stringified JSON of
+    {"query": {"bool": {...}}}.
+
+    Docs: https://docs.peopledatalabs.com/docs/person-search-api
     """
-    parts: list[str] = []
+    must: list[dict] = []
 
-    # Title — fuzzy match on job_title
-    safe_title = (role_title or "").strip().replace('"', "'")
-    if safe_title:
-        parts.append(f'job_title ~ "{safe_title}"')
+    # Job title — fuzzy match
+    if role_title:
+        must.append({
+            "match": {
+                "job_title": {
+                    "query": role_title,
+                    "fuzziness": "AUTO",
+                }
+            }
+        })
 
-    # Location — product is Ireland-focused, so default country to Ireland
-    # when the caller passes any location string. If the string contains a
-    # city, narrow further with location_locality.
+    # Location — product is Ireland-focused, so lock to country=ireland
+    # whenever any location string is supplied.
     if location:
-        loc_lower = location.lower()
-        # Always filter by Ireland if any location is supplied for now
-        parts.append('location_country = "ireland"')
-        # Extract city (first comma-separated token that isn't "ireland")
-        tokens = [t.strip() for t in location.split(",") if t.strip()]
-        city = None
-        for tok in tokens:
-            if tok.lower() != "ireland":
-                city = tok
-                break
-        if city and loc_lower != "ireland":
-            city_safe = city.replace('"', "'").lower()
-            parts.append(f'location_locality = "{city_safe}"')
+        must.append({"term": {"location_country": "ireland"}})
 
-    # Seniority — OR-joined inside parentheses
-    pdl_levels: list[str] = []
-    seen: set[str] = set()
-    for s in (seniority_levels or []):
-        mapped = _SENIORITY_TO_PDL_LEVEL.get(s.lower())
-        if mapped and mapped not in seen:
-            pdl_levels.append(f'job_level = "{mapped}"')
-            seen.add(mapped)
+    # Seniority — terms filter (OR semantics over multiple levels)
+    pdl_levels = list({
+        _SENIORITY_TO_PDL_LEVEL[s.lower()]
+        for s in (seniority_levels or [])
+        if isinstance(s, str) and s.lower() in _SENIORITY_TO_PDL_LEVEL
+    })
     if pdl_levels:
-        if len(pdl_levels) == 1:
-            parts.append(pdl_levels[0])
-        else:
-            parts.append("(" + " OR ".join(pdl_levels) + ")")
+        must.append({"terms": {"job_level": pdl_levels}})
 
-    return " AND ".join(parts)
+    return json.dumps({"query": {"bool": {"must": must}}})
 
 
 # ── PDL search ───────────────────────────────────────────────────────────────
