@@ -404,6 +404,89 @@ def _set_candidate_approved(candidate_id: str, approved: bool):
         return bad(f"Failed to update candidate: {str(e)}", 500)
 
 
+@billing_bp.route("/admin/roles/<opportunity_id>/approve-sourced", methods=["POST"])
+@require_admin
+def approve_sourced_candidates(opportunity_id: str):
+    """
+    POST /admin/roles/<opportunity_id>/approve-sourced
+
+    Body: {"candidate_ids": ["uuid1", "uuid2", ...]}
+
+    Sets approved=True for every listed candidate_id whose
+    source_metadata->>'opportunity_id' matches the route param.
+    Any id that doesn't match the opportunity is silently skipped
+    so an admin can't accidentally approve candidates sourced for
+    a different role.
+    """
+    if not supabase_client:
+        return bad("Database not available", 503)
+
+    data = request.get_json(force=True, silent=True) or {}
+    candidate_ids = data.get("candidate_ids")
+    if not isinstance(candidate_ids, list) or not candidate_ids:
+        return bad("candidate_ids must be a non-empty array", 400)
+
+    # De-dupe and sanity-check
+    candidate_ids = [cid for cid in candidate_ids if isinstance(cid, str) and cid]
+    if not candidate_ids:
+        return bad("candidate_ids contains no valid ids", 400)
+
+    try:
+        # Fetch the matching rows first so we can enforce the
+        # opportunity_id guard and return the updated rows.
+        existing_resp = (
+            supabase_client.table("people_profiles")
+            .select("id, source_metadata")
+            .in_("id", candidate_ids)
+            .execute()
+        )
+        existing = existing_resp.data or []
+
+        eligible_ids = []
+        for row in existing:
+            sm = row.get("source_metadata") or {}
+            opps = sm.get("opportunity_ids")
+            primary_opp = sm.get("opportunity_id")
+            if primary_opp == opportunity_id:
+                eligible_ids.append(row["id"])
+            elif isinstance(opps, list) and opportunity_id in opps:
+                eligible_ids.append(row["id"])
+
+        skipped_ids = [cid for cid in candidate_ids if cid not in eligible_ids]
+
+        if not eligible_ids:
+            return bad(
+                f"No candidates found for opportunity {opportunity_id}",
+                404,
+            )
+
+        update_resp = (
+            supabase_client.table("people_profiles")
+            .update({"approved": True})
+            .in_("id", eligible_ids)
+            .execute()
+        )
+        updated_rows = update_resp.data or []
+
+        print(
+            f"[ADMIN] Bulk-approved {len(updated_rows)} sourced candidates "
+            f"for opportunity={opportunity_id} skipped={len(skipped_ids)}",
+            flush=True,
+        )
+
+        return ok({
+            "opportunity_id": opportunity_id,
+            "approved_count": len(updated_rows),
+            "approved_ids": eligible_ids,
+            "skipped_ids": skipped_ids,
+            "candidates": updated_rows,
+        }, status=200)
+
+    except Exception as e:
+        print(f"[ADMIN] approve-sourced error: {e}", flush=True)
+        return bad(f"Failed to bulk-approve candidates: {str(e)}", 500)
+
+
 @billing_bp.route("/admin/placements", methods=["GET"])
 @require_admin
 def list_placements():
