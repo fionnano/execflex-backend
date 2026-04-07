@@ -27,3 +27,6 @@ from routes.billing import billing_bp  # noqa
 # AI Recruitment Consultant chat endpoint
 from routes.ai_consultant import ai_consultant_bp  # noqa
 
+# Admin bulk upload (candidates / clients from CSV / XLSX)
+from routes.upload import upload_bp  # noqa
+
