@@ -173,7 +173,6 @@ def search_candidates(
     body = {
         "query": query,
         "size": limit,
-        "from": 0,
         "pretty": False,
     }
     headers = {
