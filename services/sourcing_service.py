@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 
 PDL_SEARCH_URL = "https://api.peopledatalabs.com/v5/person/search"
 
+# Module-load marker — appears once in Render logs at process start.
+# If you post a role and DO NOT see this line above the [SOURCING] logs,
+# the running process is importing a stale/cached module.
+_MODULE_BUILD_TAG = "sourcing_service@es-json-v2"
+print(f"[SOURCING] module loaded: {_MODULE_BUILD_TAG}", flush=True)
+
 # NOTE: PDL_API_KEY is deliberately read inside each function at call time
 # via os.environ.get("PDL_API_KEY") — NOT captured at module import time.
 
@@ -128,7 +134,13 @@ def build_pdl_query(
     if pdl_levels:
         must.append({"terms": {"job_level": pdl_levels}})
 
-    return json.dumps({"query": {"bool": {"must": must}}})
+    query_str = json.dumps({"query": {"bool": {"must": must}}})
+    print(
+        f"[SOURCING] Query type check: {type(query_str).__name__} "
+        f"starts_with={query_str[:20]!r}",
+        flush=True,
+    )
+    return query_str
 
 
 # ── PDL search ───────────────────────────────────────────────────────────────
