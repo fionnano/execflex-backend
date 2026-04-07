@@ -31,7 +31,7 @@ PDL_SEARCH_URL = "https://api.peopledatalabs.com/v5/person/search"
 # Module-load marker — appears once in Render logs at process start.
 # If you post a role and DO NOT see this line above the [SOURCING] logs,
 # the running process is importing a stale/cached module.
-_MODULE_BUILD_TAG = "sourcing_service@no-from-v4"
+_MODULE_BUILD_TAG = "sourcing_service@sql-v5"
 print(f"[SOURCING] module loaded: {_MODULE_BUILD_TAG}", flush=True)
 
 # NOTE: PDL_API_KEY is deliberately read inside each function at call time
@@ -94,58 +94,50 @@ _SENIORITY_TO_PDL_LEVEL = {
 }
 
 
-def build_pdl_query(
+def build_pdl_sql(
     role_title: str,
     location: Optional[str],
     seniority_levels: Optional[list[str]],
 ) -> str:
     """
-    Build a PDL person-search query as a JSON STRING containing just
-    the inner Elasticsearch query object. PDL adds its own top-level
-    {"query": ...} wrapper by putting this string into the request
-    body's "query" field, so we MUST NOT wrap it ourselves.
+    Build a PDL person-search SQL statement.
 
-    Correct output:  '{"bool": {"must": [...]}}'
-    Wrong   output:  '{"query": {"bool": {"must": [...]}}}'
-                     (PDL rejects this with
-                      "Query clause [query] not allowed or invalid field name")
+    PDL's ES-DSL mode requires specific clause shapes and many familiar
+    Elasticsearch operators ("match", "fuzziness", nested "query"
+    wrappers) are rejected. SQL mode is simpler and documented as
+    generally available on the person-search endpoint, so we use that.
 
     Docs: https://docs.peopledatalabs.com/docs/person-search-api
     """
-    must: list[dict] = []
+    conditions: list[str] = []
 
-    # Job title — fuzzy match
+    # Job title — partial match via LIKE (escape single quotes)
     if role_title:
-        must.append({
-            "match": {
-                "job_title": {
-                    "query": role_title,
-                    "fuzziness": "AUTO",
-                }
-            }
-        })
+        safe_title = role_title.lower().replace("'", "''")
+        conditions.append(f"job_title LIKE '%{safe_title}%'")
 
-    # Location — product is Ireland-focused, so lock to country=ireland
+    # Location — product is Ireland-focused, lock to country=ireland
     # whenever any location string is supplied.
     if location:
-        must.append({"term": {"location_country": "ireland"}})
+        conditions.append("location_country='ireland'")
 
-    # Seniority — terms filter (OR semantics over multiple levels)
-    pdl_levels = list({
+    # Seniority — IN (...) with OR semantics
+    pdl_levels = sorted({
         _SENIORITY_TO_PDL_LEVEL[s.lower()]
         for s in (seniority_levels or [])
         if isinstance(s, str) and s.lower() in _SENIORITY_TO_PDL_LEVEL
     })
     if pdl_levels:
-        must.append({"terms": {"job_level": pdl_levels}})
+        level_list = ", ".join(f"'{lvl}'" for lvl in pdl_levels)
+        conditions.append(f"job_level IN ({level_list})")
 
-    query_str = json.dumps({"bool": {"must": must}})
+    where = " AND ".join(conditions) if conditions else "1=1"
+    sql = f"SELECT * FROM person WHERE {where};"
     print(
-        f"[SOURCING] Query type check: {type(query_str).__name__} "
-        f"starts_with={query_str[:20]!r}",
+        f"[SOURCING] SQL built: len={len(sql)} sql={sql!r}",
         flush=True,
     )
-    return query_str
+    return sql
 
 
 # ── PDL search ───────────────────────────────────────────────────────────────
@@ -173,16 +165,15 @@ def search_candidates(
         return []
 
     seniorities = seniority_levels or get_seniority_from_title(role_title)
-    query = build_pdl_query(role_title, location, seniorities)
+    sql = build_pdl_sql(role_title, location, seniorities)
 
-    # Fresh dict literal every call — explicitly NO "from" key. PDL dropped
-    # offset pagination in favour of scroll_token; we don't need pagination
-    # at all since size=20 per call is enough.
+    # Fresh dict literal every call — SQL mode, NO "query" key, NO "from" key.
     body: dict = {}
-    body["query"] = query
+    body["sql"] = sql
     body["size"] = limit
     body["pretty"] = False
     assert "from" not in body, "PDL body accidentally contains 'from' key"
+    assert "query" not in body, "PDL body accidentally contains 'query' key (use 'sql' in SQL mode)"
 
     headers = {
         "Content-Type": "application/json",
@@ -191,7 +182,7 @@ def search_candidates(
 
     print(
         f"[SOURCING] PDL request body keys={sorted(body.keys())} "
-        f"size={body['size']} query_len={len(body['query'])}",
+        f"size={body['size']} sql_len={len(body['sql'])}",
         flush=True,
     )
     print(f"[SOURCING] PDL request body sent: {json.dumps(body)}", flush=True)
