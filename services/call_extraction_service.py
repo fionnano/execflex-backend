@@ -408,6 +408,201 @@ def extract_employer_brief_async(interaction_id: str, job_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Talent network extraction — proactive career-intention call
+# ---------------------------------------------------------------------------
+
+_TALENT_NETWORK_EXTRACTION_PROMPT = """You are extracting structured career intention data from a proactive "talent network" outreach call. The call is a brief 4-minute career chat — NOT a role-specific screening. Aidan asked five questions:
+1. Are you currently open to new opportunities?
+2. What type of role interests you most — full-time, fractional, board/NED, or mixed?
+3. What sectors or industries are you passionate about?
+4. What salary or day rate are you targeting?
+5. What's your notice period or availability?
+
+Extract the candidate's answers into this exact JSON schema. If the candidate didn't answer a question clearly, set the field to null. Never invent data.
+
+{{
+  "open_to_opportunities": "yes" | "no" | "passive" | null,
+  "preferred_role_type": "full_time" | "fractional" | "ned" | "mixed" | null,
+  "preferred_sectors": ["list of sectors/industries mentioned, lowercase"],
+  "salary_expectation": "verbatim string with range and currency if stated, else null",
+  "availability": "verbatim string describing notice period or start date, else null",
+  "notes": "2-3 sentence summary of anything else relevant the candidate said about their career"
+}}
+
+Rules:
+- "yes" means actively looking; "passive" means not looking but would listen; "no" means definitely not interested.
+- preferred_role_type must be exactly one of the four enum values (or null). Map casual phrasing: "consulting" -> fractional, "board work" -> ned, "a mix" -> mixed.
+- preferred_sectors is a list of short tags (e.g. ["saas", "fintech", "healthcare"]). Empty list if none mentioned.
+- Currency: if they said "150k" assume EUR; if they said "£" use GBP; preserve what they actually said.
+- Return ONLY valid JSON. No markdown, no prose.
+
+Full call transcript:
+{transcript}
+"""
+
+
+def extract_talent_network(interaction_id: str, job_id: str) -> Optional[dict]:
+    """
+    Extract career-intention data from a talent_network call transcript
+    and persist it to both interactions.artifacts.talent_network_data
+    and the candidate's people_profiles row.
+    """
+    print(
+        f"[TalentNet] Starting talent_network extraction: "
+        f"interaction={interaction_id}, job={job_id}",
+        flush=True,
+    )
+    if not supabase_client or not gpt_client:
+        print("[TalentNet] FAILED: Supabase or OpenAI client not available", flush=True)
+        return None
+
+    try:
+        transcript = _wait_for_transcript(interaction_id)
+        if not transcript:
+            print(f"[TalentNet] FAILED: Empty transcript: interaction={interaction_id}", flush=True)
+            _store_extraction_in_artifacts(interaction_id, "talent_network_data", {
+                "error": "empty_transcript",
+                "message": "No transcript turns found after waiting",
+            })
+            return None
+
+        print(
+            f"[TalentNet] Transcript ready ({len(transcript)} chars). Calling GPT-4o...",
+            flush=True,
+        )
+        prompt = _TALENT_NETWORK_EXTRACTION_PROMPT.format(transcript=transcript)
+        completion = gpt_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0,
+        )
+        raw = completion.choices[0].message.content
+        print(f"[TalentNet] GPT-4o raw response: {raw[:400]}", flush=True)
+        result = json.loads(raw)
+
+        # Normalise + guard the enum fields
+        valid_open = {"yes", "no", "passive"}
+        if result.get("open_to_opportunities") not in valid_open:
+            result["open_to_opportunities"] = None
+        valid_role_types = {"full_time", "fractional", "ned", "mixed"}
+        if result.get("preferred_role_type") not in valid_role_types:
+            result["preferred_role_type"] = None
+        if not isinstance(result.get("preferred_sectors"), list):
+            result["preferred_sectors"] = []
+        result["extracted_at"] = datetime.now(timezone.utc).isoformat()
+
+        _store_extraction_in_artifacts(interaction_id, "talent_network_data", result)
+        print(
+            f"[TalentNet] Stored: open={result.get('open_to_opportunities')!r} "
+            f"role_type={result.get('preferred_role_type')!r} "
+            f"sectors={result.get('preferred_sectors')}",
+            flush=True,
+        )
+
+        # Update the candidate's people_profiles row with the preferences.
+        # The candidate might be a PDL/CSV-sourced row (no user_id) — in that
+        # case source_candidate_id on the job points to the people_profiles id
+        # directly. Signup-path candidates have a user_id on the job that
+        # matches people_profiles.user_id.
+        try:
+            job_resp = (
+                supabase_client.table("outbound_call_jobs")
+                .select("user_id, artifacts")
+                .eq("id", job_id)
+                .limit(1)
+                .execute()
+            )
+            if job_resp.data:
+                job = job_resp.data[0] or {}
+                job_user_id = job.get("user_id")
+                artifacts = job.get("artifacts") or {}
+                ctx = artifacts.get("screening_context") or {}
+                source_candidate_id = ctx.get("source_candidate_id")
+
+                # Build the profile update payload. Merge talent_network_data
+                # into source_metadata so the same field is queryable from
+                # both the interaction and the profile.
+                profile_sm_update = {
+                    "talent_network_data": result,
+                    "talent_network_captured_at": result["extracted_at"],
+                }
+
+                if job_user_id:
+                    _merge_source_metadata_by_user_id(job_user_id, profile_sm_update)
+                elif source_candidate_id:
+                    _merge_source_metadata_by_profile_id(source_candidate_id, profile_sm_update)
+                else:
+                    print("[TalentNet] No user_id or source_candidate_id on job — skipping profile update", flush=True)
+        except Exception as e:
+            print(f"[TalentNet] Profile update failed: {e}", flush=True)
+
+        return result
+    except Exception as e:
+        print(f"[TalentNet] ERROR: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        _store_extraction_in_artifacts(interaction_id, "talent_network_data", {
+            "error": str(type(e).__name__),
+            "message": str(e)[:500],
+        })
+        return None
+
+
+def extract_talent_network_async(interaction_id: str, job_id: str):
+    print(f"[TalentNet] Launching async extraction thread: interaction={interaction_id}", flush=True)
+    threading.Thread(
+        target=extract_talent_network,
+        args=(interaction_id, job_id),
+        daemon=True,
+    ).start()
+
+
+def _merge_source_metadata_by_user_id(user_id: str, updates: dict) -> None:
+    """Merge a dict into people_profiles.source_metadata for a signup-path row."""
+    try:
+        resp = (
+            supabase_client.table("people_profiles")
+            .select("id, source_metadata")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if not resp.data:
+            print(f"[TalentNet] No people_profiles row for user_id={user_id}", flush=True)
+            return
+        row = resp.data[0]
+        merged = dict(row.get("source_metadata") or {})
+        merged.update(updates)
+        supabase_client.table("people_profiles").update({"source_metadata": merged}).eq("id", row["id"]).execute()
+        print(f"[TalentNet] Merged talent_network_data into people_profiles id={row['id']}", flush=True)
+    except Exception as e:
+        print(f"[TalentNet] _merge_source_metadata_by_user_id failed: {e}", flush=True)
+
+
+def _merge_source_metadata_by_profile_id(profile_id: str, updates: dict) -> None:
+    """Merge a dict into people_profiles.source_metadata for a sourced/uploaded row."""
+    try:
+        resp = (
+            supabase_client.table("people_profiles")
+            .select("id, source_metadata")
+            .eq("id", profile_id)
+            .limit(1)
+            .execute()
+        )
+        if not resp.data:
+            print(f"[TalentNet] No people_profiles row for id={profile_id}", flush=True)
+            return
+        row = resp.data[0]
+        merged = dict(row.get("source_metadata") or {})
+        merged.update(updates)
+        supabase_client.table("people_profiles").update({"source_metadata": merged}).eq("id", row["id"]).execute()
+        print(f"[TalentNet] Merged talent_network_data into people_profiles id={profile_id}", flush=True)
+    except Exception as e:
+        print(f"[TalentNet] _merge_source_metadata_by_profile_id failed: {e}", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

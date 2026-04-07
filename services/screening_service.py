@@ -66,7 +66,7 @@ def create_screening_job(
         "created_at": now_iso,
         "updated_at": now_iso,
         "artifacts": {
-            "call_type": purpose if purpose in ("candidate_chat", "employer_brief") else "screening",
+            "call_type": purpose if purpose in ("candidate_chat", "employer_brief", "talent_network") else "screening",
             "created_at": now_iso,
             "screening_context": {
                 "candidate_name": candidate_name,

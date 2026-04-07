@@ -452,6 +452,11 @@ def voice_status():
                     from services.call_extraction_service import extract_employer_brief_async
                     extract_employer_brief_async(interaction_id, job_id)
                     print(f"✅ Employer brief extraction queued: interaction_id={interaction_id}")
+                elif call_type == "talent_network":
+                    # Extract career-intention data from the talent-network call
+                    from services.call_extraction_service import extract_talent_network_async
+                    extract_talent_network_async(interaction_id, job_id)
+                    print(f"✅ Talent-network extraction queued: interaction_id={interaction_id}")
                 else:
                     # Unknown call_type — default to candidate extraction
                     print(f"[PostCall] Unknown call_type={call_type!r}, defaulting to candidate extraction", flush=True)
