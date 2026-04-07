@@ -355,6 +355,55 @@ def record_placement():
         return bad(f"Failed to record placement: {str(e)}", 500)
 
 
+@billing_bp.route("/admin/candidates/<candidate_id>/approve", methods=["POST"])
+@require_admin
+def approve_candidate(candidate_id: str):
+    """
+    POST /admin/candidates/<candidate_id>/approve
+
+    Flip people_profiles.approved = True for this candidate so they
+    become visible to POST /match. Returns the updated row.
+    """
+    return _set_candidate_approved(candidate_id, True)
+
+
+@billing_bp.route("/admin/candidates/<candidate_id>/reject", methods=["POST"])
+@require_admin
+def reject_candidate(candidate_id: str):
+    """
+    POST /admin/candidates/<candidate_id>/reject
+
+    Flip people_profiles.approved = False. Returns the updated row.
+    """
+    return _set_candidate_approved(candidate_id, False)
+
+
+def _set_candidate_approved(candidate_id: str, approved: bool):
+    """Shared update logic for approve/reject endpoints."""
+    if not supabase_client:
+        return bad("Database not available", 503)
+    if not candidate_id:
+        return bad("candidate_id is required", 400)
+    try:
+        resp = (
+            supabase_client.table("people_profiles")
+            .update({"approved": approved})
+            .eq("id", candidate_id)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            return bad("Candidate not found", 404)
+        print(
+            f"[ADMIN] people_profiles.approved set to {approved} for id={candidate_id}",
+            flush=True,
+        )
+        return ok({"candidate": rows[0]}, status=200)
+    except Exception as e:
+        print(f"[ADMIN] approve/reject candidate error: {e}", flush=True)
+        return bad(f"Failed to update candidate: {str(e)}", 500)
+
+
 @billing_bp.route("/admin/placements", methods=["GET"])
 @require_admin
 def list_placements():
