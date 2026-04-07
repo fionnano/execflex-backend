@@ -487,6 +487,56 @@ def approve_sourced_candidates(opportunity_id: str):
         return bad(f"Failed to bulk-approve candidates: {str(e)}", 500)
 
 
+@billing_bp.route("/admin/placements/<placement_id>", methods=["PATCH"])
+@require_admin
+def update_placement(placement_id: str):
+    """
+    PATCH /admin/placements/<placement_id>
+
+    Body: {"status": "pending" | "invoiced" | "paid"}
+
+    Transitions a placement through the billing lifecycle. Sets
+    updated_at on every successful change. Returns the updated row.
+    """
+    if not supabase_client:
+        return bad("Database not available", 503)
+    if not placement_id:
+        return bad("placement_id is required", 400)
+
+    data = request.get_json(force=True, silent=True) or {}
+    new_status = (data.get("status") or "").strip().lower()
+
+    allowed = {"pending", "invoiced", "paid"}
+    if new_status not in allowed:
+        return bad(
+            f"Invalid status '{new_status}'. Must be one of: {', '.join(sorted(allowed))}",
+            400,
+        )
+
+    try:
+        payload = {
+            "status": new_status,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        resp = (
+            supabase_client.table("placements")
+            .update(payload)
+            .eq("id", placement_id)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            return bad("Placement not found", 404)
+        print(
+            f"[ADMIN] placement {placement_id} status → {new_status}",
+            flush=True,
+        )
+        return ok({"placement": rows[0]}, status=200)
+    except Exception as e:
+        print(f"[ADMIN] update placement error: {e}", flush=True)
+        return bad(f"Failed to update placement: {str(e)}", 500)
+
+
 @billing_bp.route("/admin/placements", methods=["GET"])
 @require_admin
 def list_placements():
