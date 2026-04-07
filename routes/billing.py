@@ -404,6 +404,200 @@ def _set_candidate_approved(candidate_id: str, approved: bool):
         return bad(f"Failed to update candidate: {str(e)}", 500)
 
 
+@billing_bp.route("/admin/roles/<opportunity_id>/enrich-candidates", methods=["POST"])
+@require_admin
+def enrich_candidates(opportunity_id: str):
+    """
+    POST /admin/roles/<opportunity_id>/enrich-candidates
+
+    Body: {"candidate_ids": ["uuid1", "uuid2"]}
+
+    For each candidate_id, call PDL's /v5/person/enrich endpoint
+    using the candidate's linkedin_url. PDL returns the actual
+    work_email, personal_emails, and phone numbers (which the free
+    /person/search endpoint does not).
+
+    Results are stored in source_metadata:
+      enriched: True
+      enrich_date: ISO timestamp
+      enriched_email: <first verified email>
+      enriched_phone: <first verified phone>
+      has_phone_verified: True if phone present
+      next_action: 'send_outreach' once an email is attached
+
+    The endpoint deliberately does NOT write to channel_identities —
+    PDL-sourced candidates have no user_id, and the existing code
+    only queries channel_identities by user_id. Storing the enriched
+    values in source_metadata keeps the data with the row and
+    survives all existing lookups.
+
+    Returns {enriched, email_found, phone_found, skipped}.
+    """
+    import os
+    import requests
+
+    if not supabase_client:
+        return bad("Database not available", 503)
+
+    api_key = os.environ.get("PDL_API_KEY")
+    if not api_key:
+        return bad("PDL_API_KEY not configured", 503)
+
+    data = request.get_json(force=True, silent=True) or {}
+    candidate_ids = data.get("candidate_ids")
+    if not isinstance(candidate_ids, list) or not candidate_ids:
+        return bad("candidate_ids must be a non-empty array", 400)
+    candidate_ids = [cid for cid in candidate_ids if isinstance(cid, str) and cid]
+    if not candidate_ids:
+        return bad("candidate_ids contains no valid ids", 400)
+
+    try:
+        cand_resp = (
+            supabase_client.table("people_profiles")
+            .select("id, linkedin_url, source_metadata")
+            .in_("id", candidate_ids)
+            .execute()
+        )
+        cand_rows = cand_resp.data or []
+    except Exception as e:
+        return bad(f"Failed to fetch candidates: {e}", 500)
+
+    found_ids = {row["id"] for row in cand_rows}
+    skipped: list = []
+    for mid in (set(candidate_ids) - found_ids):
+        skipped.append({"id": mid, "reason": "not_found"})
+
+    enriched_count = 0
+    email_found_count = 0
+    phone_found_count = 0
+
+    for row in cand_rows:
+        cid = row["id"]
+        sm = row.get("source_metadata") or {}
+
+        # Resolve LinkedIn URL from column or source_metadata
+        linkedin_url = row.get("linkedin_url") or sm.get("linkedin_url")
+        if not linkedin_url or not isinstance(linkedin_url, str):
+            skipped.append({"id": cid, "reason": "no_linkedin"})
+            continue
+
+        try:
+            enrich_resp = requests.post(
+                "https://api.peopledatalabs.com/v5/person/enrich",
+                headers={
+                    "X-Api-Key": api_key,
+                    "Content-Type": "application/json",
+                },
+                json={"profile": linkedin_url, "pretty": False},
+                timeout=10,
+            )
+        except requests.Timeout:
+            skipped.append({"id": cid, "reason": "pdl_timeout"})
+            continue
+        except Exception as e:
+            print(f"[ENRICH] request exception for {cid}: {e}", flush=True)
+            skipped.append({"id": cid, "reason": "pdl_error"})
+            continue
+
+        if enrich_resp.status_code == 402:
+            # Credit limit — abort the loop, anything after this would also fail
+            skipped.append({"id": cid, "reason": "pdl_credit_limit"})
+            print("[ENRICH] PDL credit limit reached, aborting bulk enrich", flush=True)
+            break
+        if enrich_resp.status_code == 404:
+            skipped.append({"id": cid, "reason": "pdl_not_found"})
+            continue
+        if enrich_resp.status_code in (401, 403):
+            skipped.append({"id": cid, "reason": "pdl_auth_error"})
+            print(f"[ENRICH] PDL auth error (HTTP {enrich_resp.status_code})", flush=True)
+            break
+        if enrich_resp.status_code == 429:
+            skipped.append({"id": cid, "reason": "pdl_rate_limit"})
+            break
+        if enrich_resp.status_code >= 400:
+            print(
+                f"[ENRICH] PDL HTTP {enrich_resp.status_code} for {cid}: "
+                f"{enrich_resp.text[:200]}",
+                flush=True,
+            )
+            skipped.append({"id": cid, "reason": f"pdl_http_{enrich_resp.status_code}"})
+            continue
+
+        try:
+            payload = enrich_resp.json()
+        except Exception:
+            skipped.append({"id": cid, "reason": "pdl_bad_json"})
+            continue
+
+        person = payload.get("data") or {}
+
+        # Extract email
+        email: str | None = None
+        work_email = person.get("work_email")
+        if isinstance(work_email, str) and "@" in work_email:
+            email = work_email
+        if not email:
+            personals = person.get("personal_emails") or []
+            if isinstance(personals, list):
+                for e in personals:
+                    if isinstance(e, str) and "@" in e:
+                        email = e
+                        break
+
+        # Extract phone
+        phone: str | None = None
+        mobile = person.get("mobile_phone")
+        if isinstance(mobile, str) and mobile:
+            phone = mobile
+        if not phone:
+            phones = person.get("phone_numbers") or []
+            if isinstance(phones, list):
+                for p in phones:
+                    if isinstance(p, str) and p:
+                        phone = p
+                        break
+
+        # Merge into source_metadata
+        updated_sm = dict(sm)
+        updated_sm["enriched"] = True
+        updated_sm["enrich_date"] = datetime.now(timezone.utc).isoformat()
+        if email:
+            updated_sm["enriched_email"] = email
+            updated_sm["has_email"] = True
+            updated_sm["outreach_ready"] = True
+            updated_sm["next_action"] = "send_outreach"
+            email_found_count += 1
+        if phone:
+            updated_sm["enriched_phone"] = phone
+            updated_sm["has_phone_verified"] = True
+            phone_found_count += 1
+
+        try:
+            supabase_client.table("people_profiles").update({
+                "source_metadata": updated_sm,
+            }).eq("id", cid).execute()
+            enriched_count += 1
+        except Exception as e:
+            print(f"[ENRICH] update failed for {cid}: {e}", flush=True)
+            skipped.append({"id": cid, "reason": "update_failed"})
+            continue
+
+    print(
+        f"[ENRICH] opportunity={opportunity_id} enriched={enriched_count} "
+        f"email_found={email_found_count} phone_found={phone_found_count} "
+        f"skipped={len(skipped)}",
+        flush=True,
+    )
+
+    return ok({
+        "opportunity_id": opportunity_id,
+        "enriched": enriched_count,
+        "email_found": email_found_count,
+        "phone_found": phone_found_count,
+        "skipped": skipped,
+    }, status=200)
+
+
 @billing_bp.route("/admin/roles/<opportunity_id>/send-outreach", methods=["POST"])
 @require_admin
 def send_outreach_bulk(opportunity_id: str):
