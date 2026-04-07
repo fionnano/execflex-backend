@@ -46,6 +46,9 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 STRIPE_GROWTH_PRICE_ID = os.getenv("STRIPE_GROWTH_PRICE_ID")
 
+# Apollo.io candidate sourcing (optional)
+APOLLO_API_KEY = os.getenv("APOLLO_API_KEY")
+
 
 def validate_config():
     """Validate required configuration."""
@@ -69,6 +72,7 @@ def print_config_status():
     print(f"  Ainm Service Key configured? {bool(AINM_SERVICE_KEY)}")
     print(f"  JWT signature verification? {bool(SUPABASE_JWT_SECRET)}")
     print(f"  Stripe configured? {bool(STRIPE_SECRET_KEY)}")
+    print(f"  Apollo configured? {bool(APOLLO_API_KEY)}")
     print(f"  Frontend URL={FRONTEND_URL}")
     print("--------------------------------------------------")
 

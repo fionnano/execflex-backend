@@ -309,3 +309,43 @@ Ainm Search
     except Exception as e:
         print(f"[Feedback] Failed to send feedback email: {e}")
         return False
+
+
+def send_lead_notification(email: str,
+                           name: str | None = None,
+                           company: str | None = None,
+                           message: str | None = None,
+                           source: str = "landing_page") -> bool:
+    """
+    Notify EMAIL_USER that a new inbound lead arrived via /submit-brief.
+    """
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        print("[Lead] Email not configured, cannot send lead notification")
+        return False
+
+    msg = EmailMessage()
+    msg["From"] = formataddr(("Ainm Search Leads", EMAIL_ADDRESS))
+    msg["To"] = EMAIL_ADDRESS
+    msg["Subject"] = f"New lead: {name or email} ({source})"
+
+    lines = [
+        "A new lead just submitted the landing page form.",
+        "",
+        f"Email:   {email}",
+        f"Name:    {name or '(not provided)'}",
+        f"Company: {company or '(not provided)'}",
+        f"Source:  {source}",
+        f"Time:    {datetime.utcnow().isoformat()}Z",
+        "",
+        "Message:",
+        (message or "(none)"),
+    ]
+    msg.set_content("\n".join(lines))
+
+    try:
+        _send_message(msg)
+        print(f"[Lead] Notification sent for {email}")
+        return True
+    except Exception as e:
+        print(f"[Lead] Failed to send notification: {e}")
+        return False

@@ -26,16 +26,39 @@ def health_check():
 
 @health_bp.route("/submit-brief", methods=["POST"])
 def submit_brief():
-    """Capture landing page lead submissions. Best-effort — no auth required."""
+    """Capture landing page lead submissions. No auth required."""
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("email", "")).strip()[:200]
+    if not email:
+        return jsonify({"error": "email required"}), 400
+
+    name = (str(data.get("name", "")).strip()[:200]) or None
+    company = (str(data.get("company", "")).strip()[:200]) or None
+    message = (str(data.get("message", "")).strip()[:5000]) or None
+    source = str(data.get("source", "landing_page")).strip()[:100] or "landing_page"
+
+    # Insert into Supabase
     try:
-        from flask import request as req
-        data = req.get_json(silent=True) or {}
-        name = str(data.get("name", ""))[:200]
-        email = str(data.get("email", ""))[:200]
-        source = str(data.get("source", "landing"))[:100]
-        # Log it so we can see submissions in Render logs
-        print(f"[LEAD] name={name!r} email={email!r} source={source!r}")
-        # TODO: store in Supabase or send email notification
+        from config.clients import supabase_client
+        if supabase_client:
+            supabase_client.table("inbound_leads").insert({
+                "email": email,
+                "name": name,
+                "company": company,
+                "message": message,
+                "source": source,
+            }).execute()
+            print(f"[LEAD] Stored lead: email={email!r} name={name!r} company={company!r} source={source!r}")
+        else:
+            print(f"[LEAD] Supabase unavailable, skipping insert: email={email!r}")
     except Exception as exc:
-        print(f"[LEAD] error: {exc}")
-    return ok({"received": True})
+        print(f"[LEAD] DB insert failed: {exc}")
+
+    # Notify ourselves (best-effort)
+    try:
+        from modules.email_sender import send_lead_notification
+        send_lead_notification(email=email, name=name, company=company, message=message, source=source)
+    except Exception as exc:
+        print(f"[LEAD] Notification email failed: {exc}")
+
+    return jsonify({"status": "received"}), 200

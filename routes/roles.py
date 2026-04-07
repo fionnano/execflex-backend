@@ -2,7 +2,7 @@
 Role posting routes.
 """
 from datetime import datetime
-from flask import request
+from flask import request, jsonify
 from routes import roles_bp
 from utils.response_helpers import ok, bad
 from utils.auth_helpers import require_auth
@@ -110,6 +110,22 @@ def post_role():
             # Supabase insert returns the created record(s) in response.data
             created_record = response.data[0] if response.data and len(response.data) > 0 else None
             
+            # Fire-and-forget Apollo sourcing (best-effort, never blocks the response)
+            if created_record and created_record.get("id"):
+                try:
+                    from services.apollo_service import (
+                        source_and_upsert_async,
+                        get_seniority_from_title,
+                    )
+                    source_and_upsert_async(
+                        opportunity_id=created_record["id"],
+                        role_title=data["role_title"],
+                        location=clean_optional(data.get("location")),
+                        seniority_levels=get_seniority_from_title(data["role_title"]),
+                    )
+                except Exception as e:
+                    print(f"⚠️ Apollo sourcing dispatch failed: {e}")
+
             if created_record:
                 return ok({
                     "message": "Role posted successfully!",
@@ -126,3 +142,50 @@ def post_role():
         print("❌ /post-role error:", e)
         return bad(str(e), 500)
 
+
+@roles_bp.route("/roles/<opportunity_id>/sourced-candidates", methods=["GET"])
+@require_auth
+def sourced_candidates(opportunity_id: str):
+    """
+    GET /roles/<opportunity_id>/sourced-candidates
+
+    Return Apollo-sourced candidate suggestions for an opportunity.
+    Ordered by years_experience DESC (NULLS LAST), limit 20.
+    """
+    try:
+        if not supabase_client:
+            return bad("Database not available", 503)
+
+        resp = (
+            supabase_client.table("people_profiles")
+            .select(
+                "id, first_name, last_name, headline, location, "
+                "years_experience, approved, source_metadata"
+            )
+            .eq("source", "apollo")
+            .eq("source_metadata->>opportunity_id", opportunity_id)
+            .order("years_experience", desc=True, nullsfirst=False)
+            .limit(20)
+            .execute()
+        )
+        rows = resp.data or []
+
+        candidates = []
+        for r in rows:
+            first = r.get("first_name") or ""
+            last = r.get("last_name") or ""
+            name = (f"{first} {last}").strip() or None
+            candidates.append({
+                "id": r.get("id"),
+                "name": name,
+                "headline": r.get("headline"),
+                "location": r.get("location"),
+                "years_experience": r.get("years_experience"),
+                "approved": r.get("approved"),
+                "source_metadata": r.get("source_metadata") or {},
+            })
+
+        return jsonify(candidates), 200
+    except Exception as e:
+        print(f"❌ /roles/{opportunity_id}/sourced-candidates error: {e}")
+        return bad(str(e), 500)
