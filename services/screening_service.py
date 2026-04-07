@@ -272,6 +272,21 @@ Respond ONLY with valid JSON:
             f"bias_flags={bias_flags}"
         )
 
+        # PostHog: screening_completed
+        try:
+            from services.analytics_service import track
+            track("screening_completed", source_candidate_id, {
+                "interaction_id": interaction_id,
+                "job_id": job_id,
+                "role_id": ctx.get("role_id"),
+                "role_title": role_title,
+                "recommendation": recommendation,
+                "overall_score": overall_score,
+                "call_duration": call_duration_seconds,
+            })
+        except Exception as e:
+            print(f"[Analytics] screening_completed failed: {e}", flush=True)
+
         # Log bias audit record + capture inferred consent
         consented = _log_bias_audit(
             interaction_id=interaction_id,

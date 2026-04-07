@@ -426,6 +426,20 @@ def source_and_upsert(
             f"skipped_approved={skipped_approved}",
             flush=True,
         )
+
+        # PostHog: candidates_sourced
+        try:
+            from services.analytics_service import track
+            track("candidates_sourced", None, {
+                "opportunity_id": opportunity_id,
+                "role_title": role_title,
+                "count": len(candidates),
+                "inserted": inserted,
+                "updated": updated,
+            })
+        except Exception as e:
+            print(f"[SOURCING] analytics candidates_sourced failed: {e}", flush=True)
+
         return written
     except Exception as e:
         print(

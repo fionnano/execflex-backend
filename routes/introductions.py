@@ -268,6 +268,18 @@ def request_intro():
         else:
             print(f"⚠️ No candidate email found for match_id {data['match_id']}, email not sent")
 
+        # PostHog: intro_requested
+        try:
+            from services.analytics_service import track
+            track("intro_requested", user_id, {
+                "thread_id": thread_id,
+                "opportunity_id": opportunity_id,
+                "match_id": data.get("match_id"),
+                "email_sent": email_sent,
+            })
+        except Exception as e:
+            print(f"[Analytics] intro_requested failed: {e}")
+
         payload = {
             "thread_id": thread_id,
             "interaction_id": interaction_id,
@@ -467,6 +479,17 @@ def intro_respond():
             f"[INTRO RESPOND] thread={thread_id} action={action} status={new_status}",
             flush=True,
         )
+
+        # PostHog: candidate_interested (only on the positive branch)
+        if action == "interested":
+            try:
+                from services.analytics_service import track
+                track("candidate_interested", None, {
+                    "thread_id": thread_id,
+                    "opportunity_id": thread.get("opportunity_id"),
+                })
+            except Exception as e:
+                print(f"[INTRO RESPOND] analytics candidate_interested failed: {e}", flush=True)
 
         if action == "notinterested":
             return Response(_RESPONSE_PAGE_NOT_INTERESTED, mimetype="text/html"), 200

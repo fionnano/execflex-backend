@@ -507,6 +507,21 @@ def record_placement():
     try:
         resp = supabase_client.table("placements").insert(payload).execute()
         placement = resp.data[0] if resp.data else payload
+
+        # PostHog: placement_recorded
+        try:
+            from services.analytics_service import track
+            track("placement_recorded", request.environ.get("authenticated_user_id"), {
+                "opportunity_id": data["opportunity_id"],
+                "candidate_id": data["candidate_id"],
+                "role_title": role_title,
+                "salary": salary,
+                "fee_amount": fee_amount,
+                "fee_percentage": fee_pct,
+            })
+        except Exception as e:
+            print(f"[Analytics] placement_recorded failed: {e}", flush=True)
+
         return ok({"message": "Placement recorded", "placement": placement}, status=201)
     except Exception as e:
         print(f"Placement insert error: {e}")
@@ -1137,6 +1152,18 @@ def send_outreach_bulk(opportunity_id: str):
         f"skipped={len(skipped)}",
         flush=True,
     )
+
+    # PostHog: outreach_sent
+    try:
+        from services.analytics_service import track
+        track("outreach_sent", request.environ.get("authenticated_user_id"), {
+            "opportunity_id": opportunity_id,
+            "sent_count": len(sent),
+            "skipped_count": len(skipped),
+            "total": len(candidate_ids),
+        })
+    except Exception as e:
+        print(f"[SEND-OUTREACH] analytics outreach_sent failed: {e}", flush=True)
 
     return ok({
         "opportunity_id": opportunity_id,

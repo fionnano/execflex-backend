@@ -80,3 +80,4 @@ simple-websocket==1.0.0
 websocket-client==1.8.0
 cryptography==44.0.0
 stripe==11.4.1
+posthog==3.7.0

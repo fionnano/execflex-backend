@@ -110,6 +110,19 @@ def post_role():
             # Supabase insert returns the created record(s) in response.data
             created_record = response.data[0] if response.data and len(response.data) > 0 else None
             
+            # PostHog: role_posted
+            try:
+                from services.analytics_service import track
+                track("role_posted", user_id, {
+                    "role_title": data.get("role_title"),
+                    "industry": data.get("industry"),
+                    "location": clean_optional(data.get("location")),
+                    "commitment": data.get("commitment"),
+                    "opportunity_id": (created_record or {}).get("id"),
+                })
+            except Exception as e:
+                print(f"⚠️ analytics role_posted failed: {e}")
+
             # Fire-and-forget candidate sourcing (PDL via sourcing_service).
             # Best-effort — never blocks the /post-role response.
             if created_record and created_record.get("id"):

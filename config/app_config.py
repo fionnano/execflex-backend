@@ -52,6 +52,10 @@ APOLLO_API_KEY = os.getenv("APOLLO_API_KEY")
 # People Data Labs candidate sourcing (free tier: 100 searches/month)
 PDL_API_KEY = os.getenv("PDL_API_KEY")
 
+# PostHog product analytics (optional — no-op if unset)
+POSTHOG_API_KEY = os.getenv("POSTHOG_API_KEY")
+POSTHOG_HOST = os.getenv("POSTHOG_HOST", "https://eu.i.posthog.com")
+
 
 def validate_config():
     """Validate required configuration."""
@@ -77,6 +81,7 @@ def print_config_status():
     print(f"  Stripe configured? {bool(STRIPE_SECRET_KEY)}")
     print(f"  Apollo configured? {bool(APOLLO_API_KEY)}")
     print(f"  PDL configured? {bool(PDL_API_KEY)}")
+    print(f"  PostHog configured? {bool(POSTHOG_API_KEY)}")
     print(f"  Frontend URL={FRONTEND_URL}")
     print("--------------------------------------------------")
 
