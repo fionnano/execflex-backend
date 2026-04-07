@@ -31,7 +31,7 @@ PDL_SEARCH_URL = "https://api.peopledatalabs.com/v5/person/search"
 # Module-load marker — appears once in Render logs at process start.
 # If you post a role and DO NOT see this line above the [SOURCING] logs,
 # the running process is importing a stale/cached module.
-_MODULE_BUILD_TAG = "sourcing_service@sql-v6"
+_MODULE_BUILD_TAG = "sourcing_service@sql-v7"
 print(f"[SOURCING] module loaded: {_MODULE_BUILD_TAG}", flush=True)
 
 # NOTE: PDL_API_KEY is deliberately read inside each function at call time
@@ -225,23 +225,42 @@ def search_candidates(
     return [_map_pdl_person(p, opportunity_id) for p in people if p]
 
 
+def _safe_str(value) -> str:
+    """
+    Coerce a PDL response value to a non-empty string, or return "".
+
+    PDL sometimes returns boolean False (or other non-string types) for
+    fields that are absent/unknown. Any code that does `.strip()`, `+`,
+    or `", ".join(...)` on such a value crashes with
+    TypeError: sequence item 0: expected str instance, bool found.
+    This helper filters those out safely.
+    """
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
 def _map_pdl_person(person: dict, opportunity_id: str) -> dict:
     """Map a single PDL person record into our intermediate candidate dict."""
-    first = (person.get("first_name") or "").strip()
-    last = (person.get("last_name") or "").strip()
-    full_name = (f"{first} {last}").strip() or person.get("full_name") or "Unknown"
+    first = _safe_str(person.get("first_name"))
+    last = _safe_str(person.get("last_name"))
+    full_name_fallback = _safe_str(person.get("full_name"))
+    full_name = (f"{first} {last}").strip() or full_name_fallback or "Unknown"
 
-    title = person.get("job_title") or ""
-    company = person.get("job_company_name")
+    title = _safe_str(person.get("job_title"))
+    company = _safe_str(person.get("job_company_name"))
     headline = title + (f" at {company}" if company else "")
 
     locality = person.get("location_locality")
     country = person.get("location_country")
-    location_parts = [p for p in (locality, country) if p]
+    location_parts = [
+        p for p in (locality, country)
+        if isinstance(p, str) and p
+    ]
     location_str = ", ".join(location_parts).title() if location_parts else None
 
-    linkedin_url = person.get("linkedin_url")
-    pdl_id = person.get("id")
+    linkedin_url = person.get("linkedin_url") if isinstance(person.get("linkedin_url"), str) else None
+    pdl_id = person.get("id") if isinstance(person.get("id"), str) else None
 
     return {
         "name": full_name,
@@ -256,7 +275,7 @@ def _map_pdl_person(person: dict, opportunity_id: str) -> dict:
             "opportunity_id": opportunity_id,
             "has_email": bool(person.get("work_email") or person.get("personal_email")),
             "has_phone": "Yes" if person.get("mobile_phone") or person.get("phone_numbers") else "No",
-            "organization_name": company,
+            "organization_name": company or None,
             "provider": "pdl",
         },
     }
