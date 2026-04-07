@@ -10,6 +10,7 @@ GET  /admin/placements          — List placements (admin only)
 """
 import os
 from datetime import datetime, timezone
+from typing import Optional
 from flask import Blueprint, request, jsonify
 from utils.auth_helpers import require_auth, require_admin
 from utils.response_helpers import ok, bad
@@ -829,6 +830,478 @@ def admin_revenue():
         "pipeline": pipeline,
         "mrr": mrr,
         "generated_at": now.isoformat(),
+    }, status=200)
+
+
+# ── CSV bulk candidate upload ────────────────────────────────────────────────
+
+# Canonical field name per normalised header alias. Normalisation:
+# strip, lowercase, replace non-alphanumerics with underscores.
+_CSV_HEADER_ALIASES = {
+    "first_name": "first_name",
+    "firstname": "first_name",
+    "given_name": "first_name",
+    "last_name": "last_name",
+    "lastname": "last_name",
+    "surname": "last_name",
+    "family_name": "last_name",
+    "full_name": "full_name",
+    "name": "full_name",
+    "email": "email",
+    "email_address": "email",
+    "e_mail": "email",
+    "phone": "phone",
+    "phone_number": "phone",
+    "mobile": "phone",
+    "mobile_phone": "phone",
+    "mobile_number": "phone",
+    "company": "company",
+    "company_name": "company",
+    "organisation": "company",
+    "organization": "company",
+    "employer": "company",
+    "position": "title",
+    "title": "title",
+    "job_title": "title",
+    "headline": "title",
+    "role": "title",
+    "location": "location",
+    "city": "location",
+    "country": "location",
+    "linkedin_url": "linkedin_url",
+    "linkedin": "linkedin_url",
+    "profile_url": "linkedin_url",
+    "connected_on": "connected_on",
+}
+
+
+def _normalise_csv_header(raw: str) -> str:
+    """Strip, lowercase, replace non-alphanumerics with underscores."""
+    import re
+    if not isinstance(raw, str):
+        return ""
+    return re.sub(r"[^a-z0-9]+", "_", raw.strip().lower()).strip("_")
+
+
+def _map_csv_row(row: dict) -> dict:
+    """
+    Given a DictReader row with raw header keys, return a dict keyed by
+    our canonical field names. Unknown columns are ignored.
+    """
+    canonical = {}
+    for raw_key, raw_value in (row or {}).items():
+        norm = _normalise_csv_header(raw_key)
+        canonical_key = _CSV_HEADER_ALIASES.get(norm)
+        if not canonical_key:
+            continue
+        value = raw_value.strip() if isinstance(raw_value, str) else raw_value
+        if value:
+            canonical[canonical_key] = value
+    return canonical
+
+
+def _split_full_name(full_name: str) -> tuple:
+    """Return (first_name, last_name) from a single full-name string."""
+    if not isinstance(full_name, str):
+        return (None, None)
+    parts = full_name.strip().split(None, 1)
+    if not parts:
+        return (None, None)
+    if len(parts) == 1:
+        return (parts[0], None)
+    return (parts[0], parts[1])
+
+
+def _normalise_phone_csv(raw: str) -> Optional[str]:
+    """Best-effort E.164 normalisation — must start with + and have 8-15 digits."""
+    import re
+    if not isinstance(raw, str):
+        return None
+    cleaned = re.sub(r"[\s\-().]", "", raw.strip())
+    if not cleaned:
+        return None
+    if not cleaned.startswith("+"):
+        cleaned = "+" + cleaned.lstrip("0")
+    if not re.fullmatch(r"\+\d{8,15}", cleaned):
+        return None
+    return cleaned
+
+
+def _upsert_channel_identity_best_effort(
+    user_id: Optional[str],
+    email: Optional[str],
+    phone: Optional[str],
+    row_index: int,
+) -> None:
+    """
+    Only inserts channel_identities rows when we have a user_id. The
+    existing schema appears to require user_id NOT NULL; PDL-sourced
+    and CSV-uploaded candidates have no user_id, so those rows are
+    tracked via source_metadata.upload_email / upload_phone instead.
+    """
+    if not user_id or not supabase_client:
+        return
+    if email:
+        try:
+            supabase_client.table("channel_identities").insert({
+                "user_id": user_id,
+                "channel": "email",
+                "value": email,
+            }).execute()
+        except Exception as e:
+            print(f"[BULK-UPLOAD] channel_identities email insert failed row={row_index}: {e}", flush=True)
+    if phone:
+        try:
+            supabase_client.table("channel_identities").insert({
+                "user_id": user_id,
+                "channel": "phone",
+                "value": phone,
+            }).execute()
+        except Exception as e:
+            print(f"[BULK-UPLOAD] channel_identities phone insert failed row={row_index}: {e}", flush=True)
+
+
+@billing_bp.route("/admin/candidates/bulk-upload", methods=["POST"])
+@require_admin
+def bulk_upload_candidates():
+    """
+    POST /admin/candidates/bulk-upload
+    Content-Type: multipart/form-data
+    Field: file (CSV)
+
+    Accepts either a LinkedIn connections export or a generic CSV
+    with flexible header mapping (case- and punctuation-insensitive):
+      - first_name:   First Name, firstname, given_name
+      - last_name:    Last Name, lastname, surname
+      - full_name:    Full Name, Name (split into first/last)
+      - email:        Email, Email Address, e-mail
+      - phone:        Phone, Phone Number, Mobile, Mobile Number
+      - company:      Company, Company Name, Organisation, Employer
+      - title:        Position, Title, Job Title, Headline, Role
+      - location:     Location, City, Country
+      - linkedin_url: LinkedIn URL, LinkedIn, Profile URL
+      - connected_on: Connected On (LinkedIn export marker)
+
+    Dedup:
+      - Primary:    source_metadata->>'upload_email' (by email)
+      - Secondary:  linkedin_url column
+      - Else:       always insert new
+
+    approved=False on all uploaded rows so an admin must explicitly
+    approve them before /match will return them.
+
+    Returns {source, total, inserted, updated, skipped, errors,
+             errors_truncated}.
+    """
+    import csv
+    import io
+
+    if not supabase_client:
+        return bad("Database not available", 503)
+
+    file_field = request.files.get("file")
+    if file_field is None or not file_field.filename:
+        return bad("file field is required (multipart/form-data, CSV)", 400)
+
+    try:
+        raw_bytes = file_field.read()
+        text = raw_bytes.decode("utf-8-sig", errors="replace")
+    except Exception as e:
+        return bad(f"Could not read file: {e}", 400)
+
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        headers = [h for h in (reader.fieldnames or [])]
+    except Exception as e:
+        return bad(f"Invalid CSV: {e}", 400)
+
+    if not headers:
+        return bad("CSV has no header row", 400)
+
+    # Detect source from headers — LinkedIn exports include "Connected On"
+    norm_headers = [_normalise_csv_header(h) for h in headers]
+    source_tag = "linkedin_export" if "connected_on" in norm_headers else "manual_upload"
+    upload_date = datetime.now(timezone.utc).isoformat()
+
+    inserted = 0
+    updated = 0
+    skipped = 0
+    errors: list = []
+    total = 0
+
+    for row_index, raw_row in enumerate(reader, start=2):  # 1 = header
+        total += 1
+        try:
+            canonical = _map_csv_row(raw_row)
+
+            first_name = canonical.get("first_name")
+            last_name = canonical.get("last_name")
+            if not first_name and not last_name and canonical.get("full_name"):
+                first_name, last_name = _split_full_name(canonical["full_name"])
+
+            email = canonical.get("email")
+            phone_raw = canonical.get("phone")
+            phone = _normalise_phone_csv(phone_raw) if phone_raw else None
+            company = canonical.get("company")
+            title = canonical.get("title")
+            location = canonical.get("location")
+            linkedin_url = canonical.get("linkedin_url")
+
+            if not any([first_name, last_name, email, linkedin_url]):
+                skipped += 1
+                errors.append({"row": row_index, "reason": "no_identifying_fields"})
+                continue
+
+            headline = None
+            if title and company:
+                headline = f"{title} at {company}"
+            elif title:
+                headline = title
+            elif company:
+                headline = company
+
+            sm_update = {
+                "company": company,
+                "upload_date": upload_date,
+                "upload_source": source_tag,
+                "upload_filename": file_field.filename,
+            }
+            if email:
+                sm_update["upload_email"] = email
+            if phone:
+                sm_update["upload_phone"] = phone
+            if canonical.get("connected_on"):
+                sm_update["linkedin_connected_on"] = canonical["connected_on"]
+
+            existing_row = None
+            if email:
+                try:
+                    dup_resp = (
+                        supabase_client.table("people_profiles")
+                        .select("id, first_name, last_name, headline, location, "
+                                "linkedin_url, source_metadata, user_id, approved")
+                        .eq("source_metadata->>upload_email", email)
+                        .limit(1)
+                        .execute()
+                    )
+                    if dup_resp.data:
+                        existing_row = dup_resp.data[0]
+                except Exception as e:
+                    print(f"[BULK-UPLOAD] dedup lookup failed row={row_index}: {e}", flush=True)
+
+            if not existing_row and linkedin_url:
+                try:
+                    dup_resp = (
+                        supabase_client.table("people_profiles")
+                        .select("id, first_name, last_name, headline, location, "
+                                "linkedin_url, source_metadata, user_id, approved")
+                        .eq("linkedin_url", linkedin_url)
+                        .limit(1)
+                        .execute()
+                    )
+                    if dup_resp.data:
+                        existing_row = dup_resp.data[0]
+                except Exception as e:
+                    print(f"[BULK-UPLOAD] linkedin dedup lookup failed row={row_index}: {e}", flush=True)
+
+            if existing_row:
+                if existing_row.get("approved") is True:
+                    skipped += 1
+                    errors.append({"row": row_index, "reason": "already_approved"})
+                    continue
+
+                merged_sm = dict(existing_row.get("source_metadata") or {})
+                merged_sm.update(sm_update)
+
+                update_payload: dict = {"source_metadata": merged_sm}
+                if first_name and not existing_row.get("first_name"):
+                    update_payload["first_name"] = first_name
+                if last_name and not existing_row.get("last_name"):
+                    update_payload["last_name"] = last_name
+                if headline and not existing_row.get("headline"):
+                    update_payload["headline"] = headline
+                if location and not existing_row.get("location"):
+                    update_payload["location"] = location
+                if linkedin_url and not existing_row.get("linkedin_url"):
+                    update_payload["linkedin_url"] = linkedin_url
+
+                try:
+                    supabase_client.table("people_profiles").update(update_payload).eq(
+                        "id", existing_row["id"]
+                    ).execute()
+                    updated += 1
+                except Exception as e:
+                    skipped += 1
+                    errors.append({"row": row_index, "reason": f"update_failed: {e}"})
+                    continue
+
+                _upsert_channel_identity_best_effort(
+                    user_id=existing_row.get("user_id"),
+                    email=email,
+                    phone=phone,
+                    row_index=row_index,
+                )
+                continue
+
+            insert_payload = {
+                "first_name": first_name,
+                "last_name": last_name,
+                "headline": headline,
+                "location": location,
+                "linkedin_url": linkedin_url,
+                "approved": False,
+                "source": source_tag,
+                "source_metadata": sm_update,
+            }
+            try:
+                resp = supabase_client.table("people_profiles").insert(insert_payload).execute()
+                if resp.data:
+                    inserted += 1
+                else:
+                    skipped += 1
+                    errors.append({"row": row_index, "reason": "insert_returned_no_data"})
+            except Exception as e:
+                skipped += 1
+                errors.append({"row": row_index, "reason": f"insert_failed: {e}"})
+                continue
+        except Exception as e:
+            skipped += 1
+            errors.append({"row": row_index, "reason": f"row_error: {e}"})
+
+    print(
+        f"[BULK-UPLOAD] source={source_tag} total={total} inserted={inserted} "
+        f"updated={updated} skipped={skipped} errors={len(errors)}",
+        flush=True,
+    )
+
+    return ok({
+        "source": source_tag,
+        "total": total,
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "errors": errors[:50],
+        "errors_truncated": len(errors) > 50,
+    }, status=200)
+
+
+# ── Enqueue talent-network calls ─────────────────────────────────────────────
+
+@billing_bp.route("/admin/candidates/enqueue-talent-network-calls", methods=["POST"])
+@require_admin
+def enqueue_talent_network_calls():
+    """
+    POST /admin/candidates/enqueue-talent-network-calls
+
+    Body: {"candidate_ids": ["uuid1", "uuid2"]}
+      OR: {"all_unapproved": true}
+
+    For each candidate with a phone, creates an outbound_call_jobs
+    row via create_screening_job with purpose='talent_network'.
+
+    Phone resolution order:
+      1. source_metadata.upload_phone  (CSV upload path)
+      2. source_metadata.enriched_phone  (PDL enrichment path)
+      3. channel_identities by user_id, channel='phone'
+         (signup-path candidates)
+
+    The 'talent_network' prompt branch is added in a follow-up commit
+    (same push). Until then any dispatched call falls through to the
+    default prompt.
+
+    Returns {enqueued, skipped, total_considered}.
+    """
+    if not supabase_client:
+        return bad("Database not available", 503)
+
+    data = request.get_json(force=True, silent=True) or {}
+    candidate_ids = data.get("candidate_ids")
+    all_unapproved = bool(data.get("all_unapproved"))
+
+    if not all_unapproved:
+        if not isinstance(candidate_ids, list) or not candidate_ids:
+            return bad("Provide either candidate_ids (array) or all_unapproved=true", 400)
+        candidate_ids = [cid for cid in candidate_ids if isinstance(cid, str) and cid]
+        if not candidate_ids:
+            return bad("candidate_ids contains no valid ids", 400)
+
+    try:
+        query = (
+            supabase_client.table("people_profiles")
+            .select("id, first_name, last_name, user_id, source_metadata, approved")
+        )
+        if all_unapproved:
+            query = query.eq("approved", False)
+        else:
+            query = query.in_("id", candidate_ids)
+        resp = query.limit(500).execute()
+        rows = resp.data or []
+    except Exception as e:
+        return bad(f"Failed to fetch candidates: {e}", 500)
+
+    from services.screening_service import create_screening_job
+
+    enqueued = 0
+    skipped: list = []
+
+    for row in rows:
+        cid = row["id"]
+        phone = None
+        sm = row.get("source_metadata") or {}
+        for key in ("upload_phone", "enriched_phone"):
+            v = sm.get(key)
+            if isinstance(v, str) and v.startswith("+"):
+                phone = v
+                break
+        if not phone and row.get("user_id"):
+            try:
+                ci = (
+                    supabase_client.table("channel_identities")
+                    .select("value")
+                    .eq("user_id", row["user_id"])
+                    .eq("channel", "phone")
+                    .limit(1)
+                    .execute()
+                )
+                if ci.data:
+                    phone = ci.data[0].get("value")
+            except Exception as e:
+                print(f"[TALENT-NET] channel_identities lookup failed for {cid}: {e}", flush=True)
+
+        if not phone:
+            skipped.append({"id": cid, "reason": "no_phone"})
+            continue
+
+        first = (row.get("first_name") or "").strip()
+        last = (row.get("last_name") or "").strip()
+        candidate_name = (f"{first} {last}").strip() or "there"
+
+        try:
+            create_screening_job(
+                candidate_phone=phone,
+                candidate_name=candidate_name,
+                role_title="your career",
+                company_name="Ainm Search",
+                questions=[],
+                callback_url=None,
+                source_candidate_id=cid,
+                purpose="talent_network",
+            )
+            enqueued += 1
+        except Exception as e:
+            print(f"[TALENT-NET] create_screening_job failed for {cid}: {e}", flush=True)
+            skipped.append({"id": cid, "reason": f"enqueue_failed: {e}"})
+
+    print(
+        f"[TALENT-NET] enqueued={enqueued} skipped={len(skipped)} "
+        f"total_considered={len(rows)} all_unapproved={all_unapproved}",
+        flush=True,
+    )
+
+    return ok({
+        "enqueued": enqueued,
+        "skipped": skipped,
+        "total_considered": len(rows),
     }, status=200)
 
 
