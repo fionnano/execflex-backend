@@ -67,7 +67,15 @@ def get_organization_for_user(user_id: str) -> dict | None:
 
 def get_usage_this_month(user_id: str) -> dict:
     """
-    Count how many roles, intros, and screenings the user has used this month.
+    Count how many roles, intros, and screenings the user has used
+    in the CURRENT calendar month (UTC).
+
+    Implementation note — monthly reset behaviour:
+    There is no cron job that clears counters. Reset happens
+    automatically because every counter query filters rows by
+    `created_at >= month_start`, where `month_start` is re-computed
+    on every call as the first-of-the-month in UTC. On the 1st of
+    each month at 00:00 UTC all counters naturally return to zero.
     """
     from datetime import datetime, timezone
 
