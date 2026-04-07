@@ -10,6 +10,7 @@ Notes:
   a separate paid endpoint and is intentionally NOT performed here.
 - This endpoint does not consume credits.
 """
+import json
 import logging
 import os
 import threading
@@ -42,7 +43,8 @@ def get_seniority_from_title(title: str) -> list[str]:
     t = title.lower()
 
     if "chief" in t or "ceo" in t or "coo" in t or "cfo" in t or "cto" in t:
-        return ["c_suite"]
+        # Widen the net — some C-suite folks list themselves as VP/Director on LinkedIn
+        return ["c_suite", "vp", "director"]
     if "vp" in t or "vice president" in t:
         return ["vp", "c_suite"]
     if "director" in t:
@@ -95,19 +97,39 @@ def search_candidates(
         print("[APOLLO] Sourcing skipped — APOLLO_API_KEY not set in environment", flush=True)
         return []
 
+    # Normalise location: title-case ("dublin, ireland" → "Dublin, Ireland")
+    location_normalised = location.strip().title() if location else None
+
+    person_locations: list[str] = []
+    organization_locations: list[str] = []
+    if location_normalised:
+        person_locations.append(location_normalised)
+        # Some candidates list company HQ rather than personal location.
+        # If Ireland-based, also search by organization_locations so we
+        # catch people whose Apollo record only shows the employer's HQ.
+        if "ireland" in location_normalised.lower():
+            if "Ireland" not in person_locations:
+                person_locations.append("Ireland")
+            organization_locations.append("Ireland")
+
     body = {
         "person_titles": [role_title],
-        "person_locations": [location] if location else [],
+        "person_locations": person_locations,
         "person_seniorities": seniority_levels or get_seniority_from_title(role_title),
         "per_page": limit,
         "page": 1,
     }
+    if organization_locations:
+        body["organization_locations"] = organization_locations
+
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",
         "accept": "application/json",
         "X-Api-Key": api_key,
     }
+
+    print(f"[APOLLO] Request body sent: {json.dumps(body)}", flush=True)
 
     try:
         resp = requests.post(APOLLO_SEARCH_URL, json=body, headers=headers, timeout=10)
@@ -133,6 +155,12 @@ def search_candidates(
     except Exception:
         logger.exception("Apollo returned non-JSON response")
         return []
+
+    print(
+        f"[APOLLO] Raw response: total_entries={data.get('total_entries')} "
+        f"people_count={len(data.get('people', []))}",
+        flush=True,
+    )
 
     people = data.get("people") or []
     return [_map_person(p, opportunity_id) for p in people if p]
