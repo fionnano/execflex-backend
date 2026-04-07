@@ -256,6 +256,141 @@ def create_retainer_payment():
     }, status=201)
 
 
+@billing_bp.route("/billing/create-retainer-checkout", methods=["POST"])
+@require_auth
+def create_retainer_checkout():
+    """
+    POST /billing/create-retainer-checkout
+
+    Body (JSON):
+      opportunity_id  str  — UUID of the opportunity being retained
+      amount          num  — Retainer amount in euros (default 1500)
+
+    Creates a Stripe Checkout Session in `payment` mode (one-time
+    payment, not a subscription) and returns {checkout_url}. The
+    frontend redirects the browser to that URL; Stripe hosts the
+    whole card-entry UI and posts back to success_url on completion.
+
+    The payment_intent_data.metadata carries opportunity_id, user_id
+    and payment_type='retainer', so the existing
+    payment_intent.succeeded webhook handler picks it up and flips
+    the retainer_payments row + opportunities.status without any new
+    webhook code.
+
+    This is the preferred flow over the inline PaymentIntent variant
+    because confirmPayment() on the frontend requires a Stripe
+    Elements context which we don't currently mount.
+    """
+    if not supabase_client:
+        return bad("Database not available", 503)
+
+    data = request.get_json(force=True, silent=True) or {}
+    opportunity_id = (data.get("opportunity_id") or "").strip()
+    if not opportunity_id:
+        return bad("opportunity_id is required", 400)
+
+    try:
+        amount = float(data.get("amount") or 1500)
+    except (TypeError, ValueError):
+        return bad("amount must be a number", 400)
+    if amount <= 0:
+        return bad("amount must be greater than zero", 400)
+
+    user_id = request.environ.get("authenticated_user_id")
+    if not user_id:
+        return bad("Authentication required", 401)
+
+    # Fetch opportunity for title + ownership check
+    try:
+        opp_resp = (
+            supabase_client.table("opportunities")
+            .select("id, title, created_by_user_id")
+            .eq("id", opportunity_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        return bad(f"Failed to fetch opportunity: {e}", 500)
+
+    if not opp_resp.data:
+        return bad("Opportunity not found", 404)
+    opp = opp_resp.data[0]
+    role_title = opp.get("title") or "executive search"
+
+    frontend_url = os.getenv("FRONTEND_URL", "https://execflex.ai").rstrip("/")
+    success_url = (
+        f"{frontend_url}/dashboard?retainer=success&opp={opportunity_id}"
+    )
+    cancel_url = f"{frontend_url}/dashboard?retainer=cancelled"
+
+    stripe = _get_stripe()
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "eur",
+                    "product_data": {
+                        "name": "ExecFlex Retained Search",
+                        "description": f"Retainer for: {role_title}",
+                    },
+                    "unit_amount": int(round(amount * 100)),
+                },
+                "quantity": 1,
+            }],
+            metadata={
+                "opportunity_id": opportunity_id,
+                "user_id": user_id,
+                "payment_type": "retainer",
+            },
+            payment_intent_data={
+                "metadata": {
+                    "opportunity_id": opportunity_id,
+                    "user_id": user_id,
+                    "payment_type": "retainer",
+                },
+                "description": f"ExecFlex retained search — {role_title}",
+            },
+            success_url=success_url,
+            cancel_url=cancel_url,
+        )
+    except Exception as e:
+        print(f"[Retainer] Stripe Checkout create error: {e}", flush=True)
+        return bad(f"Failed to create checkout session: {str(e)}", 500)
+
+    # Persist a pending retainer record so we can reconcile on webhook
+    # and surface pending state in the UI immediately.
+    try:
+        supabase_client.table("retainer_payments").insert({
+            "opportunity_id": opportunity_id,
+            "user_id": user_id,
+            "stripe_payment_intent_id": session.payment_intent or session.id,
+            "amount": amount,
+            "currency": "eur",
+            "status": "pending",
+            "metadata": {
+                "role_title": role_title,
+                "checkout_session_id": session.id,
+            },
+        }).execute()
+    except Exception as e:
+        print(f"[Retainer] DB insert failed: {e}", flush=True)
+        # Non-fatal — webhook will reconcile via PI metadata.
+
+    print(
+        f"[Retainer] Created Checkout session={session.id} "
+        f"amount={amount} opportunity={opportunity_id}",
+        flush=True,
+    )
+
+    return ok({
+        "checkout_url": session.url,
+        "session_id": session.id,
+        "amount": amount,
+    }, status=201)
+
+
 def _handle_payment_intent_succeeded(intent):
     """
     Process a successful retainer PaymentIntent.
