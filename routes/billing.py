@@ -513,6 +513,175 @@ def record_placement():
         return bad(f"Failed to record placement: {str(e)}", 500)
 
 
+@billing_bp.route("/admin/revenue", methods=["GET"])
+@require_admin
+def admin_revenue():
+    """
+    GET /admin/revenue
+
+    One-stop commercial dashboard feed:
+      placements: total + by_status + count + this_month
+      retainers:  total paid + count + this_month
+      pipeline:   roles_active, roles_retained, candidates_sourced,
+                  candidates_screened, candidates_approved
+      mrr:        sum of active Stripe subscription amounts (in EUR)
+
+    Every query is wrapped in its own try/except so a single failure
+    degrades gracefully to a zero / null rather than 500ing the whole
+    endpoint.
+    """
+    if not supabase_client:
+        return bad("Database not available", 503)
+
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+    # ── Placements ───────────────────────────────────────────────────────
+    placements_report = {
+        "total_fee_amount": 0.0,
+        "by_status": {"pending": 0, "invoiced": 0, "paid": 0},
+        "count": 0,
+        "this_month": 0.0,
+    }
+    try:
+        all_placements_resp = (
+            supabase_client.table("placements")
+            .select("fee_amount, status, placed_at", count="exact")
+            .execute()
+        )
+        rows = all_placements_resp.data or []
+        placements_report["count"] = (
+            all_placements_resp.count if all_placements_resp.count is not None else len(rows)
+        )
+        total_fee = 0.0
+        month_fee = 0.0
+        status_counts = {"pending": 0, "invoiced": 0, "paid": 0}
+        for r in rows:
+            amt = float(r.get("fee_amount") or 0)
+            total_fee += amt
+            s = (r.get("status") or "pending").lower()
+            if s in status_counts:
+                status_counts[s] += 1
+            placed_at = r.get("placed_at")
+            if placed_at and isinstance(placed_at, str) and placed_at >= month_start:
+                month_fee += amt
+        placements_report["total_fee_amount"] = round(total_fee, 2)
+        placements_report["this_month"] = round(month_fee, 2)
+        placements_report["by_status"] = status_counts
+    except Exception as e:
+        print(f"[Revenue] placements aggregation failed: {e}", flush=True)
+
+    # ── Retainers ────────────────────────────────────────────────────────
+    retainers_report = {
+        "total": 0.0,
+        "count": 0,
+        "this_month": 0,
+    }
+    try:
+        retainer_resp = (
+            supabase_client.table("retainer_payments")
+            .select("amount, status, created_at", count="exact")
+            .eq("status", "paid")
+            .execute()
+        )
+        rows = retainer_resp.data or []
+        retainers_report["count"] = (
+            retainer_resp.count if retainer_resp.count is not None else len(rows)
+        )
+        total = 0.0
+        month_count = 0
+        for r in rows:
+            total += float(r.get("amount") or 0)
+            created = r.get("created_at")
+            if created and isinstance(created, str) and created >= month_start:
+                month_count += 1
+        retainers_report["total"] = round(total, 2)
+        retainers_report["this_month"] = month_count
+    except Exception as e:
+        print(f"[Revenue] retainer aggregation failed: {e}", flush=True)
+
+    # ── Pipeline ─────────────────────────────────────────────────────────
+    pipeline = {
+        "roles_active": 0,
+        "roles_retained": 0,
+        "candidates_sourced": 0,
+        "candidates_screened": 0,
+        "candidates_approved": 0,
+    }
+
+    def _count(table: str, **filters) -> int:
+        try:
+            q = supabase_client.table(table).select("id", count="exact")
+            for k, v in filters.items():
+                if k.endswith("__like"):
+                    q = q.like(k[:-6], v)
+                else:
+                    q = q.eq(k, v)
+            resp = q.execute()
+            return resp.count if resp.count is not None else len(resp.data or [])
+        except Exception as e:
+            print(f"[Revenue] count({table}, {filters}) failed: {e}", flush=True)
+            return 0
+
+    pipeline["roles_active"] = _count("opportunities", status="open")
+    pipeline["roles_retained"] = _count("opportunities", status="retained")
+    pipeline["candidates_sourced"] = _count("people_profiles", source="apollo")
+    pipeline["candidates_approved"] = _count("people_profiles", approved=True)
+
+    # candidates_screened: outbound_call_jobs where status='completed'
+    # AND artifacts.call_type matches a screening-like type. We can't
+    # easily filter on jsonb path with a LIKE via supabase-py, so fetch
+    # completed calls and filter in Python.
+    try:
+        completed_resp = (
+            supabase_client.table("outbound_call_jobs")
+            .select("id, artifacts", count="exact")
+            .eq("status", "completed")
+            .execute()
+        )
+        rows = completed_resp.data or []
+        screened = 0
+        for r in rows:
+            ct = ((r.get("artifacts") or {}).get("call_type") or "").lower()
+            if "screening" in ct or ct == "candidate_chat":
+                screened += 1
+        pipeline["candidates_screened"] = screened
+    except Exception as e:
+        print(f"[Revenue] candidates_screened aggregation failed: {e}", flush=True)
+
+    # ── MRR from Stripe ──────────────────────────────────────────────────
+    mrr = 0.0
+    try:
+        stripe = _get_stripe()
+        if stripe and os.getenv("STRIPE_SECRET_KEY"):
+            subs = stripe.subscriptions.list(status="active", limit=100)
+            total_cents = 0
+            for sub in getattr(subs, "auto_paging_iter", lambda: subs.data or [])():
+                items = (sub.get("items") or {}).get("data") or []
+                for item in items:
+                    price = item.get("price") or {}
+                    unit_amount = price.get("unit_amount") or 0
+                    quantity = item.get("quantity") or 1
+                    interval = (price.get("recurring") or {}).get("interval", "month")
+                    per_month = unit_amount * quantity
+                    if interval == "year":
+                        per_month = per_month / 12
+                    elif interval == "week":
+                        per_month = per_month * (52 / 12)
+                    total_cents += per_month
+            mrr = round(total_cents / 100, 2)
+    except Exception as e:
+        print(f"[Revenue] Stripe MRR fetch failed: {e}", flush=True)
+
+    return ok({
+        "placements": placements_report,
+        "retainers": retainers_report,
+        "pipeline": pipeline,
+        "mrr": mrr,
+        "generated_at": now.isoformat(),
+    }, status=200)
+
+
 @billing_bp.route("/admin/candidates/<candidate_id>/approve", methods=["POST"])
 @require_admin
 def approve_candidate(candidate_id: str):
