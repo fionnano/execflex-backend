@@ -33,3 +33,6 @@ from routes.upload import upload_bp  # noqa
 # Public talent-network opt-in landing page
 from routes.talent_network import talent_network_bp  # noqa
 
+# Shareable shortlists (admin create, public read, public intro request)
+from routes.shortlist import shortlist_bp  # noqa
+
