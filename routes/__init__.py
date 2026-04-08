@@ -36,3 +36,9 @@ from routes.talent_network import talent_network_bp  # noqa
 # Shareable shortlists (admin create, public read, public intro request)
 from routes.shortlist import shortlist_bp  # noqa
 
+# Client outreach management (admin)
+from routes.clients import clients_bp  # noqa
+
+# Demo data seeder (Moorepark meeting — temporary)
+from routes.seed import seed_bp  # noqa
+

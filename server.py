@@ -34,6 +34,8 @@ from routes import (
     upload_bp,
     talent_network_bp,
     shortlist_bp,
+    clients_bp,
+    seed_bp,
 )
 
 # Validate configuration
@@ -83,6 +85,8 @@ app.register_blueprint(ai_consultant_bp)
 app.register_blueprint(upload_bp)
 app.register_blueprint(talent_network_bp)
 app.register_blueprint(shortlist_bp)
+app.register_blueprint(clients_bp)
+app.register_blueprint(seed_bp)
 
 # Alias: POST /screen_candidate → same handler as POST /screening
 from routes.screening import screen_candidate as _screen_candidate_handler
