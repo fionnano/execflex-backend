@@ -429,6 +429,46 @@ def send_role_posted_notification(role_title: str,
         return False
 
 
+def send_client_outreach_email(recipient_email: str,
+                               recipient_name: str | None,
+                               subject: str,
+                               body: str) -> bool:
+    """
+    Send a single cold-outreach email to a client contact from Fionnán
+    at ExecFlex. Plain-text only — cold outreach performs better than
+    HTML marketing templates. Bcc'd to EMAIL_USER for audit.
+
+    Caller is responsible for rendering {first_name} / {company}
+    placeholders into subject and body before calling this function.
+    """
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        print("[ClientOutreach] Email not configured, cannot send outreach")
+        return False
+    if not _is_valid_email(recipient_email):
+        print(f"[ClientOutreach] Invalid recipient: {recipient_email}")
+        return False
+
+    msg = EmailMessage()
+    msg["From"] = formataddr(("Fionnán O'Sullivan", EMAIL_ADDRESS))
+    msg["To"] = recipient_email
+    msg["Bcc"] = EMAIL_ADDRESS
+    msg["Subject"] = subject
+    if "Re:" in subject:
+        # Simulate a reply thread so Gmail groups follow-up messages
+        msg["In-Reply-To"] = f"<{EMAIL_ADDRESS}>"
+        msg["References"] = f"<{EMAIL_ADDRESS}>"
+    msg.set_content(body)
+
+    try:
+        _send_message(msg)
+        display_name = recipient_name or recipient_email
+        print(f"[ClientOutreach] Sent {subject[:50]!r} to {display_name}")
+        return True
+    except Exception as e:
+        print(f"[ClientOutreach] Failed to send to {recipient_email}: {e}")
+        return False
+
+
 def send_talent_network_confirmation(candidate_email: str,
                                      candidate_name: str,
                                      phone: str) -> bool:
