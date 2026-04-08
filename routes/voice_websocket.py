@@ -989,12 +989,20 @@ def _detect_role_type(role_title: str) -> str:
     Heuristically map a role title to a role type bucket so we can inject
     role-appropriate screening questions when the caller didn't supply any.
 
-    Returns one of: cfo, cmo, cto, coo, ned, general.
+    Returns one of: cfo, cmo, cto, coo, ceo, ned, general.
 
-    Short acronyms (cfo/cto/cmo/coo/ned) are matched as whole words via
-    regex boundaries to avoid false positives like "cto" matching inside
-    "director" — which in turn would mis-classify a non-executive
+    Short acronyms (cfo/cto/cmo/coo/ceo/ned) are matched as whole words
+    via regex boundaries to avoid false positives like "cto" matching
+    inside "director" — which would mis-classify a non-executive
     director as a CTO.
+
+    Priority order (highest first):
+      1. NED / board — "director" substring is noisy, catch it early
+      2. CEO — "chief executive" shares "chief" with CFO/CTO/CMO/COO,
+         catch it before the other Cxx checks
+      3. CFO / CTO / CMO / COO — each matches on both acronym and
+         domain keywords (finance/technology/marketing/operations)
+      4. Default — "general"
     """
     if not role_title:
         return "general"
@@ -1007,74 +1015,118 @@ def _detect_role_type(role_title: str) -> str:
     # Non-executive director / board — check FIRST because "director" is a
     # common substring that could otherwise be captured by a CTO match.
     if _has_acronym("ned") or "non-exec" in t or "non exec" in t \
-            or "chair" in t or "board member" in t or "advisor" in t:
+            or "non-executive" in t or "non executive" in t \
+            or "chair" in t or "chairman" in t or "board member" in t \
+            or "trustee" in t or "advisor" in t:
         return "ned"
 
+    # CEO / General Management — check SECOND because "chief executive"
+    # contains "chief" which could be ambiguous with other Cxx roles.
+    if _has_acronym("ceo") or "chief executive" in t or "managing director" in t \
+            or "general manager" in t:
+        return "ceo"
+
     # Finance
-    if _has_acronym("cfo") or "finance" in t or "financial" in t \
+    if _has_acronym("cfo") or "chief financial" in t or "finance director" in t \
+            or "vp finance" in t or "head of finance" in t \
+            or "finance" in t or "financial" in t \
             or "controller" in t or "treasurer" in t:
         return "cfo"
 
     # Technology
-    if _has_acronym("cto") or "vp engineering" in t or "head of engineering" in t \
+    if _has_acronym("cto") or "chief technology" in t or "tech director" in t \
+            or "vp engineering" in t or "head of engineering" in t \
             or "technology" in t or "engineering" in t:
         return "cto"
 
     # Marketing
-    if _has_acronym("cmo") or "marketing" in t or "brand" in t or "growth" in t:
+    if _has_acronym("cmo") or "chief marketing" in t or "marketing director" in t \
+            or "vp marketing" in t or "head of marketing" in t \
+            or "marketing" in t or "brand" in t or "growth" in t:
         return "cmo"
 
     # Operations
-    if _has_acronym("coo") or "operations" in t or "chief operating" in t:
+    if _has_acronym("coo") or "chief operating" in t or "operations director" in t \
+            or "vp operations" in t or "head of operations" in t \
+            or "operations" in t:
         return "coo"
 
     return "general"
 
 
+# Questions appended to EVERY role-specific bucket so Aidan always wraps
+# up with salary, notice, and an open "anything to ask us" turn.
+_CLOSING_QUESTIONS: list = [
+    {"question": "What salary or day rate are you targeting?", "competency": "compensation_expectation", "weight": 1.0},
+    {"question": "What's your notice period or availability?", "competency": "availability", "weight": 1.0},
+    {"question": "Is there anything you'd like to know about the role before we wrap up?", "competency": "candidate_questions", "weight": 0.5},
+]
+
+
 _ROLE_QUESTIONS: dict = {
     "cfo": [
-        {"question": "Walk me through your experience owning a P&L — what was the scope and what were the biggest levers you had to pull?", "competency": "commercial_ownership", "weight": 1.0},
-        {"question": "Tell me about your board reporting experience — how often did you present, and what kind of questions did you typically get from directors?", "competency": "board_exposure", "weight": 1.0},
-        {"question": "Have you been involved in any fundraising rounds — debt, equity, or otherwise? What was your role and what was the outcome?", "competency": "fundraising_experience", "weight": 1.0},
-        {"question": "What's the largest finance team you've built and managed, and how did you structure it?", "competency": "team_leadership", "weight": 1.0},
+        {"question": "Tell me about the largest P&L you've managed.", "competency": "commercial_ownership", "weight": 1.0},
+        {"question": "What's your experience with board-level financial reporting?", "competency": "board_exposure", "weight": 1.0},
+        {"question": "Have you led a fundraise or M&A process?", "competency": "fundraising_experience", "weight": 1.0},
+        {"question": "What size finance team have you led?", "competency": "team_leadership", "weight": 1.0},
+        {"question": "What sectors have you worked in most deeply, and what made them interesting?", "competency": "sector_depth", "weight": 1.0},
     ],
     "cmo": [
-        {"question": "Tell me about a brand you've built or repositioned — what was the starting point, and what changed under your leadership?", "competency": "brand_building", "weight": 1.0},
-        {"question": "Talk me through your experience with demand generation — which channels have you run, and what metrics did you measure success by?", "competency": "demand_gen", "weight": 1.0},
-        {"question": "What's the largest marketing budget you've owned and how did you decide where to deploy it?", "competency": "budget_ownership", "weight": 1.0},
-        {"question": "Tell me about leading a marketing team — what's the biggest team you've built, and what was your management style?", "competency": "team_leadership", "weight": 1.0},
+        {"question": "What's the largest marketing budget you've managed?", "competency": "budget_ownership", "weight": 1.0},
+        {"question": "How do you balance brand building with demand generation?", "competency": "strategic_balance", "weight": 1.0},
+        {"question": "What's a campaign you're most proud of and why?", "competency": "execution_track_record", "weight": 1.0},
+        {"question": "What's your experience with digital versus traditional channels?", "competency": "channel_mix", "weight": 1.0},
+        {"question": "How do you measure marketing ROI?", "competency": "measurement_rigour", "weight": 1.0},
     ],
     "cto": [
-        {"question": "Walk me through your build-versus-buy philosophy — when do you build in-house and when do you choose off-the-shelf?", "competency": "technical_strategy", "weight": 1.0},
-        {"question": "Tell me about a time you scaled an engineering team — what was the headcount journey and what were the hardest parts?", "competency": "team_scaling", "weight": 1.0},
-        {"question": "How do you approach technical debt — when do you pay it down, and how do you justify that to non-technical stakeholders?", "competency": "technical_debt_management", "weight": 1.0},
-        {"question": "Describe how you communicate with non-technical executives and boards about complex technology decisions.", "competency": "stakeholder_management", "weight": 1.0},
+        {"question": "How do you approach build versus buy decisions?", "competency": "technical_strategy", "weight": 1.0},
+        {"question": "What's the largest engineering team you've scaled?", "competency": "team_scaling", "weight": 1.0},
+        {"question": "How do you manage technical debt alongside product velocity?", "competency": "technical_debt_management", "weight": 1.0},
+        {"question": "What tech stacks or architectures have you worked with most deeply?", "competency": "technical_depth", "weight": 1.0},
+        {"question": "How do you work with non-technical stakeholders?", "competency": "stakeholder_management", "weight": 1.0},
     ],
     "coo": [
-        {"question": "Tell me about a significant process improvement you led — what was broken, what did you change, and what was the measurable outcome?", "competency": "process_improvement", "weight": 1.0},
-        {"question": "Describe your experience leading cross-functional initiatives — how do you align teams that don't report into you?", "competency": "cross_functional_leadership", "weight": 1.0},
-        {"question": "What KPI or operating frameworks have you introduced in previous roles, and how did you embed them?", "competency": "operational_frameworks", "weight": 1.0},
-        {"question": "Walk me through how you structure your week when you're running a complex operation with multiple functions reporting in.", "competency": "operational_rigour", "weight": 1.0},
+        {"question": "What's your experience with process transformation?", "competency": "process_improvement", "weight": 1.0},
+        {"question": "How do you approach cross-functional alignment?", "competency": "cross_functional_leadership", "weight": 1.0},
+        {"question": "Tell me about a significant operational challenge you solved.", "competency": "problem_solving", "weight": 1.0},
+        {"question": "What KPI frameworks have you implemented?", "competency": "operational_frameworks", "weight": 1.0},
+        {"question": "What's your experience managing P&L alongside operations?", "competency": "commercial_ownership", "weight": 1.0},
+    ],
+    "ceo": [
+        {"question": "What's the largest organisation you've led?", "competency": "scale_of_leadership", "weight": 1.0},
+        {"question": "How do you approach building and maintaining culture at scale?", "competency": "culture_building", "weight": 1.0},
+        {"question": "Tell me about your experience with board management.", "competency": "board_exposure", "weight": 1.0},
+        {"question": "What's your approach to strategy versus execution?", "competency": "strategy_execution_balance", "weight": 1.0},
+        {"question": "What's your experience with fundraising or investor relations?", "competency": "investor_management", "weight": 1.0},
     ],
     "ned": [
-        {"question": "Tell me about your prior board or advisory experience — what kinds of boards, and what was your contribution?", "competency": "governance_experience", "weight": 1.0},
-        {"question": "What sector expertise do you bring to a board role, and how recently was it front-line operational experience?", "competency": "sector_expertise", "weight": 1.0},
-        {"question": "How many board or advisory commitments do you currently hold, and how much time can you realistically give to a new role?", "competency": "time_commitment", "weight": 1.0},
-        {"question": "Tell me about a time you had to challenge a management team at board level — how did you approach it?", "competency": "board_independence", "weight": 1.0},
+        {"question": "What board experience do you currently have?", "competency": "governance_experience", "weight": 1.0},
+        {"question": "What sectors are you most interested in at board level?", "competency": "sector_interest", "weight": 1.0},
+        {"question": "How many board commitments can you take on?", "competency": "time_commitment", "weight": 1.0},
+        {"question": "What's your approach to the executive / non-executive relationship?", "competency": "board_independence", "weight": 1.0},
+        {"question": "What governance frameworks are you familiar with?", "competency": "governance_knowledge", "weight": 1.0},
     ],
     "general": [
-        {"question": "Tell me about a significant leadership moment in your career — what was the situation and what did you learn from it?", "competency": "leadership", "weight": 1.0},
-        {"question": "Walk me through a commercial impact you're most proud of — something where you can point to a clear outcome.", "competency": "commercial_impact", "weight": 1.0},
-        {"question": "Describe the kind of company culture where you do your best work, and why.", "competency": "culture_fit", "weight": 1.0},
+        {"question": "Tell me about your current role and key responsibilities.", "competency": "current_role", "weight": 1.0},
+        {"question": "What are you looking for in your next move?", "competency": "motivation", "weight": 1.0},
+        {"question": "Describe a significant achievement in the last 2 years.", "competency": "achievement", "weight": 1.0},
+        {"question": "What's your leadership style?", "competency": "leadership_style", "weight": 1.0},
+        {"question": "What's your availability and notice period?", "competency": "availability_preview", "weight": 1.0},
     ],
 }
 
 
 def _default_questions_for_role_type(role_type: str) -> list:
-    """Return a fresh copy of the default question set for the given bucket."""
+    """
+    Return a fresh copy of the role-specific questions for the given
+    bucket, with the always-closing questions appended so every Aidan
+    screening call wraps up with salary / notice / open-question.
+    """
     questions = _ROLE_QUESTIONS.get(role_type) or _ROLE_QUESTIONS["general"]
-    # Return copies so callers can mutate without poisoning the module-level dict
-    return [dict(q) for q in questions]
+    # Deep-copy so callers can mutate without poisoning the module-level dicts
+    out = [dict(q) for q in questions]
+    out += [dict(q) for q in _CLOSING_QUESTIONS]
+    return out
 
 
 def _get_system_prompt(
