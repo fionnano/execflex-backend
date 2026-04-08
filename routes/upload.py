@@ -741,34 +741,87 @@ def upload_stats():
 
     # by_source — fetch distinct source values via a scan. supabase-py
     # doesn't expose GROUP BY so we paginate a lightweight select.
+    #
+    # Email/phone counts are a UNION of two sources, deduplicated by
+    # people_profiles.id:
+    #   1. source_metadata.upload_email / enriched_email / work_email /
+    #      personal_email (how CSV-uploaded and PDL-sourced rows store
+    #      contact details — these rows usually have no user_id)
+    #   2. channel_identities (how signup-path candidates store contact
+    #      details — keyed by user_id)
     try:
         resp = (
             supabase_client.table("people_profiles")
-            .select("source, source_metadata, approved, user_id")
+            .select("id, source, source_metadata, approved, user_id")
             .limit(5000)
             .execute()
         )
         rows = resp.data or []
+    except Exception as e:
+        print(f"[UPLOAD-STATS] candidates scan failed: {e}", flush=True)
+        rows = []
+
+    # Build a set of user_ids that have an email / phone row in
+    # channel_identities so we can look them up in O(1) per profile.
+    email_user_ids: set = set()
+    phone_user_ids: set = set()
+    try:
+        ci_resp = (
+            supabase_client.table("channel_identities")
+            .select("user_id, channel")
+            .in_("channel", ["email", "phone"])
+            .limit(10000)
+            .execute()
+        )
+        for ci in (ci_resp.data or []):
+            uid = ci.get("user_id")
+            if not uid:
+                continue
+            if ci.get("channel") == "email":
+                email_user_ids.add(uid)
+            elif ci.get("channel") == "phone":
+                phone_user_ids.add(uid)
+    except Exception as e:
+        print(f"[UPLOAD-STATS] channel_identities scan failed: {e}", flush=True)
+
+    try:
         by_source: dict = {}
-        with_email = 0
-        with_phone = 0
+        with_email_ids: set = set()
+        with_phone_ids: set = set()
         approved_count = 0
         for r in rows:
+            pid = r.get("id")
             src = r.get("source") or "unknown"
             by_source[src] = by_source.get(src, 0) + 1
             sm = r.get("source_metadata") or {}
-            if sm.get("upload_email") or sm.get("enriched_email"):
-                with_email += 1
-            if sm.get("upload_phone") or sm.get("enriched_phone"):
-                with_phone += 1
+            uid = r.get("user_id")
+
+            # Email — either source_metadata has a stored email OR
+            # there's a channel_identities row linked by user_id
+            has_email = bool(
+                sm.get("upload_email")
+                or sm.get("enriched_email")
+                or sm.get("work_email")
+                or sm.get("personal_email")
+            ) or (uid is not None and uid in email_user_ids)
+            if has_email and pid:
+                with_email_ids.add(pid)
+
+            # Phone — same pattern
+            has_phone = bool(
+                sm.get("upload_phone") or sm.get("enriched_phone")
+            ) or (uid is not None and uid in phone_user_ids)
+            if has_phone and pid:
+                with_phone_ids.add(pid)
+
             if r.get("approved") is True:
                 approved_count += 1
         candidates_report["by_source"] = by_source
-        candidates_report["with_email"] = with_email
-        candidates_report["with_phone"] = with_phone
+        candidates_report["with_email"] = len(with_email_ids)
+        candidates_report["with_phone"] = len(with_phone_ids)
         candidates_report["approved"] = approved_count
     except Exception as e:
-        print(f"[UPLOAD-STATS] candidates scan failed: {e}", flush=True)
+        print(f"[UPLOAD-STATS] candidates aggregation failed: {e}", flush=True)
 
     # called — count completed outbound_call_jobs
     try:
