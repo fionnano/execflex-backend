@@ -326,6 +326,32 @@ Respond ONLY with valid JSON:
                     flush=True,
                 )
 
+        # Admin notification — fire after scoring + bias audit have
+        # landed so the email has the final recommendation. Best-
+        # effort; failures never affect scoring or the callback.
+        try:
+            # Top 2 competencies by score
+            numeric_scores = [
+                (s.get("competency") or s.get("question") or "?", float(s.get("score") or 0))
+                for s in scores
+                if isinstance(s.get("score"), (int, float))
+            ]
+            numeric_scores.sort(key=lambda x: x[1], reverse=True)
+            top_two = numeric_scores[:2]
+
+            from modules.email_sender import send_screening_complete_admin_alert
+            send_screening_complete_admin_alert(
+                candidate_name=candidate_name,
+                role_title=role_title,
+                company_name=company_name,
+                recommendation=recommendation,
+                overall_score=overall_score,
+                top_competencies=top_two,
+                job_id=job_id,
+            )
+        except Exception as e:
+            print(f"[NOTIFY] screening-complete alert failed: {e}", flush=True)
+
         # Fire callback
         if callback_url:
             call_status = "succeeded" if call_status_raw == "completed" else call_status_raw

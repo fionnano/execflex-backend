@@ -364,4 +364,55 @@ def shortlist_request_intro(shortlist_id: str):
         flush=True,
     )
 
+    # Admin alert — fire-and-forget so email failure doesn't break the
+    # public submission flow. We re-select the shortlist row fully
+    # here (we only picked id + expires_at above) to get role_title
+    # and company_name for the alert body.
+    try:
+        sl_full_resp = (
+            supabase_client.table("shortlists")
+            .select("role_title, company_name")
+            .eq("id", shortlist_id)
+            .limit(1)
+            .execute()
+        )
+        sl_full = (sl_full_resp.data or [{}])[0]
+
+        candidate_label = None
+        if candidate_id:
+            try:
+                cand_resp = (
+                    supabase_client.table("people_profiles")
+                    .select("first_name, last_name")
+                    .eq("id", candidate_id)
+                    .limit(1)
+                    .execute()
+                )
+                if cand_resp.data:
+                    cand = cand_resp.data[0]
+                    first = (cand.get("first_name") or "").strip()
+                    last = (cand.get("last_name") or "").strip()
+                    candidate_label = (f"{first} {last}").strip() or None
+            except Exception as e:
+                print(f"[SHORTLIST] candidate name lookup failed: {e}", flush=True)
+
+        # Requester's company may have been supplied in the body — look
+        # for it on the original request. Spec allows an optional
+        # `company` field on the public form.
+        requester_company = (data.get("company") or "").strip() or None
+
+        from modules.email_sender import send_shortlist_intro_admin_alert
+        send_shortlist_intro_admin_alert(
+            requester_name=name,
+            requester_email=email,
+            requester_company=requester_company,
+            candidate_name=candidate_label,
+            role_title=sl_full.get("role_title"),
+            company_name=sl_full.get("company_name"),
+            message=message,
+            shortlist_id=shortlist_id,
+        )
+    except Exception as e:
+        print(f"[SHORTLIST] intro request admin alert failed: {e}", flush=True)
+
     return ok({"received": True}, status=201)

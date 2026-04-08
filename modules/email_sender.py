@@ -537,3 +537,150 @@ def send_talent_network_confirmation(candidate_email: str,
     except Exception as e:
         print(f"[TalentNet] Failed to send confirmation: {e}")
         return False
+
+
+# ── Admin alerts (go to EMAIL_USER) ──────────────────────────────────────────
+
+def _admin_alert(subject: str, lines: list, tag: str = "NOTIFY") -> bool:
+    """
+    Low-level plain-text email helper for admin notification alerts.
+    Always sends TO EMAIL_USER. Returns False cleanly if email isn't
+    configured — falls back to a [NOTIFY] print so the event is still
+    observable in Render logs.
+    """
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        print(f"[{tag}] Would email: {subject}", flush=True)
+        return False
+
+    msg = EmailMessage()
+    msg["From"] = formataddr(("ExecFlex Alerts", EMAIL_ADDRESS))
+    msg["To"] = EMAIL_ADDRESS
+    msg["Subject"] = subject
+    msg.set_content("\n".join(lines))
+
+    try:
+        _send_message(msg)
+        print(f"[{tag}] Alert sent: {subject}", flush=True)
+        return True
+    except Exception as e:
+        print(f"[{tag}] Alert send failed: {e} — subject={subject!r}", flush=True)
+        return False
+
+
+def send_talent_network_admin_alert(candidate_name: str,
+                                    candidate_email: str,
+                                    phone: str,
+                                    ref: str | None = None) -> bool:
+    """Admin alert fired when a candidate opts in via /talent-network/join."""
+    lines = [
+        "A new candidate just joined the ExecFlex talent network.",
+        "",
+        f"Name:   {candidate_name}",
+        f"Email:  {candidate_email}",
+        f"Phone:  {phone}",
+        f"Ref:    {ref or '(none)'}",
+        f"Time:   {datetime.utcnow().isoformat()}Z",
+        "",
+        "Aidan will call them within the next minute (dispatcher polls every ~30s).",
+    ]
+    return _admin_alert(
+        subject=f"🎯 New talent network opt-in: {candidate_name}",
+        lines=lines,
+        tag="TALENT-OPTIN-ALERT",
+    )
+
+
+def send_screening_complete_admin_alert(candidate_name: str,
+                                        role_title: str,
+                                        company_name: str,
+                                        recommendation: str,
+                                        overall_score: float | None,
+                                        top_competencies: list,
+                                        job_id: str,
+                                        frontend_url: str | None = None) -> bool:
+    """
+    Admin alert fired after score_screening_call_async completes and
+    the recommendation has been written to the interactions row.
+
+    top_competencies is a list of (label, score) tuples for the
+    highest-scoring two competencies, e.g.
+        [("Financial Leadership", 4.8), ("Team Leadership", 4.6)]
+    """
+    import os
+    base = (frontend_url or os.environ.get("FRONTEND_URL") or "https://execflex.ai").rstrip("/")
+    review_url = f"{base}/call-review?job_id={job_id}"
+
+    rec_label_map = {
+        "strong_proceed": "Strong Proceed",
+        "proceed": "Proceed",
+        "hold": "Hold",
+        "reject": "Reject",
+        "incomplete": "Incomplete",
+    }
+    rec_label = rec_label_map.get((recommendation or "").lower(), recommendation or "Unknown")
+    score_str = f"{overall_score:.1f}/5.0" if isinstance(overall_score, (int, float)) else "n/a"
+
+    lines = [
+        f"{candidate_name} just completed their screening for {role_title} at {company_name}.",
+        "",
+        f"Recommendation:  {rec_label}",
+        f"Overall score:   {score_str}",
+        "",
+        "Top competencies:",
+    ]
+    if top_competencies:
+        for label, score in top_competencies[:2]:
+            score_fmt = f"{float(score):.1f}" if score is not None else "n/a"
+            lines.append(f"  - {label}: {score_fmt}/5")
+    else:
+        lines.append("  (none extracted)")
+
+    lines += [
+        "",
+        f"Full results:    {review_url}",
+        "",
+        f"Completed at {datetime.utcnow().isoformat()}Z",
+    ]
+    return _admin_alert(
+        subject=f"✅ Screening complete: {candidate_name} — {rec_label}",
+        lines=lines,
+        tag="SCREENING-COMPLETE-ALERT",
+    )
+
+
+def send_shortlist_intro_admin_alert(requester_name: str,
+                                     requester_email: str,
+                                     requester_company: str | None,
+                                     candidate_name: str | None,
+                                     role_title: str | None,
+                                     company_name: str | None,
+                                     message: str | None,
+                                     shortlist_id: str,
+                                     frontend_url: str | None = None) -> bool:
+    """Admin alert fired when a client requests an intro via a shared shortlist."""
+    import os
+    base = (frontend_url or os.environ.get("FRONTEND_URL") or "https://execflex.ai").rstrip("/")
+    shortlist_url = f"{base}/shortlist/{shortlist_id}"
+    company_display = requester_company or "(company not provided)"
+
+    lines = [
+        f"A client just requested an introduction from a shortlist page.",
+        "",
+        f"Requester:      {requester_name}",
+        f"Email:          {requester_email}",
+        f"Company:        {company_display}",
+        f"Candidate:      {candidate_name or '(whole shortlist)'}",
+        f"Role:           {role_title or '(not stored on shortlist)'}",
+        f"Hiring company: {company_name or '(not stored)'}",
+        "",
+        "Message:",
+        (message or "(no message)"),
+        "",
+        f"Shortlist URL:  {shortlist_url}",
+        f"Received at {datetime.utcnow().isoformat()}Z",
+    ]
+    return _admin_alert(
+        subject=f"🔥 Intro request: {requester_name} from {company_display}",
+        lines=lines,
+        tag="INTRO-REQUEST-ALERT",
+    )

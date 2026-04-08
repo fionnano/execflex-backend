@@ -418,7 +418,7 @@ def talent_network_submit():
         print(f"[TALENT-NET-OPTIN] create_screening_job failed: {e}\n{traceback.format_exc()}", flush=True)
         return jsonify({"error": "Could not schedule your call. Please try again."}), 500
 
-    # Send confirmation email (best-effort — never fails the request)
+    # Send confirmation email to the candidate (best-effort)
     try:
         from modules.email_sender import send_talent_network_confirmation
         send_talent_network_confirmation(
@@ -428,6 +428,20 @@ def talent_network_submit():
         )
     except Exception as e:
         print(f"[TALENT-NET-OPTIN] confirmation email failed: {e}", flush=True)
+
+    # Admin alert to EMAIL_USER — separate from the candidate
+    # confirmation so the Render Gmail inbox gets a distinct subject
+    # line we can filter on. Best-effort — never fails the request.
+    try:
+        from modules.email_sender import send_talent_network_admin_alert
+        send_talent_network_admin_alert(
+            candidate_name=name,
+            candidate_email=email,
+            phone=phone,
+            ref=ref,
+        )
+    except Exception as e:
+        print(f"[TALENT-NET-OPTIN] admin alert failed: {e}", flush=True)
 
     # PostHog — track the opt-in (best-effort)
     try:
