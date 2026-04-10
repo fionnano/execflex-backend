@@ -47,6 +47,7 @@ def _norm_candidate(raw: dict) -> dict:
     """
     Normalize candidate data from people_profiles table.
     Handles people_profiles schema fields directly.
+    Also reads source_metadata.talent_network_data for richer matching.
     """
     # --- name (people_profiles has first_name, last_name)
     first = raw.get("first_name") or ""
@@ -56,17 +57,23 @@ def _norm_candidate(raw: dict) -> dict:
     # --- role (people_profiles has headline)
     role = raw.get("headline") or ""
 
+    # --- talent_network_data from source_metadata (if present)
+    sm = raw.get("source_metadata") or {}
+    tn = sm.get("talent_network_data") or {}
+
     # --- industries (people_profiles has industries array - can be enum array or text array)
     industries_val = raw.get("industries") or []
-    # Handle both enum arrays and text arrays
     if isinstance(industries_val, list):
         industries = _to_set(industries_val)
     else:
         industries = set()
+    # Merge preferred_sectors from talent_network_data
+    tn_sectors = tn.get("preferred_sectors") or []
+    if isinstance(tn_sectors, list):
+        industries |= _to_set(tn_sectors)
 
     # --- expertise (people_profiles has expertise array - can be enum array or text array)
     expertise_val = raw.get("expertise") or raw.get("skills") or []
-    # Handle both enum arrays and text arrays
     if isinstance(expertise_val, list):
         expertise = _to_set(expertise_val)
     else:
@@ -93,13 +100,16 @@ def _norm_candidate(raw: dict) -> dict:
     rate_range = raw.get("rate_range")
     if rate_range:
         if isinstance(rate_range, dict):
-            # Try to extract numeric value from rate_range JSONB
             comp = _digits_int(rate_range.get("min")) or _digits_int(rate_range.get("max")) or _digits_int(rate_range.get("amount"))
         else:
             comp = _digits_int(rate_range)
 
     # --- NED availability (people_profiles has is_ned_available)
     is_ned_available = raw.get("is_ned_available") or False
+
+    # --- talent_network openness + preferred_role_type
+    open_to = (tn.get("open_to_opportunities") or "").strip().lower()
+    preferred_role_type = (tn.get("preferred_role_type") or "").strip().lower()
 
     return {
         "id": raw.get("id") or name.lower().replace(" ", "-"),
@@ -114,22 +124,22 @@ def _norm_candidate(raw: dict) -> dict:
         "summary": summary,
         "highlights": highlights if isinstance(highlights, list) else [str(highlights)],
         "is_ned_available": is_ned_available,
+        "open_to_opportunities": open_to,
+        "preferred_role_type": preferred_role_type,
         "_raw": raw,
-        "email": raw.get("email") or "candidate@example.com",  # fallback
+        "email": raw.get("email") or "candidate@example.com",
     }
 
 
-def _score(cand: dict, industry: str, expertise: str, availability: str, location: str, max_salary: int) -> int:
+def _score(cand: dict, industry: str, expertise: str, availability: str, location: str, max_salary: int, commitment_type: str = "") -> int:
     score = 0
-    
+
     # Industry matching (only if industry filter is provided)
     if industry and industry.strip():
-        industry_lower = industry.lower().strip()
-        # Check if any industry matches (handles comma-separated values)
         industry_tokens = {t.strip().lower() for t in re.split(r"[,/;|\s]+", industry) if t.strip()}
         if industry_tokens & cand["industries"]:
             score += 3
-    
+
     # Expertise matching (only if expertise filter is provided)
     if expertise and expertise.strip():
         req_tokens = {t.strip().lower() for t in re.split(r"[,/;|\s]+", expertise) if t.strip()}
@@ -137,34 +147,50 @@ def _score(cand: dict, industry: str, expertise: str, availability: str, locatio
             score += 3
         elif any(t in (cand["role"] or "").lower() for t in req_tokens):
             score += 2
-    
+
     # Availability matching (only if availability filter is provided)
     if availability and availability.strip():
         availability_lower = availability.lower().strip()
-        # Handle comma-separated availability types
         availability_tokens = {t.strip().lower() for t in re.split(r"[,/;|\s]+", availability) if t.strip()}
         if availability_lower in cand["availability"] or availability_tokens & {cand["availability"]}:
             score += 1
-    
+
     # Location matching (only if location filter is provided)
     if location and location.strip():
         location_lower = location.lower().strip()
         cand_location = (cand["location"] or "").lower()
         if location_lower in cand_location or cand_location in location_lower or "remote" in cand_location:
             score += 1
-    
+
     # Salary filter (only if max_salary is set and meaningful)
     if max_salary and max_salary < 999999 and cand["comp_expectation"] and cand["comp_expectation"] > max_salary:
         score -= 2
-    
+
+    # ── Talent network preference bonuses ────────────────────────────
+
+    # preferred_role_type match → +2  (e.g. candidate wants "fractional"
+    # and the opportunity is "fractional")
+    prt = cand.get("preferred_role_type", "")
+    if prt and commitment_type:
+        ct_lower = commitment_type.lower()
+        if prt in ct_lower or ct_lower in prt:
+            score += 2
+
+    # Passive candidates are less likely to convert → -1
+    if cand.get("open_to_opportunities") == "passive":
+        score -= 1
+
     return score
 
 
 def _fetch_candidates_from_supabase():
-    """Fetch approved candidates from people_profiles table. Raises error if Supabase is unavailable."""
+    """
+    Fetch approved candidates from people_profiles table.
+    Uses SELECT * which includes source_metadata — needed for
+    talent_network_data matching.
+    """
     sb = _get_supabase()
     try:
-        # Only fetch approved profiles (approved = true)
         res = sb.table("people_profiles").select("*").eq("approved", True).execute()
         data = res.data or []
         return data
@@ -172,13 +198,15 @@ def _fetch_candidates_from_supabase():
         raise RuntimeError(f"Failed to fetch candidates from Supabase: {e}") from e
 
 
-def find_best_match(industry: str, expertise: str, availability: str, min_experience: int, max_salary: int, location: str, is_ned_only: bool = False):
+def find_best_match(industry: str, expertise: str, availability: str, min_experience: int, max_salary: int, location: str, is_ned_only: bool = False, commitment_type: str = ""):
     """
     Find best matching candidates from Supabase.
     Raises error if Supabase is unavailable or query fails.
-    
+
     Args:
         is_ned_only: If True, only return candidates with is_ned_available = True
+        commitment_type: Opportunity commitment type (e.g. "full_time", "fractional")
+                         — used to bonus-score candidates whose preferred_role_type matches
     """
     # 1) load candidates from Supabase
     rows = _fetch_candidates_from_supabase()
@@ -197,6 +225,16 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
             continue
     print(f"Pulled {len(cands)} candidates from Supabase:people_profiles (from {len(rows)} total records)")
 
+    # 2b) Exclude candidates who explicitly said "no" to opportunities.
+    # These should already be approved=False (and thus not fetched), but
+    # if the flag landed in source_metadata before the approved column
+    # was flipped, we filter them here as a safety net.
+    before = len(cands)
+    cands = [c for c in cands if c.get("open_to_opportunities") != "no"]
+    excluded_no = before - len(cands)
+    if excluded_no:
+        print(f"🔍 Excluded {excluded_no} candidate(s) with open_to_opportunities='no'")
+
     # 3) filter by NED availability if requested
     if is_ned_only:
         ned_cands = [c for c in cands if c.get("is_ned_available", False)]
@@ -210,9 +248,9 @@ def find_best_match(industry: str, expertise: str, availability: str, min_experi
             continue
         filtered.append(c)
 
-    # 4) score + sort
+    # 5) score + sort (pass commitment_type for role-type matching)
     for c in filtered:
-        c["_score"] = _score(c, industry, expertise, availability, location, int(max_salary) if max_salary else 0)
+        c["_score"] = _score(c, industry, expertise, availability, location, int(max_salary) if max_salary else 0, commitment_type=commitment_type)
     filtered.sort(key=lambda x: x.get("_score", 0), reverse=True)
 
     # If no filtered results, return top scored from all candidates

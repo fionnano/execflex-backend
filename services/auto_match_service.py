@@ -202,6 +202,7 @@ def auto_match_and_outreach(
             max_salary=999999,
             location=role_data.get("location", "") or "",
             is_ned_only=False,
+            commitment_type=role_data.get("commitment", ""),
         ) or []
     except Exception as e:
         print(f"[AUTO-MATCH] find_best_match raised: {e}\n{traceback.format_exc()}", flush=True)
@@ -311,6 +312,25 @@ def auto_match_and_outreach(
                 flush=True,
             )
             continue
+
+        # Salary compatibility: skip if candidate expects > 120% of role comp
+        import re as _re
+        role_comp_str = role_data.get("compensation") or opportunity_record.get("compensation") or ""
+        role_comp_digits = [
+            int("".join(_re.findall(r"\d+", p)))
+            for p in _re.findall(r"\d[\d,\.]*", str(role_comp_str).replace("k", "000").replace("K", "000"))
+        ]
+        role_comp_max = max(role_comp_digits) if role_comp_digits else 0
+        if role_comp_max:
+            salary_ceiling = int(role_comp_max * 1.2)
+            cand_comp = match.get("comp_expectation") or 0
+            if cand_comp and cand_comp > salary_ceiling:
+                summary["skipped_ineligible"] += 1
+                print(
+                    f"[AUTO-MATCH] candidate={pid} comp={cand_comp} > ceiling={salary_ceiling} — skipped",
+                    flush=True,
+                )
+                continue
 
         # Resolve email
         email = _resolve_email(row, user_id)

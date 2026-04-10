@@ -530,8 +530,10 @@ def extract_talent_network(interaction_id: str, job_id: str) -> Optional[dict]:
 
                 if job_user_id:
                     _merge_source_metadata_by_user_id(job_user_id, profile_sm_update)
+                    _sync_talent_network_to_main_columns(result, user_id=job_user_id)
                 elif source_candidate_id:
                     _merge_source_metadata_by_profile_id(source_candidate_id, profile_sm_update)
+                    _sync_talent_network_to_main_columns(result, profile_id=source_candidate_id)
                 else:
                     print("[TalentNet] No user_id or source_candidate_id on job — skipping profile update", flush=True)
         except Exception as e:
@@ -556,6 +558,97 @@ def extract_talent_network_async(interaction_id: str, job_id: str):
         args=(interaction_id, job_id),
         daemon=True,
     ).start()
+
+
+def _parse_salary_to_int(salary_str) -> int:
+    """Extract the highest numeric value from a salary string like '€120k-€150k'."""
+    import re
+    if not salary_str or not isinstance(salary_str, str):
+        return 0
+    # Find all numbers, treating 'k' as *1000
+    numbers = []
+    for match in re.finditer(r"(\d[\d,\.]*)\s*[kK]?", salary_str):
+        raw = match.group(1).replace(",", "")
+        try:
+            val = float(raw)
+            if "k" in salary_str.lower() and val < 1000:
+                val *= 1000
+            numbers.append(int(val))
+        except ValueError:
+            pass
+    return max(numbers) if numbers else 0
+
+
+def _sync_talent_network_to_main_columns(
+    result: dict,
+    user_id: str | None = None,
+    profile_id: str | None = None,
+) -> None:
+    """
+    After storing talent_network_data in source_metadata, also update the
+    main people_profiles columns so the existing matching algorithm in
+    modules/match_finder.py can score these candidates without reaching
+    into source_metadata.
+
+    Mapping:
+      preferred_sectors     → industries (try, skip if enum rejects it)
+      salary_expectation    → rate_range
+      availability          → availability_type
+      open_to_opportunities = "no" → approved = False
+    """
+    update: dict = {}
+
+    # preferred_sectors → industries
+    sectors = result.get("preferred_sectors")
+    if isinstance(sectors, list) and sectors:
+        update["industries"] = sectors
+
+    # salary_expectation → rate_range (store as string — the match_finder
+    # _digits_int helper extracts the number)
+    salary = result.get("salary_expectation")
+    if salary and isinstance(salary, str) and salary.strip():
+        update["rate_range"] = salary.strip()
+
+    # availability → availability_type
+    avail = result.get("availability")
+    if avail and isinstance(avail, str) and avail.strip():
+        update["availability_type"] = avail.strip()
+
+    # open_to_opportunities = "no" → approved = False (hide from matches)
+    openness = (result.get("open_to_opportunities") or "").strip().lower()
+    if openness == "no":
+        update["approved"] = False
+        print("[TalentNet] open_to_opportunities=no → setting approved=False", flush=True)
+
+    if not update:
+        return
+
+    eq_col = None
+    eq_val = None
+    if user_id:
+        eq_col, eq_val = "user_id", user_id
+    elif profile_id:
+        eq_col, eq_val = "id", profile_id
+    else:
+        return
+
+    # Try each field individually — if industries has an enum constraint
+    # that rejects our values, we still want rate_range and availability
+    # to land.
+    for field, value in update.items():
+        try:
+            supabase_client.table("people_profiles").update(
+                {field: value}
+            ).eq(eq_col, eq_val).execute()
+        except Exception as e:
+            print(
+                f"[TalentNet] Failed to set {field} on people_profiles "
+                f"({eq_col}={eq_val}): {e}",
+                flush=True,
+            )
+
+    synced_fields = list(update.keys())
+    print(f"[TalentNet] Synced main columns: {synced_fields} for {eq_col}={eq_val}", flush=True)
 
 
 def _merge_source_metadata_by_user_id(user_id: str, updates: dict) -> None:
