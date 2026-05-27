@@ -42,3 +42,6 @@ from routes.clients import clients_bp  # noqa
 # Demo data seeder (Moorepark meeting — temporary)
 from routes.seed import seed_bp  # noqa
 
+# Cara voice uptime monitor (synthetic probe every 5 min)
+from routes.voice_monitor import monitor_bp  # noqa
+
