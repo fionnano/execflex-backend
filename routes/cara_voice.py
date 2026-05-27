@@ -6,6 +6,11 @@ Returns session_id + WebSocket URL for the browser to connect to.
 
 The system prompt is stored server-side in a TTL dict keyed by session_id.
 The WebSocket URL contains only the session_id — no prompt in the URL.
+
+Stateless URL-encoding was tried (commit 3019f26) but reverted: RAG-enriched
+prompts exceed Render's nginx URL length limit. With --workers 1 in the
+Procfile, the in-memory store is reliable (single process handles both
+POST and WebSocket).
 """
 import os
 import uuid
@@ -13,9 +18,10 @@ import time
 import threading
 from flask import Blueprint, request, jsonify
 
+from config.app_config import OPENAI_API_KEY
+
 cara_bp = Blueprint("cara", __name__)
 
-# Allowed origins for Cara voice sessions (browser-direct calls)
 _CARA_ALLOWED_ORIGINS = {
     "https://ainm.ai",
     "https://www.ainm.ai",
@@ -25,11 +31,18 @@ _CARA_ALLOWED_ORIGINS = {
 }
 
 # ── In-memory session store ───────────────────────────────────────────────────
-# Maps session_id → { "prompt": str, "expires": float }
-# TTL of 5 minutes — plenty of time for the browser to open the WebSocket.
-_SESSION_TTL = 300  # seconds
+_SESSION_TTL = 300  # 5 minutes
 _sessions: dict = {}
 _sessions_lock = threading.Lock()
+
+# Counters for health probe
+_session_stats = {"created": 0, "retrieved": 0, "expired": 0, "not_found": 0}
+
+
+def _log(session_id: str | None, event: str, **kv) -> None:
+    sid = session_id[:8] if session_id else "------"
+    extras = " ".join(f"{k}={v}" for k, v in kv.items()) if kv else ""
+    print(f"[Cara:{sid}] {event} {extras}".rstrip(), flush=True)
 
 
 def _store_session(session_id: str, system_prompt: str) -> None:
@@ -38,6 +51,7 @@ def _store_session(session_id: str, system_prompt: str) -> None:
             "prompt": system_prompt,
             "expires": time.time() + _SESSION_TTL,
         }
+        _session_stats["created"] += 1
 
 
 def get_session_prompt(session_id: str) -> str | None:
@@ -45,17 +59,19 @@ def get_session_prompt(session_id: str) -> str | None:
     with _sessions_lock:
         entry = _sessions.get(session_id)
         if not entry:
+            _session_stats["not_found"] += 1
             return None
         if time.time() > entry["expires"]:
             del _sessions[session_id]
+            _session_stats["expired"] += 1
             return None
-        # Remove after first use — no replay needed
+        prompt = entry["prompt"]
         del _sessions[session_id]
-        return entry["prompt"]
+        _session_stats["retrieved"] += 1
+        return prompt
 
 
 def _cleanup_expired() -> None:
-    """Periodically remove expired sessions to avoid memory leaks."""
     while True:
         time.sleep(120)
         now = time.time()
@@ -63,13 +79,39 @@ def _cleanup_expired() -> None:
             expired = [k for k, v in _sessions.items() if now > v["expires"]]
             for k in expired:
                 del _sessions[k]
+                _session_stats["expired"] += 1
         if expired:
-            print(f"[Cara] Cleaned up {len(expired)} expired sessions", flush=True)
+            _log(None, "cleanup", removed=len(expired))
 
 
-# Start background cleanup thread
 _cleanup_thread = threading.Thread(target=_cleanup_expired, daemon=True)
 _cleanup_thread.start()
+
+
+# ── Health probe ──────────────────────────────────────────────────────────────
+
+@cara_bp.route("/health/voice", methods=["GET"])
+def voice_health():
+    """
+    GET /health/voice — lightweight probe that checks:
+      1. OpenAI API key is present
+      2. Session store is functional (create + retrieve round-trip)
+    """
+    checks = {}
+
+    checks["openai_key"] = bool(OPENAI_API_KEY)
+
+    probe_id = f"health-{uuid.uuid4()}"
+    _store_session(probe_id, "__probe__")
+    retrieved = get_session_prompt(probe_id)
+    checks["session_store"] = (retrieved == "__probe__")
+
+    with _sessions_lock:
+        checks["active_sessions"] = len(_sessions)
+    checks["stats"] = dict(_session_stats)
+
+    healthy = checks["openai_key"] and checks["session_store"]
+    return jsonify({"status": "ok" if healthy else "degraded", **checks}), (200 if healthy else 503)
 
 
 # ── REST endpoint ─────────────────────────────────────────────────────────────
@@ -80,24 +122,21 @@ def create_voice_session():
     POST /voice-session/cara
 
     Auth: accepts Supabase JWT, X-Service-Key, or requests from allowed
-    origins (ainm.ai, execflex.ai, localhost). The system_prompt body
-    acts as implicit auth since only Ainm generates it with RAG context.
+    origins (ainm.ai, execflex.ai, localhost).
 
     Body (JSON):
-        system_prompt   str  — Full system prompt for Cara (built by ainm.ai with RAG context)
+        system_prompt   str  — Full system prompt for Cara
 
     Returns:
         201 { session_id, ws_url }
     """
-    # Allow if: valid JWT/service key, OR request from allowed origin
     from utils.auth_helpers import get_authenticated_user_id
     user_id, _ = get_authenticated_user_id()
+    origin = (request.headers.get("Origin") or "").rstrip("/")
     if not user_id:
-        origin = (request.headers.get("Origin") or "").rstrip("/")
         if origin not in _CARA_ALLOWED_ORIGINS:
-            print(f"[Cara] Rejected: no auth and origin={origin!r} not allowed", flush=True)
+            _log(None, "REJECTED", origin=repr(origin), reason="no_auth_no_origin")
             return jsonify({"error": "Authentication required"}), 401
-        print(f"[Cara] Allowed via origin: {origin}", flush=True)
 
     data = request.get_json(force=True) or {}
     system_prompt = (data.get("system_prompt") or "").strip()
@@ -105,8 +144,6 @@ def create_voice_session():
         return jsonify({"error": "system_prompt is required"}), 400
 
     session_id = str(uuid.uuid4())
-
-    # Store system prompt server-side — keeps the WebSocket URL short and clean
     _store_session(session_id, system_prompt)
 
     base_url = os.getenv("EXECFLEX_BASE_URL", "wss://execflex-backend-1.onrender.com")
@@ -118,7 +155,8 @@ def create_voice_session():
 
     ws_url = f"{base_url}/voice/cara/ws/{session_id}"
 
-    print(f"[Cara] Created session {session_id}, prompt len={len(system_prompt)}", flush=True)
+    _log(session_id, "SESSION_CREATED", prompt_len=len(system_prompt),
+         auth="jwt" if user_id else f"origin:{origin}")
 
     return jsonify({
         "session_id": session_id,

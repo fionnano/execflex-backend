@@ -2,18 +2,18 @@
 Cara WebSocket bridge: browser PCM16 24kHz <-> OpenAI Realtime API.
 
 Browser protocol (JSON messages):
-  Browser → Server:
-    {"type": "audio", "data": "<base64 PCM16 24kHz>"}  — user audio chunk
-    {"type": "end"}                                      — end the call
+  Browser -> Server:
+    {"type": "audio", "data": "<base64 PCM16 24kHz>"}
+    {"type": "end"}
 
-  Server → Browser:
+  Server -> Browser:
     {"type": "session_started"}
-    {"type": "audio", "data": "<base64 PCM16 24kHz>"}   — assistant audio
+    {"type": "audio", "data": "<base64 PCM16 24kHz>"}
     {"type": "transcript_delta", "role": "assistant", "text": "..."}
     {"type": "transcript_done",  "role": "assistant", "text": "..."}
     {"type": "transcript",       "role": "user",      "text": "..."}
-    {"type": "speech_started"}   — user started speaking (VAD)
-    {"type": "speech_stopped"}   — user stopped speaking
+    {"type": "speech_started"}
+    {"type": "speech_stopped"}
     {"type": "call_ended",       "transcript_turns": [...]}
     {"type": "error",            "message": "..."}
 
@@ -26,15 +26,20 @@ import time
 import os
 from typing import Optional, List, Dict, Any
 
-from flask import request as flask_request
 from flask_sock import Sock
 from simple_websocket import Server as SimpleWebSocket
 
 from config.app_config import OPENAI_API_KEY
 from routes.cara_voice import get_session_prompt
 
-_OPENAI_REALTIME_VOICE = "shimmer"  # Warm female voice
+_OPENAI_REALTIME_VOICE = "shimmer"
 _OPENAI_REALTIME_MODEL_DEFAULT = "gpt-4o-realtime-preview-2024-12-17"
+
+
+def _log(session_id: str, event: str, **kv) -> None:
+    sid = session_id[:8] if session_id else "------"
+    extras = " ".join(f"{k}={v}" for k, v in kv.items()) if kv else ""
+    print(f"[Cara:{sid}] {event} {extras}".rstrip(), flush=True)
 
 
 def init_cara_websocket(sock: Sock):
@@ -45,17 +50,19 @@ def init_cara_websocket(sock: Sock):
         """Handle a Cara real-time voice session."""
         import websocket as ws_client
 
-        print(f"[Cara] WebSocket connection opened for session {session_id}", flush=True)
+        t0 = time.monotonic()
+        _log(session_id, "WS_OPEN")
 
         # ── Look up system prompt from server-side session store ──────────────
         system_prompt = get_session_prompt(session_id)
         if not system_prompt:
-            print(f"[Cara] Session not found or expired: {session_id}", flush=True)
+            _log(session_id, "SESSION_NOT_FOUND")
             _safe_send(ws, {"type": "error", "message": "Session not found or expired"})
             return
-        print(f"[Cara] Retrieved system_prompt len={len(system_prompt)} for session {session_id}", flush=True)
+        _log(session_id, "PROMPT_LOADED", prompt_len=len(system_prompt))
 
         if not OPENAI_API_KEY:
+            _log(session_id, "NO_OPENAI_KEY")
             _safe_send(ws, {"type": "error", "message": "OpenAI not configured on server"})
             return
 
@@ -63,7 +70,6 @@ def init_cara_websocket(sock: Sock):
         stop_event = threading.Event()
         transcript_turns: List[Dict[str, str]] = []
         openai_ws_ref: List[Optional[Any]] = [None]
-        # Lock for thread-safe sends to OpenAI (main loop + background thread both send)
         openai_send_lock = threading.Lock()
 
         # ── Connect to OpenAI Realtime API ───────────────────────────────────
@@ -84,31 +90,40 @@ def init_cara_websocket(sock: Sock):
             )
             openai_ws.settimeout(None)
             openai_ws_ref[0] = openai_ws
-            print(f"[Cara] Connected to OpenAI Realtime for session {session_id}", flush=True)
+            _log(session_id, "OPENAI_CONNECTED", model=model,
+                 elapsed_ms=int((time.monotonic() - t0) * 1000))
         except Exception as e:
-            print(f"[Cara] FAILED to connect to OpenAI Realtime: {type(e).__name__}: {e}", flush=True)
+            _log(session_id, "OPENAI_CONNECT_FAILED", error=f"{type(e).__name__}: {e}")
             _safe_send(ws, {"type": "error", "message": f"Failed to connect to AI backend: {type(e).__name__}"})
             return
 
         # ── Wait for session.created ─────────────────────────────────────────
         try:
+            openai_ws.settimeout(15)
             for _ in range(15):
                 raw = openai_ws.recv()
                 if not raw:
                     break
                 msg = json.loads(raw)
                 if msg.get("type") == "session.created":
-                    print(f"[Cara] OpenAI session created", flush=True)
+                    _log(session_id, "SESSION_CREATED")
                     break
                 if msg.get("type") == "error":
-                    print(f"[Cara] OpenAI session error: {msg}", flush=True)
-                    _safe_send(ws, {"type": "error", "message": "OpenAI session error"})
+                    err = msg.get("error", {})
+                    _log(session_id, "SESSION_CREATE_ERROR",
+                         code=err.get("code", "?"), message=err.get("message", str(msg)))
+                    _safe_send(ws, {"type": "error", "message": f"OpenAI rejected session: {err.get('message', 'unknown')}"})
                     openai_ws.close()
                     return
+            openai_ws.settimeout(None)
         except Exception as e:
-            print(f"[Cara] Error waiting for session.created: {e}", flush=True)
+            _log(session_id, "SESSION_CREATED_WAIT_ERROR", error=str(e))
+            openai_ws.settimeout(None)
 
         # ── Configure session ─────────────────────────────────────────────────
+        # NOTE: Do NOT include "temperature" — OpenAI Realtime rejects it,
+        # which causes the entire session.update to fail silently and the
+        # system prompt never gets applied.
         session_config = {
             "type": "session.update",
             "session": {
@@ -125,18 +140,40 @@ def init_cara_websocket(sock: Sock):
                     "silence_duration_ms": 1500,
                     "create_response": True,
                 },
-                "temperature": 0.8,
                 "max_response_output_tokens": 800,
             },
         }
         try:
             openai_ws.send(json.dumps(session_config))
+            _log(session_id, "SESSION_UPDATE_SENT")
         except Exception as e:
-            print(f"[Cara] Failed to send session config: {e}", flush=True)
+            _log(session_id, "SESSION_UPDATE_SEND_FAILED", error=str(e))
+
+        # Wait for session.updated confirmation (or error) before greeting
+        try:
+            openai_ws.settimeout(10)
+            for _ in range(10):
+                raw = openai_ws.recv()
+                if not raw:
+                    break
+                msg = json.loads(raw)
+                if msg.get("type") == "session.updated":
+                    _log(session_id, "SESSION_CONFIGURED")
+                    break
+                if msg.get("type") == "error":
+                    err = msg.get("error", {})
+                    _log(session_id, "SESSION_UPDATE_ERROR",
+                         code=err.get("code", "?"), message=err.get("message", str(msg)))
+                    _safe_send(ws, {"type": "error",
+                                    "message": f"OpenAI config rejected: {err.get('message', 'unknown')}"})
+                    openai_ws.close()
+                    return
+            openai_ws.settimeout(None)
+        except Exception as e:
+            _log(session_id, "SESSION_UPDATE_WAIT_ERROR", error=str(e))
+            openai_ws.settimeout(None)
 
         # ── Send greeting ─────────────────────────────────────────────────────
-        # No `instructions` override — Cara follows her system prompt directly.
-        # This lets training sessions open differently from HR advisory sessions.
         greeting_request = {
             "type": "response.create",
             "response": {
@@ -145,12 +182,15 @@ def init_cara_websocket(sock: Sock):
         }
         try:
             openai_ws.send(json.dumps(greeting_request))
+            _log(session_id, "GREETING_SENT",
+                 setup_ms=int((time.monotonic() - t0) * 1000))
         except Exception as e:
-            print(f"[Cara] Failed to send greeting: {e}", flush=True)
+            _log(session_id, "GREETING_SEND_FAILED", error=str(e))
 
-        # ── OpenAI → Browser thread ───────────────────────────────────────────
+        # ── OpenAI -> Browser thread ───────────────────────────────────────
         current_assistant_text: List[str] = []
-        response_active: List[bool] = [False]  # True while Cara is generating audio
+        response_active: List[bool] = [False]
+        audio_chunks_sent: List[int] = [0]
 
         def openai_to_browser():
             nonlocal current_assistant_text
@@ -165,9 +205,6 @@ def init_cara_websocket(sock: Sock):
                     if event_type == "response.audio.delta":
                         audio_b64 = data.get("delta", "")
                         if audio_b64:
-                            # On first audio chunk of each response, clear the input
-                            # buffer so any residual user audio can't trigger the VAD
-                            # and interrupt Cara mid-sentence.
                             if not response_active[0]:
                                 response_active[0] = True
                                 try:
@@ -175,6 +212,7 @@ def init_cara_websocket(sock: Sock):
                                         openai_ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
                                 except Exception:
                                     pass
+                            audio_chunks_sent[0] += 1
                             if not _safe_send(ws, {"type": "audio", "data": audio_b64}):
                                 break
 
@@ -191,11 +229,13 @@ def init_cara_websocket(sock: Sock):
                         if text:
                             transcript_turns.append({"role": "assistant", "text": text})
                             _safe_send(ws, {"type": "transcript_done", "role": "assistant", "text": text})
+                            _log(session_id, "ASSISTANT_TURN", chars=len(text))
 
                     elif event_type == "conversation.item.input_audio_transcription.completed":
                         text = (data.get("transcript") or "").strip()
                         if text:
                             transcript_turns.append({"role": "user", "text": text})
+                            _log(session_id, "USER_TURN", chars=len(text))
                             if not _safe_send(ws, {"type": "transcript", "role": "user", "text": text}):
                                 break
 
@@ -207,16 +247,16 @@ def init_cara_websocket(sock: Sock):
 
                     elif event_type == "error":
                         err = data.get("error", {})
-                        print(f"[Cara] OpenAI error event: {err}", flush=True)
+                        _log(session_id, "OPENAI_RUNTIME_ERROR",
+                             code=err.get("code", "?"), message=err.get("message", "?"))
                         _safe_send(ws, {"type": "error", "message": err.get("message", "OpenAI error")})
 
                 except Exception as recv_err:
                     if not stop_event.is_set():
-                        print(f"[Cara] OpenAI recv error: {recv_err}", flush=True)
+                        _log(session_id, "OPENAI_RECV_ERROR", error=str(recv_err))
                     break
 
             stop_event.set()
-            print(f"[Cara] OpenAI→browser thread exiting", flush=True)
 
         response_thread = threading.Thread(target=openai_to_browser, daemon=True)
         response_thread.start()
@@ -227,7 +267,9 @@ def init_cara_websocket(sock: Sock):
             _close_openai(openai_ws)
             return
 
-        # ── Browser → OpenAI main loop ────────────────────────────────────────
+        _log(session_id, "SESSION_LIVE")
+
+        # ── Browser -> OpenAI main loop ────────────────────────────────────────
         try:
             while not stop_event.is_set():
                 try:
@@ -255,27 +297,28 @@ def init_cara_websocket(sock: Sock):
                                     "audio": audio_b64,
                                 }))
                         except Exception as e:
-                            print(f"[Cara] Error forwarding audio to OpenAI: {e}", flush=True)
+                            _log(session_id, "AUDIO_FWD_ERROR", error=str(e))
 
                 elif msg_type == "end":
-                    print(f"[Cara] Browser sent end signal", flush=True)
+                    _log(session_id, "BROWSER_END_SIGNAL")
                     break
 
         except Exception as e:
-            print(f"[Cara] Main loop error: {e}", flush=True)
+            _log(session_id, "MAIN_LOOP_ERROR", error=str(e))
 
         finally:
             stop_event.set()
             _close_openai(openai_ws_ref[0])
             response_thread.join(timeout=3)
 
-            # Send final transcript to browser
             _safe_send(ws, {
                 "type": "call_ended",
                 "transcript_turns": transcript_turns,
             })
 
-        print(f"[Cara] Session {session_id} ended. Turns: {len(transcript_turns)}", flush=True)
+        elapsed = int((time.monotonic() - t0) * 1000)
+        _log(session_id, "SESSION_ENDED", turns=len(transcript_turns),
+             audio_chunks=audio_chunks_sent[0], duration_ms=elapsed)
 
 
 def _safe_send(ws: SimpleWebSocket, data: dict) -> bool:
