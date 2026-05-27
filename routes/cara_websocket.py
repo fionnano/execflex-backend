@@ -163,7 +163,7 @@ def init_cara_websocket(sock: Sock):
                 "output_modalities": ["audio"],
                 "audio": {
                     "input": {
-                        "format": {"type": "audio/pcm"},
+                        "format": {"type": "audio/pcm", "rate": 24000},
                         "transcription": {"model": "gpt-4o-mini-transcribe"},
                         "turn_detection": {
                             "type": "server_vad",
@@ -174,7 +174,7 @@ def init_cara_websocket(sock: Sock):
                         },
                     },
                     "output": {
-                        "format": {"type": "audio/pcm"},
+                        "format": {"type": "audio/pcm", "rate": 24000},
                         "voice": _OPENAI_REALTIME_VOICE,
                     },
                 },
