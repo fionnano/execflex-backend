@@ -152,7 +152,7 @@ def init_cara_websocket(sock: Sock):
 
         # ── Configure session ─────────────────────────────────────────────────
         # Structure mirrors voice_websocket.py session_config exactly.
-        # Only differences: pcm16 (browser) instead of pcmu (Twilio),
+        # Only differences: audio/pcm (browser) instead of audio/pcmu (Twilio),
         # shimmer voice, and Cara-specific VAD thresholds.
         session_config = {
             "type": "session.update",
@@ -163,7 +163,7 @@ def init_cara_websocket(sock: Sock):
                 "output_modalities": ["audio"],
                 "audio": {
                     "input": {
-                        "format": {"type": "audio/pcm16"},
+                        "format": {"type": "audio/pcm"},
                         "transcription": {"model": "gpt-4o-mini-transcribe"},
                         "turn_detection": {
                             "type": "server_vad",
@@ -174,7 +174,7 @@ def init_cara_websocket(sock: Sock):
                         },
                     },
                     "output": {
-                        "format": {"type": "audio/pcm16"},
+                        "format": {"type": "audio/pcm"},
                         "voice": _OPENAI_REALTIME_VOICE,
                     },
                 },
