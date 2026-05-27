@@ -59,6 +59,15 @@ def init_cara_websocket(sock: Sock):
             _log(session_id, "SESSION_NOT_FOUND")
             _safe_send(ws, {"type": "error", "message": "Session not found or expired"})
             return
+
+        _CARA_PREAMBLE = (
+            "IMPORTANT: Always respond in English, regardless of the language "
+            "the user speaks or the language of any provided context.\n\n"
+            "STEP 1 (your very first message — say ONLY this): "
+            "\"Hi, I'm Cara, your HR assistant. How can I help you today?\"\n"
+            "Do not add anything else to your first message. Wait for the user to respond.\n\n"
+        )
+        system_prompt = _CARA_PREAMBLE + system_prompt
         _log(session_id, "PROMPT_LOADED", prompt_len=len(system_prompt))
 
         if not OPENAI_API_KEY:
