@@ -75,6 +75,11 @@ def init_cara_websocket(sock: Sock):
         # ── Connect to OpenAI Realtime API ───────────────────────────────────
         model = os.getenv("OPENAI_REALTIME_MODEL", _OPENAI_REALTIME_MODEL_DEFAULT)
         url = f"wss://api.openai.com/v1/realtime?model={model}"
+        header_list = [f"Authorization: Bearer {OPENAI_API_KEY[:8]}..."]
+        _log(session_id, "OPENAI_CONNECTING",
+             url=url, model=model, header_count=1,
+             env_model=repr(os.getenv("OPENAI_REALTIME_MODEL")))
+
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
         }

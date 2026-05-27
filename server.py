@@ -102,6 +102,15 @@ init_cara_websocket(sock)
 
 # Rate limiting on screening endpoint is applied in routes/screening.py
 
+# Print deploy fingerprint so Render logs confirm which commit is running
+import subprocess as _sp
+try:
+    _git_hash = _sp.check_output(["git", "rev-parse", "--short", "HEAD"],
+                                 stderr=_sp.DEVNULL, text=True).strip()
+except Exception:
+    _git_hash = "unknown"
+print(f"[DEPLOY] commit={_git_hash} OPENAI_REALTIME_MODEL={os.getenv('OPENAI_REALTIME_MODEL', '(not set)')}", flush=True)
+
 # Debug: Print registered routes at startup
 with app.app_context():
     print("DEBUG Registered routes at startup:")
