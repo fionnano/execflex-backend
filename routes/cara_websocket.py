@@ -244,12 +244,14 @@ def init_cara_websocket(sock: Sock):
                     event_type = data.get("type", "")
 
                     # ── Diagnostic: log every event type from OpenAI ──
-                    if event_type == "response.audio.delta":
+                    if event_type == "response.output_audio.delta":
                         _log(session_id, "OAI_EVENT", t=event_type, has_delta=bool(data.get("delta")))
                     elif event_type in ("response.created", "response.output_item.added",
                                         "response.done", "response.output_item.done",
                                         "response.content_part.added",
-                                        "response.content_part.done"):
+                                        "response.content_part.done",
+                                        "response.output_audio.done",
+                                        "response.output_audio_transcript.done"):
                         status = data.get("response", {}).get("status", "")
                         _log(session_id, "OAI_EVENT", t=event_type, status=status)
                     else:
@@ -258,7 +260,7 @@ def init_cara_websocket(sock: Sock):
                             extra = json.dumps(data.get("error", {}))[:300]
                         _log(session_id, "OAI_EVENT", t=event_type, detail=extra)
 
-                    if event_type == "response.audio.delta":
+                    if event_type == "response.output_audio.delta":
                         audio_b64 = data.get("delta", "")
                         if audio_b64:
                             if not response_active[0]:
@@ -272,13 +274,13 @@ def init_cara_websocket(sock: Sock):
                             if not _safe_send(ws, {"type": "audio", "data": audio_b64}):
                                 break
 
-                    elif event_type == "response.audio_transcript.delta":
+                    elif event_type == "response.output_audio_transcript.delta":
                         delta = data.get("delta", "")
                         if delta:
                             current_assistant_text.append(delta)
                             _safe_send(ws, {"type": "transcript_delta", "role": "assistant", "text": delta})
 
-                    elif event_type == "response.audio_transcript.done":
+                    elif event_type == "response.output_audio_transcript.done":
                         text = "".join(current_assistant_text).strip()
                         current_assistant_text = []
                         response_active[0] = False
