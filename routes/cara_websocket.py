@@ -33,7 +33,7 @@ from config.app_config import OPENAI_API_KEY
 from routes.cara_voice import get_session_prompt
 
 _OPENAI_REALTIME_VOICE = "shimmer"
-_OPENAI_REALTIME_MODEL_DEFAULT = "gpt-4o-realtime-preview-2024-12-17"
+_OPENAI_REALTIME_MODEL_DEFAULT = "gpt-4o-realtime-preview"
 
 
 def _log(session_id: str, event: str, **kv) -> None:
@@ -77,7 +77,6 @@ def init_cara_websocket(sock: Sock):
         url = f"wss://api.openai.com/v1/realtime?model={model}"
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "OpenAI-Beta": "realtime=v1",
         }
 
         try:
@@ -120,25 +119,30 @@ def init_cara_websocket(sock: Sock):
             _log(session_id, "SESSION_CREATED_WAIT_ERROR", error=str(e))
             openai_ws.settimeout(None)
 
-        # ── Configure session ─────────────────────────────────────────────────
-        # NOTE: Do NOT include "temperature" — OpenAI Realtime rejects it,
-        # which causes the entire session.update to fail silently and the
-        # system prompt never gets applied.
+        # ── Configure session (GA format — matches voice_websocket.py) ─────────
         session_config = {
             "type": "session.update",
             "session": {
-                "modalities": ["text", "audio"],
+                "type": "realtime",
+                "model": model,
                 "instructions": system_prompt,
-                "voice": _OPENAI_REALTIME_VOICE,
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                "input_audio_transcription": {"model": "whisper-1"},
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.8,
-                    "prefix_padding_ms": 500,
-                    "silence_duration_ms": 1500,
-                    "create_response": True,
+                "output_modalities": ["audio", "text"],
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm16"},
+                        "transcription": {"model": "gpt-4o-mini-transcribe"},
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": 0.8,
+                            "prefix_padding_ms": 500,
+                            "silence_duration_ms": 1500,
+                            "create_response": True,
+                        },
+                    },
+                    "output": {
+                        "format": {"type": "audio/pcm16"},
+                        "voice": _OPENAI_REALTIME_VOICE,
+                    },
                 },
                 "max_response_output_tokens": 800,
             },
