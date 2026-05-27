@@ -69,6 +69,8 @@ def init_cara_websocket(sock: Sock):
         )
         system_prompt = _CARA_PREAMBLE + system_prompt
         _log(session_id, "PROMPT_LOADED", prompt_len=len(system_prompt))
+        _log(session_id, "PROMPT_HEAD", text=repr(system_prompt[:500]))
+        _log(session_id, "PROMPT_TAIL", text=repr(system_prompt[-500:]))
 
         if not OPENAI_API_KEY:
             _log(session_id, "NO_OPENAI_KEY")
@@ -241,6 +243,21 @@ def init_cara_websocket(sock: Sock):
                     data = json.loads(raw)
                     event_type = data.get("type", "")
 
+                    # ── Diagnostic: log every event type from OpenAI ──
+                    if event_type == "response.audio.delta":
+                        _log(session_id, "OAI_EVENT", t=event_type, has_delta=bool(data.get("delta")))
+                    elif event_type in ("response.created", "response.output_item.added",
+                                        "response.done", "response.output_item.done",
+                                        "response.content_part.added",
+                                        "response.content_part.done"):
+                        status = data.get("response", {}).get("status", "")
+                        _log(session_id, "OAI_EVENT", t=event_type, status=status)
+                    else:
+                        extra = ""
+                        if event_type == "error":
+                            extra = json.dumps(data.get("error", {}))[:300]
+                        _log(session_id, "OAI_EVENT", t=event_type, detail=extra)
+
                     if event_type == "response.audio.delta":
                         audio_b64 = data.get("delta", "")
                         if audio_b64:
@@ -309,8 +326,14 @@ def init_cara_websocket(sock: Sock):
         _log(session_id, "SESSION_LIVE")
 
         # ── Send greeting (after thread is listening for the response) ────────
+        greeting_payload = {
+            "type": "response.create",
+            "response": {
+                "instructions": "Greet the user with: 'Hi, I'm Cara, your HR assistant. How can I help you today?'"
+            }
+        }
         try:
-            openai_ws.send(json.dumps({"type": "response.create"}))
+            openai_ws.send(json.dumps(greeting_payload))
             _log(session_id, "GREETING_SENT",
                  setup_ms=int((time.monotonic() - t0) * 1000))
         except Exception as e:
