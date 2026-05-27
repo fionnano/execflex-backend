@@ -33,7 +33,7 @@ from config.app_config import OPENAI_API_KEY
 from routes.cara_voice import get_session_prompt
 
 _OPENAI_REALTIME_VOICE = "shimmer"
-_OPENAI_REALTIME_MODEL_DEFAULT = "gpt-4o-realtime-preview"
+_OPENAI_REALTIME_MODEL_DEFAULT = "gpt-realtime"
 
 
 def _log(session_id: str, event: str, **kv) -> None:
@@ -73,25 +73,44 @@ def init_cara_websocket(sock: Sock):
         openai_send_lock = threading.Lock()
 
         # ── Connect to OpenAI Realtime API ───────────────────────────────────
+        # Mirrors _connect_openai_sync() in voice_websocket.py exactly:
+        # same URL, same headers, same retry logic, same keepalive.
+        import socket as _socket
+
         model = os.getenv("OPENAI_REALTIME_MODEL", _OPENAI_REALTIME_MODEL_DEFAULT)
         url = f"wss://api.openai.com/v1/realtime?model={model}"
-        header_list = [f"Authorization: Bearer {OPENAI_API_KEY[:8]}..."]
-        _log(session_id, "OPENAI_CONNECTING",
-             url=url, model=model, header_count=1,
-             env_model=repr(os.getenv("OPENAI_REALTIME_MODEL")))
-
         headers = {
             "Authorization": f"Bearer {OPENAI_API_KEY}",
         }
+        _log(session_id, "OPENAI_CONNECTING",
+             url=url, model=model,
+             env_model=repr(os.getenv("OPENAI_REALTIME_MODEL")))
 
+        openai_ws = None
         try:
-            openai_ws = ws_client.create_connection(
-                url,
-                header=[f"{k}: {v}" for k, v in headers.items()],
-                sslopt={"cert_reqs": ssl.CERT_REQUIRED},
-                timeout=20,
-                skip_utf8_validation=True,
-            )
+            # Retry loop — matches voice_websocket.py
+            connect_err = None
+            for attempt in range(1, 4):
+                try:
+                    openai_ws = ws_client.create_connection(
+                        url,
+                        header=[f"{k}: {v}" for k, v in headers.items()],
+                        sslopt={"cert_reqs": ssl.CERT_REQUIRED},
+                        timeout=20,
+                        skip_utf8_validation=True,
+                        sockopt=[(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)],
+                    )
+                    break
+                except Exception as e:
+                    connect_err = e
+                    _log(session_id, "OPENAI_CONNECT_RETRY",
+                         attempt=attempt, error=f"{type(e).__name__}: {e}")
+                    if attempt >= 3:
+                        raise
+                    time.sleep(0.4 * attempt)
+
+            if openai_ws is None:
+                raise RuntimeError(f"connect failed after retries: {connect_err}")
             openai_ws.settimeout(None)
             openai_ws_ref[0] = openai_ws
             _log(session_id, "OPENAI_CONNECTED", model=model,
@@ -102,36 +121,46 @@ def init_cara_websocket(sock: Sock):
             return
 
         # ── Wait for session.created ─────────────────────────────────────────
-        try:
-            openai_ws.settimeout(15)
-            for _ in range(15):
+        saw_session_created = False
+        for _ in range(20):
+            try:
                 raw = openai_ws.recv()
-                if not raw:
-                    break
-                msg = json.loads(raw)
-                if msg.get("type") == "session.created":
-                    _log(session_id, "SESSION_CREATED")
-                    break
-                if msg.get("type") == "error":
-                    err = msg.get("error", {})
-                    _log(session_id, "SESSION_CREATE_ERROR",
-                         code=err.get("code", "?"), message=err.get("message", str(msg)))
-                    _safe_send(ws, {"type": "error", "message": f"OpenAI rejected session: {err.get('message', 'unknown')}"})
-                    openai_ws.close()
-                    return
-            openai_ws.settimeout(None)
-        except Exception as e:
-            _log(session_id, "SESSION_CREATED_WAIT_ERROR", error=str(e))
-            openai_ws.settimeout(None)
+            except Exception as e:
+                _log(session_id, "SESSION_CREATED_RECV_ERROR", error=str(e))
+                break
+            if not raw:
+                continue
+            msg = json.loads(raw)
+            event_type = msg.get("type")
+            if event_type == "session.created":
+                _log(session_id, "SESSION_CREATED")
+                saw_session_created = True
+                break
+            if event_type == "error":
+                err = msg.get("error", {})
+                _log(session_id, "SESSION_CREATE_ERROR",
+                     code=err.get("code", "?"), message=err.get("message", str(msg)))
+                _safe_send(ws, {"type": "error",
+                                "message": f"OpenAI rejected session: {err.get('message', 'unknown')}"})
+                openai_ws.close()
+                return
+        if not saw_session_created:
+            _log(session_id, "SESSION_CREATED_TIMEOUT")
+            _safe_send(ws, {"type": "error", "message": "OpenAI session creation timed out"})
+            openai_ws.close()
+            return
 
-        # ── Configure session (GA format — matches voice_websocket.py) ─────────
+        # ── Configure session ─────────────────────────────────────────────────
+        # Structure mirrors voice_websocket.py session_config exactly.
+        # Only differences: pcm16 (browser) instead of pcmu (Twilio),
+        # shimmer voice, and Cara-specific VAD thresholds.
         session_config = {
             "type": "session.update",
             "session": {
                 "type": "realtime",
                 "model": model,
                 "instructions": system_prompt,
-                "output_modalities": ["audio", "text"],
+                "output_modalities": ["audio"],
                 "audio": {
                     "input": {
                         "format": {"type": "audio/pcm16"},
@@ -149,44 +178,49 @@ def init_cara_websocket(sock: Sock):
                         "voice": _OPENAI_REALTIME_VOICE,
                     },
                 },
-                "max_response_output_tokens": 800,
             },
         }
+        session_json = json.dumps(session_config)
+        _log(session_id, "SESSION_UPDATE_SENT", config_len=len(session_json))
         try:
-            openai_ws.send(json.dumps(session_config))
-            _log(session_id, "SESSION_UPDATE_SENT")
+            openai_ws.send(session_json)
         except Exception as e:
             _log(session_id, "SESSION_UPDATE_SEND_FAILED", error=str(e))
+            openai_ws.close()
+            return
 
-        # Wait for session.updated confirmation (or error) before greeting
-        try:
-            openai_ws.settimeout(10)
-            for _ in range(10):
+        # Wait for session.updated — matches voice_websocket.py pattern
+        saw_session_updated = False
+        for _ in range(30):
+            try:
                 raw = openai_ws.recv()
-                if not raw:
-                    break
-                msg = json.loads(raw)
-                if msg.get("type") == "session.updated":
-                    _log(session_id, "SESSION_CONFIGURED")
-                    break
-                if msg.get("type") == "error":
-                    err = msg.get("error", {})
-                    _log(session_id, "SESSION_UPDATE_ERROR",
-                         code=err.get("code", "?"), message=err.get("message", str(msg)))
-                    _safe_send(ws, {"type": "error",
-                                    "message": f"OpenAI config rejected: {err.get('message', 'unknown')}"})
-                    openai_ws.close()
-                    return
-            openai_ws.settimeout(None)
-        except Exception as e:
-            _log(session_id, "SESSION_UPDATE_WAIT_ERROR", error=str(e))
-            openai_ws.settimeout(None)
+            except Exception as e:
+                _log(session_id, "SESSION_UPDATE_RECV_ERROR", error=str(e))
+                break
+            if not raw:
+                continue
+            msg = json.loads(raw)
+            event_type = msg.get("type")
+            if event_type == "session.updated":
+                _log(session_id, "SESSION_CONFIGURED")
+                saw_session_updated = True
+                break
+            if event_type == "error":
+                err = msg.get("error", {})
+                _log(session_id, "SESSION_UPDATE_ERROR",
+                     code=err.get("code", "?"), message=err.get("message", str(msg)))
+                break
+        if not saw_session_updated:
+            _log(session_id, "SESSION_UPDATE_FAILED")
+            _safe_send(ws, {"type": "error", "message": "OpenAI session configuration failed"})
+            openai_ws.close()
+            return
 
         # ── Send greeting ─────────────────────────────────────────────────────
         greeting_request = {
             "type": "response.create",
             "response": {
-                "modalities": ["audio", "text"],
+                "modalities": ["audio"],
             },
         }
         try:
