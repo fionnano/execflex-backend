@@ -181,8 +181,7 @@ def init_cara_websocket(sock: Sock):
             },
         }
         session_json = json.dumps(session_config)
-        _log(session_id, "SESSION_UPDATE_PAYLOAD_FULL")
-        print(f"[Cara:{session_id[:8]}] >>> {session_json}", flush=True)
+        _log(session_id, "SESSION_UPDATE_SENT", config_len=len(session_json))
         try:
             openai_ws.send(session_json)
         except Exception as e:
@@ -190,9 +189,9 @@ def init_cara_websocket(sock: Sock):
             openai_ws.close()
             return
 
-        # Wait for session.updated — log EVERY message from OpenAI
+        # Wait for session.updated — matches voice_websocket.py pattern
         saw_session_updated = False
-        for i in range(30):
+        for _ in range(30):
             try:
                 raw = openai_ws.recv()
             except Exception as e:
@@ -200,7 +199,6 @@ def init_cara_websocket(sock: Sock):
                 break
             if not raw:
                 continue
-            print(f"[Cara:{session_id[:8]}] <<< recv[{i}] {raw[:2000]}", flush=True)
             msg = json.loads(raw)
             event_type = msg.get("type")
             if event_type == "session.updated":
@@ -209,8 +207,9 @@ def init_cara_websocket(sock: Sock):
                 break
             if event_type == "error":
                 err = msg.get("error", {})
-                _log(session_id, "SESSION_UPDATE_ERROR_FULL",
-                     raw=json.dumps(msg)[:2000])
+                _log(session_id, "SESSION_UPDATE_ERROR",
+                     code=err.get("code", "?"),
+                     message=err.get("message", json.dumps(msg)[:500]))
                 break
         if not saw_session_updated:
             _log(session_id, "SESSION_UPDATE_FAILED")

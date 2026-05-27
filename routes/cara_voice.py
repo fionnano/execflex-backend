@@ -4,15 +4,14 @@ Cara voice session management.
 POST /voice-session/cara — create a session with a system prompt.
 Returns session_id + WebSocket URL for the browser to connect to.
 
-The system prompt is stored server-side in a TTL dict keyed by session_id.
-The WebSocket URL contains only the session_id — no prompt in the URL.
-
-Stateless URL-encoding was tried (commit 3019f26) but reverted: RAG-enriched
-prompts exceed Render's nginx URL length limit. With --workers 1 in the
-Procfile, the in-memory store is reliable (single process handles both
-POST and WebSocket).
+Sessions are stored on the filesystem (/tmp/cara_sessions/), not in
+process memory. Render routes HTTP POST and WebSocket upgrade through
+different process contexts even with --workers 1, so in-memory dicts
+are not shared between them. The filesystem is shared within the
+container and works regardless of process model.
 """
 import os
+import json
 import uuid
 import time
 import threading
@@ -30,12 +29,11 @@ _CARA_ALLOWED_ORIGINS = {
     "http://localhost:3000",
 }
 
-# ── In-memory session store ───────────────────────────────────────────────────
+# ── Filesystem session store ──────────────────────────────────────────────────
 _SESSION_TTL = 300  # 5 minutes
-_sessions: dict = {}
-_sessions_lock = threading.Lock()
+_SESSION_DIR = os.path.join("/tmp", "cara_sessions")
+os.makedirs(_SESSION_DIR, exist_ok=True)
 
-# Counters for health probe
 _session_stats = {"created": 0, "retrieved": 0, "expired": 0, "not_found": 0}
 
 
@@ -45,43 +43,77 @@ def _log(session_id: str | None, event: str, **kv) -> None:
     print(f"[Cara:{sid}] {event} {extras}".rstrip(), flush=True)
 
 
+def _session_path(session_id: str) -> str:
+    return os.path.join(_SESSION_DIR, session_id)
+
+
 def _store_session(session_id: str, system_prompt: str) -> None:
-    with _sessions_lock:
-        _sessions[session_id] = {
-            "prompt": system_prompt,
-            "expires": time.time() + _SESSION_TTL,
-        }
-        _session_stats["created"] += 1
+    data = json.dumps({"prompt": system_prompt, "expires": time.time() + _SESSION_TTL})
+    path = _session_path(session_id)
+    with open(path, "w") as f:
+        f.write(data)
+    _session_stats["created"] += 1
+    _log(session_id, "STORED_TO_DISK", path=path, size=len(data))
 
 
 def get_session_prompt(session_id: str) -> str | None:
     """Return the system prompt for a session, or None if expired/missing."""
-    with _sessions_lock:
-        entry = _sessions.get(session_id)
-        if not entry:
-            _session_stats["not_found"] += 1
-            return None
-        if time.time() > entry["expires"]:
-            del _sessions[session_id]
-            _session_stats["expired"] += 1
-            return None
-        prompt = entry["prompt"]
-        del _sessions[session_id]
-        _session_stats["retrieved"] += 1
-        return prompt
+    path = _session_path(session_id)
+    try:
+        with open(path, "r") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        _session_stats["not_found"] += 1
+        _log(session_id, "NOT_FOUND_ON_DISK", path=path)
+        return None
+
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        _session_stats["not_found"] += 1
+        _log(session_id, "CORRUPT_SESSION_FILE", path=path)
+        _safe_unlink(path)
+        return None
+
+    if time.time() > data.get("expires", 0):
+        _session_stats["expired"] += 1
+        _safe_unlink(path)
+        return None
+
+    _safe_unlink(path)
+    _session_stats["retrieved"] += 1
+    return data.get("prompt")
+
+
+def _safe_unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _cleanup_expired() -> None:
     while True:
         time.sleep(120)
-        now = time.time()
-        with _sessions_lock:
-            expired = [k for k, v in _sessions.items() if now > v["expires"]]
-            for k in expired:
-                del _sessions[k]
-                _session_stats["expired"] += 1
-        if expired:
-            _log(None, "cleanup", removed=len(expired))
+        removed = 0
+        try:
+            now = time.time()
+            for fname in os.listdir(_SESSION_DIR):
+                path = os.path.join(_SESSION_DIR, fname)
+                try:
+                    with open(path, "r") as f:
+                        data = json.loads(f.read())
+                    if now > data.get("expires", 0):
+                        _safe_unlink(path)
+                        _session_stats["expired"] += 1
+                        removed += 1
+                except (json.JSONDecodeError, OSError):
+                    _safe_unlink(path)
+                    removed += 1
+        except OSError:
+            pass
+        if removed:
+            _log(None, "cleanup", removed=removed)
 
 
 _cleanup_thread = threading.Thread(target=_cleanup_expired, daemon=True)
@@ -93,21 +125,21 @@ _cleanup_thread.start()
 @cara_bp.route("/health/voice", methods=["GET"])
 def voice_health():
     """
-    GET /health/voice — lightweight probe that checks:
-      1. OpenAI API key is present
-      2. Session store is functional (create + retrieve round-trip)
+    GET /health/voice — checks OpenAI key + session store round-trip.
     """
     checks = {}
-
     checks["openai_key"] = bool(OPENAI_API_KEY)
+    checks["session_dir"] = os.path.isdir(_SESSION_DIR)
 
     probe_id = f"health-{uuid.uuid4()}"
     _store_session(probe_id, "__probe__")
     retrieved = get_session_prompt(probe_id)
     checks["session_store"] = (retrieved == "__probe__")
 
-    with _sessions_lock:
-        checks["active_sessions"] = len(_sessions)
+    try:
+        checks["active_sessions"] = len(os.listdir(_SESSION_DIR))
+    except OSError:
+        checks["active_sessions"] = -1
     checks["stats"] = dict(_session_stats)
 
     healthy = checks["openai_key"] and checks["session_store"]
