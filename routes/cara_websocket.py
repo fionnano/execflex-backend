@@ -226,15 +226,6 @@ def init_cara_websocket(sock: Sock):
             openai_ws.close()
             return
 
-        # ── Send greeting ─────────────────────────────────────────────────────
-        greeting_request = {"type": "response.create"}
-        try:
-            openai_ws.send(json.dumps(greeting_request))
-            _log(session_id, "GREETING_SENT",
-                 setup_ms=int((time.monotonic() - t0) * 1000))
-        except Exception as e:
-            _log(session_id, "GREETING_SEND_FAILED", error=str(e))
-
         # ── OpenAI -> Browser thread ───────────────────────────────────────
         current_assistant_text: List[str] = []
         response_active: List[bool] = [False]
@@ -316,6 +307,14 @@ def init_cara_websocket(sock: Sock):
             return
 
         _log(session_id, "SESSION_LIVE")
+
+        # ── Send greeting (after thread is listening for the response) ────────
+        try:
+            openai_ws.send(json.dumps({"type": "response.create"}))
+            _log(session_id, "GREETING_SENT",
+                 setup_ms=int((time.monotonic() - t0) * 1000))
+        except Exception as e:
+            _log(session_id, "GREETING_SEND_FAILED", error=str(e))
 
         # ── Browser -> OpenAI main loop ────────────────────────────────────────
         try:
