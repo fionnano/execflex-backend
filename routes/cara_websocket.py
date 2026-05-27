@@ -218,12 +218,7 @@ def init_cara_websocket(sock: Sock):
             return
 
         # ── Send greeting ─────────────────────────────────────────────────────
-        greeting_request = {
-            "type": "response.create",
-            "response": {
-                "modalities": ["audio"],
-            },
-        }
+        greeting_request = {"type": "response.create"}
         try:
             openai_ws.send(json.dumps(greeting_request))
             _log(session_id, "GREETING_SENT",
