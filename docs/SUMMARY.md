@@ -1,68 +1,68 @@
-# SUMMARY — rebuild-core
+# SUMMARY — ExecFlex v1 Rebuild
 
 Ten decisions the owner most needs to review, ordered by how wrong I might be.
 
 ---
 
-## 1. Heuristic scoring is length-based only (D-06) — HIGH UNCERTAINTY
+## 1. Heuristic scoring instead of LLM scoring (D-06) — HIGH UNCERTAINTY
 
-The screening state machine scores answers by character count (empty=1, <10=2, <50=3, <200=3.5, 200+=4). This means "yes" scores the same as "no, absolutely not" and a rambling irrelevant paragraph scores 4.0. It works for testing the state machine plumbing, but it will produce meaningless screening recommendations on real conversations. **The LLM scoring replacement is critical for production use.**
+The screening state machine scores answers by response length (1-5 scale). "AI scoring" is barely AI — it's string-length heuristics. A verbose poor answer scores higher than a concise excellent one. The LLM scoring replacement is critical for production use, and Art. 10 data governance documentation needs updating when it ships.
 
-Risk: If this ships to real users before LLM scoring is added, screening recommendations will be arbitrary and agencies will lose trust immediately.
+**Risk:** Screening recommendations are arbitrary. First real user will notice immediately.
 
-## 2. Skills matching is set overlap, not semantic (D-02) — HIGH UNCERTAINTY
+## 2. Pipeline stages as PostgreSQL enum, not per-org configurable (D-24) — HIGH UNCERTAINTY
 
-`_score_skills` does case-insensitive exact set intersection between candidate skills and role required_skills. "Python" matches "python" but "Python development" does not match "Python". "ML" does not match "machine learning". No synonym expansion, no embedding similarity, no taxonomic mapping.
+Stages are fixed: sourced → screened → shortlisted → interviewing → offered → placed → rejected → withdrawn. Agencies that use different terminology ("submitted", "presented", "qualified") cannot customise. Changing later requires a PostgreSQL migration to alter the enum type.
 
-Risk: In real use, this will produce false negatives on nearly every search where the candidate and role don't use identical terminology.
+**Risk:** First agency customer says "we don't use those stage names" and you're stuck.
 
-## 3. Dimension weights are invented, not empirically validated (D-02) — MEDIUM UNCERTAINTY
+## 3. IrishJobs adapter uses best-guess XML format (D-15) — HIGH UNCERTAINTY
 
-The 7 weights (skills=0.25, industry=0.20, experience=0.15, etc.) are based on general recruiter sentiment from market research, not on placement outcome data. There's no feedback loop. In production, these weights might need to be radically different — or client-configurable.
+IrishJobs doesn't publish a public XML feed spec. The adapter produces a generic XML format. If IrishJobs has a private partner API (likely), this adapter won't work at all.
 
-Risk: The matching engine consistently ranks the wrong candidates first, creating more work than it saves.
+**Risk:** Zero confidence this format is accepted. May need complete rewrite.
 
-## 4. The NED penalty (x0.3) and passive/closed multipliers are guesses (D-12, D-13) — MEDIUM UNCERTAINTY
+## 4. org_id from JWT assumes Supabase metadata structure (D-16) — MEDIUM-HIGH UNCERTAINTY
 
-The multiplicative penalties (NED mismatch=0.3, passive=0.85, closed=0.1) were chosen to "feel right" but have no empirical basis. A NED penalty of 0.3 might be too harsh (blocking good fractional candidates) or too lenient (letting non-NED candidates rank too high).
+`extract_org_context()` reads `user_metadata.organization_id` from the JWT. This assumes the Supabase project stores orgs in user metadata, and that multi-org users pick one org at login. Neither assumption is validated against the actual Supabase config.
 
-Risk: Agencies placing NED/fractional roles get poor results from the matching engine and bypass it.
+**Risk:** If metadata structure differs, every authenticated endpoint breaks.
 
-## 5. Client intake brief extraction is regex/delimiter-based (D-11) — MEDIUM UNCERTAINTY
+## 5. Human review gate validates on reason length >= 3 chars (D-17) — MEDIUM UNCERTAINTY
 
-`build_brief()` splits requirements by comma, takes the first sentence as role title, etc. Real client answers won't be comma-delimited lists — they'll be conversational. "We need someone who knows Python, but also has leadership experience — oh, and they should be comfortable with ambiguity" won't parse cleanly.
+`require_human_review_for_reject()` considers any reason >= 3 characters valid. "N/A" passes. The EU AI Act requires "meaningful" human oversight, not just character counting. An auditor may challenge whether a 3-char reason satisfies Art. 14.
 
-Risk: Structured briefs from client intake are garbage and require manual correction, negating the automation value.
+**Risk:** Compliance theatre. Should probably require structured reason (dropdown + free text).
 
-## 6. Screening fact extraction is keyword matching (D-06) — MEDIUM UNCERTAINTY
+## 6. Pay range enforced at API layer but not database layer (D-18) — MEDIUM UNCERTAINTY
 
-`_extract_facts()` uses regex for years of experience and substring matching for availability types. It will miss "a decade in fintech" (no digit), "I've been doing this since 2014" (no "years"), and most natural language compensation expressions.
+`pay_range_min` and `pay_range_max` are required in the API route but the DB columns are nullable. Direct Supabase inserts could create jobs without pay ranges, violating the Pay Transparency Directive.
 
-Risk: Extracted facts are incomplete and unreliable, reducing the value of the screening → matching pipeline.
+**Risk:** Add NOT NULL or CHECK constraints to the database columns.
 
-## 7. Consent-first flow might be too rigid for warm-transfer scenarios (D-05) — LOW-MEDIUM UNCERTAINTY
+## 7. Skills matching is set overlap, not semantic (D-02) — MEDIUM UNCERTAINTY
 
-Every session starts with a GDPR consent prompt. If a candidate was already briefed on recording/GDPR by the recruiter before the AI call, asking again may feel redundant and create friction. The state machine has no "pre-consented" path.
+`_score_skills` does exact set intersection. "Python" matches but "Python development" doesn't. "ML" doesn't match "machine learning". No synonym expansion or embedding similarity.
 
-Risk: Recruiters want to skip consent for warm transfers, and the system doesn't support it without code changes.
+**Risk:** False negatives on nearly every search with non-identical terminology.
 
-## 8. Handoff distress phrases may be too aggressive (D-07) — LOW-MEDIUM UNCERTAINTY
+## 8. Data rights endpoint has no rate limiting (D-21) — LOW-MEDIUM UNCERTAINTY
 
-The word "legal" in "I have legal experience" triggers handoff. "Unfair" in "I think the market is unfair right now" triggers handoff. The distress detection is substring-based with no context awareness.
+`POST /api/v1/compliance/data-rights` is public (no auth) so candidates can submit GDPR requests. No rate limiting, CAPTCHA, or abuse prevention. Could be spammed.
 
-Risk: False-positive handoffs interrupt legitimate screening sessions, frustrating candidates and wasting recruiter time.
+**Risk:** Spam, not security. Add rate limiting before going live.
 
-## 9. New matching engine coexists with old one indefinitely (D-01) — LOW UNCERTAINTY
+## 9. Assessment adapter always returns 85 / passed (D-22) — LOW-MEDIUM UNCERTAINTY
 
-The old `match_finder.py` stays alive for the existing `/match` endpoint. This means two matching engines with different scoring models. If someone asks "why does the API give different results than the CRM," the answer is "two engines."
+`StubAssessmentAdapter` is the only adapter. "ExecFlex Verified" badges would show every candidate as verified with 85%. Fine for dev, dangerous if stub data reaches external stakeholders.
 
-Risk: Confusion during transition period. Manageable, but needs to be planned.
+**Risk:** Demo data contamination. Distinguish stub results visually.
 
-## 10. Voice monitor is disabled by default in dev but enabled by default in production (D-08) — LOW UNCERTAINTY
+## 10. Syndication adapters don't track feed regeneration timing (D-15) — LOW UNCERTAINTY
 
-`VOICE_MONITOR_ENABLED` defaults to `true`, so deploying without the env var starts the monitor. This is correct for production but means any dev deployment without a `.env` file will start making probe requests.
+When a job is updated or closed, the syndication table records original submission but doesn't trigger feed regeneration. Job boards polling the XML feed get stale data.
 
-Risk: Minor — dev deployments might generate noise in logs, but probes will fail harmlessly without the production URL.
+**Risk:** Stale postings on boards after closing a job. Need webhook or event hook on job status changes.
 
 ---
 
@@ -70,38 +70,39 @@ Risk: Minor — dev deployments might generate noise in logs, but probes will fa
 
 | Item | Location | Status |
 |------|----------|--------|
-| MARKET_SCOPE.md | `docs/MARKET_SCOPE.md` | Done |
-| GAP_ANALYSIS.md (with WEDGE) | `docs/GAP_ANALYSIS.md` | Done |
-| TARGET_ARCHITECTURE.md | `docs/TARGET_ARCHITECTURE.md` | Done |
-| Matching Engine v1 | `services/matching/` | Done — 42 green tests |
-| Screening State Machine v1 | `services/screening/` | Done — 73 green tests |
-| Voice monitor disable flag | `config/app_config.py` + `routes/voice_monitor.py` | Done |
-| DECISIONS.md | `docs/DECISIONS.md` | Done |
-| SUMMARY.md | `docs/SUMMARY.md` | Done |
+| Data model migration | `supabase/migrations/20260704_rebuild_v1_schema.sql` | Done |
+| Multi-tenant v1 API | `routes/api_v1/` (10 route files) | Done |
+| Auth layer | `services/api/` | Done |
+| Matching engine | `services/matching/` | Done — 42 tests |
+| Screening state machine | `services/screening/` | Done — 73 tests |
+| Syndication engine | `services/syndication/` | Done — 52 tests |
+| Compliance layer | `services/compliance/` | Done — 17 tests |
+| Security verification | `test/test_security_verification.py` | Done — 12 tests |
+| Talent pool scaffold | `services/talent_pools/` | Done |
+| AI Act compliance doc | `docs/AI_ACT_COMPLIANCE.md` | Done |
+| Verification methodology | `docs/VERIFICATION_METHODOLOGY.md` | Done |
+| Decisions log | `docs/DECISIONS.md` | Done (D-01 to D-25) |
+| Demo script | `docs/DEMO_SCRIPT.md` | Done |
+| Agency dashboard | `execo-bridge: src/pages/agency/AgencyDashboard.tsx` | Done |
+| Job create/edit | `execo-bridge: src/pages/agency/JobForm.tsx` | Done |
+| Jobs list | `execo-bridge: src/pages/agency/JobsList.tsx` | Done |
+| Pipeline board | `execo-bridge: src/pages/agency/PipelineBoard.tsx` | Done |
+| Candidate profile | `execo-bridge: src/pages/agency/CandidateProfile.tsx` | Done |
+| Screening review queue | `execo-bridge: src/pages/agency/ScreeningReview.tsx` | Done |
+| Compliance centre | `execo-bridge: src/pages/agency/ComplianceCentre.tsx` | Done |
+| Talent pools browser | `execo-bridge: src/pages/agency/TalentPools.tsx` | Done |
+| API client | `execo-bridge: src/lib/api-v1.ts` | Done |
+| Agency layout | `execo-bridge: src/components/layout/AgencyLayout.tsx` | Done |
+| Build verification | `vite build` passes (2782 modules, 0 errors) | Done |
+| Test verification | 196 backend tests passing | Done |
 
-## Files Created/Modified
+## Test Summary
 
-**New files:**
-- `services/matching/__init__.py`
-- `services/matching/models.py`
-- `services/matching/engine.py`
-- `services/screening/__init__.py`
-- `services/screening/models.py`
-- `services/screening/state_machine.py`
-- `services/screening/voice_interface.py`
-- `test/test_matching_engine.py` (50 synthetic candidates, 20 roles, 42 tests)
-- `test/test_screening_state_machine.py` (73 tests)
-- `docs/MARKET_SCOPE.md`
-- `docs/GAP_ANALYSIS.md`
-- `docs/TARGET_ARCHITECTURE.md`
-- `docs/DECISIONS.md`
-- `docs/SUMMARY.md`
-
-**Modified files:**
-- `config/app_config.py` — added `VOICE_MONITOR_ENABLED`
-- `routes/voice_monitor.py` — gated thread start behind config flag
-
-**Files NOT touched:**
-- `modules/match_finder.py` — untouched, backward compat preserved
-- `services/realtime_session_state.py` — untouched, voice pipeline preserved
-- All Twilio/voice/audio pipeline files — untouched per hard constraint
+| Suite | Tests | Time |
+|-------|-------|------|
+| Matching engine | 42 | <0.1s |
+| Screening state machine | 73 | <0.1s |
+| Syndication | 52 | <0.1s |
+| Compliance | 17 | <0.1s |
+| Security verification | 12 | <0.1s |
+| **Total** | **196** | **0.25s** |
