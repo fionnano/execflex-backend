@@ -1,6 +1,6 @@
-# Decisions Log — rebuild-core
+# Decisions Log — ExecFlex v1 Rebuild
 
-Decisions made during autonomous Phase 4 build. Numbered for reference.
+Decisions made during autonomous rebuild. Numbered for reference.
 
 ## D-01: New matching engine lives at `services/matching/`, not as a replacement for `modules/match_finder.py`
 
@@ -57,3 +57,51 @@ Passive candidates (open_to="passive") are still valid matches but slightly depr
 ## D-14: Compensation scoring uses candidate minimum ask vs role budget max
 
 The scorer checks if the candidate's minimum compensation expectation fits within the role's budget range. If there's overlap, it scores high. This reflects recruiter reality — the key question is "can we afford them" rather than exact bracket matching.
+
+---
+
+## Phase 1 Backend — rebuild-v1 decisions
+
+## D-15: IrishJobs adapter uses generic XML format (no public feed spec)
+
+IrishJobs doesn't publish a public XML feed specification. The adapter produces a generic `<jobs source="ExecFlex">` format with `<region>` extracted from location. If IrishJobs ever publishes a spec, swap the adapter implementation — the BoardAdapter protocol makes this a one-file change.
+
+## D-16: org_id from JWT only — never from request body
+
+All v1 API endpoints extract organization_id from JWT claims via `extract_org_context()`. No endpoint accepts org_id as a request parameter. This eliminates the entire class of org isolation bugs (S-003) by design. Verified by `test_security_verification.py::TestOrgIsolation`.
+
+## D-17: Human review gate blocks ALL automated terminal decisions, not just AI-initiated ones
+
+`require_human_review_for_reject()` blocks any reject/withdraw action that lacks an authenticated human user and a reason. This is stricter than what GDPR Art. 22 requires (which only covers "solely automated" decisions), but erring on the safe side for a high-risk system. The gate checks: (a) context exists with user_id, (b) reason provided and >= 3 chars.
+
+## D-18: Pay range required on every job posting — API rejects without it
+
+`POST /api/v1/jobs` returns 400 if `pay_range_min` or `pay_range_max` is missing. This implements the EU Pay Transparency Directive (2023/970) at the API layer so it's impossible to create a non-compliant posting. Adapters then include pay data in all syndication feeds.
+
+## D-19: Screening session state persisted as JSON, reconstructed on each API call
+
+`screening_sessions` table stores `questions`, `answers`, `transitions`, `current_state` as JSONB. Each API call (`/consent`, `/answer`, `/score`) restores the `ScreeningStateMachine` from stored JSON, processes the action, and saves back. This keeps the API stateless while preserving the full state machine semantics. Trade-off: JSON reconstruction is slower than in-memory, but correctness and crash-resilience outweigh the ~1ms overhead.
+
+## D-20: AI decision log records inputs and model — not just outcomes
+
+`ai_decision_log` stores `inputs_summary` (JSONB), `model_version` (TEXT), `score`, `explanation`, and `dimension_scores_json`. This satisfies EU AI Act Art. 12 record-keeping: the full decision context is auditable, not just the result. The `model_version` field will be "heuristic-v1" until LLM scoring ships.
+
+## D-21: Data rights requests are public-facing — no auth required to submit
+
+`POST /api/v1/compliance/data-rights` accepts requests without authentication so candidates who don't have accounts can exercise GDPR Art. 15/17 rights. The endpoint requires name, email, and request type. Processing is org-scoped and requires owner role.
+
+## D-22: Assessment adapter is Protocol-based, stub only in v1
+
+`AssessmentAdapter` is a structural typing Protocol like `Reranker`. The `StubAssessmentAdapter` always returns score 85.0 / passed=True. Real provider integrations (Codility, SHL) are Phase 2. The talent pool data model is in the migration but the "verified" workflow is scaffolded, not wired.
+
+## D-23: Google Indexing adapter produces JSON stubs, no real API calls
+
+The `GoogleIndexingStubAdapter` generates JSON payloads matching the Google Indexing API format but doesn't call the API. Real implementation needs OAuth2 service account credentials and is a Phase 2 integration. The stub lets us test the syndication pipeline end-to-end without credentials.
+
+## D-24: Pipeline stages are enum-based, not configurable per org
+
+Stages (`sourced → screened → shortlisted → interviewing → offered → placed → rejected → withdrawn`) are defined as a PostgreSQL enum type, not a per-org configuration table. This simplifies the pipeline board and ensures cross-org consistency. If agencies need custom stages, that's a v2 feature that would require migrating from enum to a stages table.
+
+## D-25: Security tests use file scanning, not Flask imports
+
+`test_security_verification.py` reads route source files as text and scans for dangerous patterns (debug endpoints, raw SQL, eval, bypass keywords). This avoids needing Flask installed in the test environment and catches patterns that runtime testing might miss. Trade-off: string scanning can have false positives, but the current patterns are precise enough.
