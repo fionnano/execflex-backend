@@ -105,3 +105,35 @@ Stages (`sourced → screened → shortlisted → interviewing → offered → p
 ## D-25: Security tests use file scanning, not Flask imports
 
 `test_security_verification.py` reads route source files as text and scans for dangerous patterns (debug endpoints, raw SQL, eval, bypass keywords). This avoids needing Flask installed in the test environment and catches patterns that runtime testing might miss. Trade-off: string scanning can have false positives, but the current patterns are precise enough.
+
+## D-26: Feature flags are env-var based, not per-org
+
+AI agent enablement uses `EXECFLEX_AI_*` environment variables (e.g. `EXECFLEX_AI_MATCH_RERANK=1`). Per-org flags would require a settings table, admin UI, and flag evaluation on every request. Cut for v1 — all orgs get the same flag state. Risk: can't A/B test or gradually roll out per-org. Mitigation: environment variables can be changed per-deployment.
+
+## D-27: agentic-core pinned to recruitment-agents branch, not tagged release
+
+ExecFlex consumes agentic-core's recruitment module via a branch reference, not a tagged release. Production consumption requires a proper v0.17.0 release through the two-consumer gate (transparency-platform must also pass). Tonight's branch pin is for development only.
+
+## D-28: LLM re-rank is advisory, deterministic score remains authoritative
+
+The MatchReRankAgent re-ranks candidates with reasoning but the deterministic composite score is the auditable, authoritative score. LLM output is logged as `ai_rerank` decision type and marked `ai_generated: true`. EU AI Act compliance requires the deterministic path to remain the decision basis.
+
+## D-29: Screening summary agent does not replace heuristic scoring
+
+The ScreeningSummaryAgent produces a structured assessment (strengths, gaps, flags, next_step) but does not replace the heuristic scoring state machine. Both run: heuristic produces the numeric score, LLM produces the qualitative summary. The human reviewer sees both.
+
+## D-30: CV parser uses Haiku (extraction tier), JD generator uses Sonnet (drafting tier)
+
+Model routing follows agentic-core's TaskType policy: EXTRACTION → Haiku ($1/$5 per Mtok), DRAFTING → Sonnet ($3/$15 per Mtok). CV parsing is mechanical extraction; JD generation requires creative output and quality control. Cost difference: ~3x per call.
+
+## D-31: Question flow is data, not an LLM agent
+
+The voice screening question flow module provides per-role configurable 5-question structures (general, technology, finance, executive) as pure data. No LLM call — the questions are static, curated by recruitment domain experts. The voice transport layer reads these questions; answers are later fed to the ScreeningSummaryAgent.
+
+## D-32: All AI-generated content marked in UI with visual indicator
+
+Frontend uses a Sparkles icon + "AI-Generated" badge on all AI-produced content (match rationale, screening summary, JD text). EU AI Act Art. 50 requires transparency when AI generates content users interact with. The indicator appears regardless of flag state — if content exists, it's marked.
+
+## D-33: Agent service fails gracefully — never blocks the deterministic path
+
+When an AI feature flag is on but the agent fails (API key missing, LLM error, timeout), the agent service returns `None` and the endpoint returns deterministic-only results. No user-visible error. Logged at ERROR level for ops. The deterministic path is never gated on LLM availability.

@@ -1,8 +1,38 @@
-# SUMMARY — ExecFlex v1 Rebuild
+# SUMMARY — ExecFlex v1 Rebuild + AI-First Integration
 
-Ten decisions the owner most needs to review, ordered by how wrong I might be.
+Fifteen decisions the owner most needs to review, ordered by how wrong I might be. Shared-library boundary decisions at the top per instructions.
 
 ---
+
+## 0a. agentic-core consumed via branch pin, not tagged release (D-27) — HIGH UNCERTAINTY
+
+ExecFlex pins agentic-core's `recruitment-agents` branch. Production requires a v0.17.0 release through the two-consumer gate (transparency-platform must also pass its suite). Tonight's branch pin is inherently fragile — a force-push to the branch breaks ExecFlex's install.
+
+**Risk:** Branch reference in requirements.txt is not reproducible. Must tag before any deploy.
+
+## 0b. Recruitment agents live in agentic-core, not ExecFlex (Architecture Decision) — MEDIUM-HIGH UNCERTAINTY
+
+Five recruitment agents (match re-rank, screening summary, CV parser, JD generator, question flow) were built INTO agentic-core as `agentic_core.agents.recruitment.*`, not in ExecFlex. This follows the owner's architecture decision: agentic-core is the shared library, ExecFlex is a consumer. But: these agents have zero consumers besides ExecFlex today. If they turn out to be ExecFlex-specific, they're in the wrong repo.
+
+**Risk:** Coupling ExecFlex-specific logic to the shared library. If a second consumer (hr-advisory-agent) doesn't need them, they should move.
+
+## 0c. Feature flags are env-var based, not per-org (D-26) — MEDIUM UNCERTAINTY
+
+All orgs see the same AI feature state. A fintech agency that wants AI re-ranking gets it at the same time as a tiny agency that doesn't. Per-org flags need a settings table and admin UI — both cut.
+
+**Risk:** Can't gradually roll out. First agency that complains about AI outputs has no per-org kill switch.
+
+## 0d. LLM agents fail gracefully but silently (D-33) — MEDIUM UNCERTAINTY
+
+When ANTHROPIC_API_KEY is missing or the LLM errors, the agent service returns None and the endpoint serves deterministic-only results. No user-visible error, no indicator that AI was supposed to run but didn't. The ops team sees ERROR logs but the recruiter sees nothing.
+
+**Risk:** "AI is enabled but doesn't seem to be doing anything" support tickets. Should add a status indicator showing whether the LLM actually ran.
+
+## 0e. Heuristic + LLM dual scoring, not LLM replacement (D-29) — MEDIUM UNCERTAINTY
+
+The ScreeningSummaryAgent supplements the heuristic scorer, doesn't replace it. Both run. The human reviewer sees two assessments: a number (heuristic) and a narrative (LLM). If they disagree, the reviewer must reconcile. This is intentionally conservative but may confuse users.
+
+**Risk:** Two conflicting signals. The heuristic says "proceed" (high numeric score) but the LLM summary says "decline" (identified critical gaps). Which does the reviewer trust?
 
 ## 1. Heuristic scoring instead of LLM scoring (D-06) — HIGH UNCERTAINTY
 
@@ -68,6 +98,8 @@ When a job is updated or closed, the syndication table records original submissi
 
 ## Deliverables Completed
 
+### Phase 1 — v1 Rebuild
+
 | Item | Location | Status |
 |------|----------|--------|
 | Data model migration | `supabase/migrations/20260704_rebuild_v1_schema.sql` | Done |
@@ -81,20 +113,41 @@ When a job is updated or closed, the syndication table records original submissi
 | Talent pool scaffold | `services/talent_pools/` | Done |
 | AI Act compliance doc | `docs/AI_ACT_COMPLIANCE.md` | Done |
 | Verification methodology | `docs/VERIFICATION_METHODOLOGY.md` | Done |
-| Decisions log | `docs/DECISIONS.md` | Done (D-01 to D-25) |
+| Decisions log | `docs/DECISIONS.md` | Done (D-01 to D-33) |
 | Demo script | `docs/DEMO_SCRIPT.md` | Done |
-| Agency dashboard | `execo-bridge: src/pages/agency/AgencyDashboard.tsx` | Done |
-| Job create/edit | `execo-bridge: src/pages/agency/JobForm.tsx` | Done |
-| Jobs list | `execo-bridge: src/pages/agency/JobsList.tsx` | Done |
-| Pipeline board | `execo-bridge: src/pages/agency/PipelineBoard.tsx` | Done |
-| Candidate profile | `execo-bridge: src/pages/agency/CandidateProfile.tsx` | Done |
-| Screening review queue | `execo-bridge: src/pages/agency/ScreeningReview.tsx` | Done |
-| Compliance centre | `execo-bridge: src/pages/agency/ComplianceCentre.tsx` | Done |
-| Talent pools browser | `execo-bridge: src/pages/agency/TalentPools.tsx` | Done |
-| API client | `execo-bridge: src/lib/api-v1.ts` | Done |
-| Agency layout | `execo-bridge: src/components/layout/AgencyLayout.tsx` | Done |
-| Build verification | `vite build` passes (2782 modules, 0 errors) | Done |
-| Test verification | 196 backend tests passing | Done |
+
+### Phase 2 — AI-First Integration (agentic-core)
+
+| Item | Location | Status |
+|------|----------|--------|
+| Match re-rank agent (REASONING) | `agentic-core: agents/recruitment/match_rerank.py` | Done |
+| Screening summary agent (REASONING) | `agentic-core: agents/recruitment/screening_summary.py` | Done |
+| CV parser agent (EXTRACTION/Haiku) | `agentic-core: agents/recruitment/cv_parser.py` | Done |
+| JD generator agent (DRAFTING/Sonnet) | `agentic-core: agents/recruitment/jd_generator.py` | Done |
+| Question flow data module | `agentic-core: agents/recruitment/question_flow.py` | Done |
+| Prompt templates (4) | `agentic-core: agents/recruitment/prompts/*.md` | Done |
+| Agent test suite (108 new) | `agentic-core: tests/test_*.py` | Done — 605 total |
+
+### Phase 2 — AI-First Integration (ExecFlex consumer)
+
+| Item | Location | Status |
+|------|----------|--------|
+| Feature flag system | `services/ai/feature_flags.py` | Done |
+| Agent service layer | `services/ai/agent_service.py` | Done |
+| AI API endpoints | `routes/api_v1/ai.py` | Done |
+| Match re-rank wiring | `routes/api_v1/matches.py` | Done |
+| Screening summary wiring | `routes/api_v1/screens.py` | Done |
+| AI feature flag tests | `test/test_ai_feature_flags.py` | Done — 21 tests |
+
+### Phase 2 — Frontend AI Surfacing (execo-bridge)
+
+| Item | Location | Status |
+|------|----------|--------|
+| AI types + API client | `execo-bridge: src/lib/api-v1.ts` | Done |
+| AI screening summary card | `execo-bridge: src/pages/agency/CandidateProfile.tsx` | Done |
+| AI match rationale card | `execo-bridge: src/pages/agency/CandidateProfile.tsx` | Done |
+| JD generator button + UI | `execo-bridge: src/pages/agency/JobForm.tsx` | Done |
+| Build verification | `vite build` passes | Done |
 
 ## Test Summary
 
@@ -105,4 +158,15 @@ When a job is updated or closed, the syndication table records original submissi
 | Syndication | 52 | <0.1s |
 | Compliance | 17 | <0.1s |
 | Security verification | 12 | <0.1s |
-| **Total** | **196** | **0.25s** |
+| AI feature flags | 21 | <0.1s |
+| **ExecFlex total** | **217** | **<0.3s** |
+
+| Suite (agentic-core) | Tests | Time |
+|----------------------|-------|------|
+| Match re-rank agent | ~25 | <0.1s |
+| Screening summary agent | ~20 | <0.1s |
+| CV parser agent | ~20 | <0.1s |
+| JD generator agent | ~20 | <0.1s |
+| Question flow data | ~23 | <0.1s |
+| **New recruitment agent tests** | **~108** | **<0.2s** |
+| **agentic-core total** | **605** | **<1s** |
