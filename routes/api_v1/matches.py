@@ -83,22 +83,50 @@ def run_match():
                               for k, v in r.explanation.dimension_scores.items()},
         )
 
-    return api_ok({
+    matches_list = [
+        {
+            "rank": r.rank,
+            "candidate_id": r.candidate.id,
+            "candidate_name": r.candidate.name,
+            "score": r.score,
+            "summary": r.explanation.summary,
+            "dimensions": {
+                k: {"score": round(v.score, 1), "reason": v.reason}
+                for k, v in r.explanation.dimension_scores.items()
+            },
+        }
+        for r in results
+    ]
+
+    from services.ai.agent_service import rerank_matches
+    ai_rerank = rerank_matches(
+        job={
+            "title": job_data.get("title", ""),
+            "description": job_data.get("description", ""),
+            "location": job_data.get("location", ""),
+            "industry": job_data.get("industry", ""),
+            "skills": job_data.get("metadata", {}).get("required_skills", []),
+        },
+        candidates=matches_list[:10],
+    )
+
+    response = {
         "job_id": job_id,
         "job_title": job_data.get("title"),
         "match_count": len(results),
-        "matches": [
-            {
-                "rank": r.rank,
-                "candidate_id": r.candidate.id,
-                "candidate_name": r.candidate.name,
-                "score": r.score,
-                "summary": r.explanation.summary,
-                "dimensions": {
-                    k: {"score": round(v.score, 1), "reason": v.reason}
-                    for k, v in r.explanation.dimension_scores.items()
-                },
-            }
-            for r in results
-        ],
-    })
+        "matches": matches_list,
+    }
+
+    if ai_rerank:
+        response["ai_rerank"] = ai_rerank
+        log_decision(
+            org_id=ctx.org_id,
+            decision_type="ai_rerank",
+            opportunity_id=job_id,
+            model_used="claude-sonnet-4-5",
+            score=0,
+            explanation=ai_rerank.get("reasoning_summary", ""),
+            inputs={"candidate_count": len(matches_list[:10])},
+        )
+
+    return api_ok(response)

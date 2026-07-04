@@ -16,4 +16,5 @@ from routes.api_v1 import (  # noqa
     syndication,
     compliance,
     talent_pools,
+    ai,
 )

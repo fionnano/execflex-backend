@@ -140,6 +140,31 @@ def score_screen(session_id):
             explanation=outcome.summary,
         )
 
+        from services.ai.agent_service import summarise_screening
+        transcript = [
+            {"question": q.text, "answer": a.response_text}
+            for q, a in zip(session.questions, session.answers)
+        ]
+        candidate_name = session_data.get("candidate_id", "Unknown")
+        role_title = session_data.get("opportunity_id", "Unknown Role")
+        ai_summary = summarise_screening(
+            candidate_name=candidate_name,
+            role_title=role_title,
+            transcript=transcript,
+            screening_score=outcome.overall_score,
+        )
+        if ai_summary:
+            outcome_data["ai_summary"] = ai_summary
+            log_decision(
+                org_id=ctx.org_id,
+                decision_type="ai_screening_summary",
+                candidate_id=session_data.get("candidate_id"),
+                opportunity_id=session_data.get("opportunity_id"),
+                model_used="claude-sonnet-4-5",
+                score=outcome.overall_score,
+                explanation=ai_summary.get("one_line_summary", ""),
+            )
+
     _save_session(ctx.org_id, session_id, session, sm)
     return api_ok({"state": sm.state.value, "outcome": outcome_data})
 
