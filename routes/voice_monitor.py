@@ -263,8 +263,13 @@ def _monitor_loop():
         time.sleep(_PROBE_INTERVAL)
 
 
-_monitor_thread = threading.Thread(target=_monitor_loop, daemon=True)
-_monitor_thread.start()
+from config.app_config import VOICE_MONITOR_ENABLED
+
+if VOICE_MONITOR_ENABLED:
+    _monitor_thread = threading.Thread(target=_monitor_loop, daemon=True)
+    _monitor_thread.start()
+else:
+    print("[VoiceMonitor] Disabled via VOICE_MONITOR_ENABLED=false", flush=True)
 
 
 # ── Health endpoint ──────────────────────────────────────────────────────────

@@ -56,6 +56,9 @@ PDL_API_KEY = os.getenv("PDL_API_KEY")
 POSTHOG_API_KEY = os.getenv("POSTHOG_API_KEY")
 POSTHOG_HOST = os.getenv("POSTHOG_HOST", "https://eu.i.posthog.com")
 
+# Voice monitor (set to "false" to disable the Cara uptime monitor)
+VOICE_MONITOR_ENABLED = os.getenv("VOICE_MONITOR_ENABLED", "true").lower() == "true"
+
 
 def validate_config():
     """Validate required configuration."""
