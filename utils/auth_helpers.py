@@ -54,11 +54,15 @@ def get_authenticated_user_id() -> Tuple[Optional[str], Optional[str]]:
         - If not authenticated: (None, error_message)
     """
     import os
-    # 1. Smoke-test bypass for CI/pipeline
+    # 1. Smoke-test bypass for CI/pipeline — NEVER enable in production
     smoke_secret = os.getenv("SMOKE_TEST_BYPASS_SECRET")
     smoke_user_id = os.getenv("SMOKE_TEST_USER_ID")
     if smoke_secret and smoke_user_id:
-        if request.headers.get("X-Smoke-Test") == smoke_secret:
+        if os.getenv("FLASK_ENV") == "production" or os.getenv("APP_ENV") == "production":
+            if not getattr(get_authenticated_user_id, "_warned_smoke_prod", False):
+                print("SECURITY WARNING: SMOKE_TEST_BYPASS_SECRET is set in production — ignoring it")
+                get_authenticated_user_id._warned_smoke_prod = True
+        elif request.headers.get("X-Smoke-Test") == smoke_secret:
             return smoke_user_id, None
 
     # 2. Service-to-service key (e.g. Ainm backend calling ExecFlex)
