@@ -128,6 +128,20 @@ When a job is updated or closed, the syndication table records original submissi
 
 ---
 
+## C-6. ISO 27001 SoA maps 93 controls but implementation is self-assessed — MEDIUM UNCERTAINTY
+
+Self-assessed 93 Annex A controls: 15 fully implemented, 40 partial, 15 not implemented, 23 not applicable. The "implemented" assessments are based on code evidence (tests, auth middleware, HTTPS), not an external audit. An auditor may downgrade several "implemented" ratings.
+
+**Risk:** Overconfident status claims. Several "IMPLEMENTED" controls (A.5.15 access control, A.8.28 secure coding) are strong but have no third-party verification.
+
+## C-7. 28-item gap list prioritises credential rotation above all else — LOW-MEDIUM UNCERTAINTY
+
+GAP_LIST.md ranks G-001 (rotate exposed credentials) as the #1 blocker. This aligns with R-001 (score 15, highest in risk register). But the recommended "this week" timeline is aggressive — git history scrubbing requires coordination and may break CI/CD if done carelessly.
+
+**Risk:** Credential rotation is critical but complex. A rushed rotation could lock out running services.
+
+---
+
 ## Deliverables Completed
 
 ### Phase 1 — v1 Rebuild
@@ -225,6 +239,43 @@ When a job is updated or closed, the syndication table records original submissi
 | ESTATE_MAP.md | `execflex-backend/ESTATE_MAP.md` | Done |
 | PROD_CLEANUP.md | `execflex-backend/PROD_CLEANUP.md` | Done |
 
+### Session 2 — Security Hardening (Phases 1-2)
+
+| Item | Location | Status |
+|------|----------|--------|
+| Snapshot rate limiter | `governance-platform: backend/app/core/rate_limiter.py` | Done |
+| Snapshot input validation | `governance-platform: backend/app/routers/snapshot.py` | Done |
+| Auth rate limiting | `governance-platform: backend/app/routers/auth.py` | Done |
+| Smoke test production guard | `execflex-backend: utils/auth_helpers.py` | Done |
+| SECURITY_CLOSURE.md | `execflex-backend/SECURITY_CLOSURE.md` | Done |
+
+### Session 2 — Governance-Platform Overhaul
+
+| Item | Location | Status |
+|------|----------|--------|
+| Model routing (env-var configurable) | `governance-platform: backend/app/services/ai_service.py` | Done |
+| Structured logging + PII sanitizer | `governance-platform: backend/app/core/logging_config.py` | Done |
+| Shared `_complete()` LLM wrapper | `governance-platform: backend/app/services/ai_service.py` | Done |
+| Test suite (42 tests) | `governance-platform: backend/tests/` | Done |
+
+### Session 2 — ISO 27001 + 42001 Scaffold
+
+| Item | Location | Status |
+|------|----------|--------|
+| Statement of Applicability (93 controls) | `execflex-backend/iso/STATEMENT_OF_APPLICABILITY.md` | Done |
+| Asset Register | `execflex-backend/iso/ASSET_REGISTER.md` | Done |
+| Risk Register (20 risks, L×I scoring) | `execflex-backend/iso/RISK_REGISTER.md` | Done |
+| Incident Response Policy | `execflex-backend/iso/INCIDENT_RESPONSE.md` | Done |
+| Change Management Policy | `execflex-backend/iso/CHANGE_MANAGEMENT.md` | Done |
+| AI Management System (ISO 42001) | `execflex-backend/iso/AI_MANAGEMENT_SYSTEM_42001.md` | Done |
+| Gap List (28 gaps, prioritised) | `execflex-backend/iso/GAP_LIST.md` | Done |
+
+### Session 2 — Defect Fixes
+
+| Item | Location | Status |
+|------|----------|--------|
+| List numbering in DFY pack PDFs | `transparency-platform: backend/app/services/dfy_pack_pdf.py` | Done |
+
 ## Test Summary
 
 | Suite | Tests | Time |
@@ -253,13 +304,23 @@ When a job is updated or closed, the syndication table records original submissi
 | **New compliance tests** | **~131** | **<0.3s** |
 | **agentic-core total** | **736** | **<1s** |
 
+| Suite (governance-platform) | Tests | Time |
+|-----------------------------|-------|------|
+| Snapshot scorer | 17 | <0.1s |
+| Prohibited practices | 13 | <0.1s |
+| Rate limiter | 5 | <0.1s |
+| Logging sanitizer | 6 | <0.1s |
+| **governance-platform total** | **42** | **<0.1s** |
+
 ## Branch Map
 
 | Repo | Branch | Head | Status |
 |------|--------|------|--------|
-| execflex-backend | rebuild-v1 | 277d518 | PROD_CLEANUP.md committed |
-| agentic-core | recruitment-agents | 525c8c4 | compliance module committed |
-| execo-bridge | rebuild-v1 | 06e46ed | consistency pass committed |
-| hr-advisory-agent | cara-privacy | 117b73c | privacy toggle committed |
-| governance-platform | (READ-ONLY) | — | not touched |
-| transparency-platform | (untouched) | — | not touched |
+| execflex-backend | rebuild-v1 | d7c66be | ISO scaffold committed |
+| execflex-backend | security-hardening | b7a077a | Smoke test guard + SECURITY_CLOSURE.md |
+| agentic-core | recruitment-agents | 525c8c4 | Compliance module committed |
+| execo-bridge | rebuild-v1 | 06e46ed | Consistency pass committed |
+| hr-advisory-agent | cara-privacy | 117b73c | Privacy toggle committed |
+| governance-platform | security-hardening | 7bf6d5d | Rate limiting + input validation |
+| governance-platform | overhaul-2026-07 | 98951f5 | Model routing + tests + logging |
+| transparency-platform | defect-fixes | 116769e | DFY pack list-numbering fix |

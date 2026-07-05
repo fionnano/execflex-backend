@@ -173,3 +173,43 @@ Added a sixth feature flag (`EXECFLEX_AI_COMPLIANCE_CHECK`) controlling `POST /a
 ## D-41: Frontend compliance UI uses 5-question snapshot form, not full Stage D assessment
 
 The AI Act Snapshot tab in ComplianceCentre uses a simplified 5-question form (uses_ai, business_functions, affects_people, in_eu, has_documentation) — not the full multi-stage assessment from governance-platform. This is intentional: the snapshot is a quick-check tool, not a compliance certification. Full assessment remains in governance-platform until a dedicated workflow is built.
+
+---
+
+## Session 2 — Security + Overhaul + ISO Decisions
+
+## D-42: In-memory sliding-window rate limiter, not Redis-backed
+
+governance-platform rate limiting uses an in-memory `RateLimiter` class with `threading.Lock`. Chosen over Redis to avoid adding infrastructure dependencies to a single-process deployment. Trade-off: rate limits reset on process restart, and don't work across multiple workers. Acceptable for current single-box deployment.
+
+## D-43: Snapshot input validation uses allowlists, not schema validation
+
+`_validate_answers()` checks each answer field against a static set of valid values (`VALID_AI_CHOICES`, `VALID_FUNCTIONS`, `VALID_YESNO`, `VALID_DOCS`). Chosen over JSON Schema or Pydantic validation because the answer structure is a flat dict of enum fields — a full validation library adds complexity without benefit. If the answer format changes, update the sets.
+
+## D-44: Smoke test bypass disabled in production via env var check, not removed
+
+The smoke test bypass header (`X-Smoke-Test`) is needed for CI/CD but is dangerous in production. Rather than removing it (breaking CI), added a production guard that checks `FLASK_ENV=production` or `APP_ENV=production` and ignores the bypass header in that case. This preserves the CI workflow while closing the production attack vector.
+
+## D-45: governance-platform model routing via env vars, not agentic-core ModelRouter
+
+The overhaul-2026-07 branch migrates from hardcoded `claude-opus-4-6` to `GOV_MODEL_HAIKU` / `GOV_MODEL_SONNET` env vars with sensible defaults. Did NOT import agentic-core's `ModelRouter` — governance-platform doesn't depend on agentic-core and adding that dependency for model routing alone would couple the standalone to the shared library prematurely. TaskType convention is followed (SYNTHESIS→Haiku, REASONING→Sonnet) without the import.
+
+## D-46: PII sanitizer strips emails, phones, API keys from all log output
+
+`SanitizerFilter` is a `logging.Filter` that applies regex substitution on every log record before emission. Strips email addresses, phone numbers, and API key prefixes. Applied to all handlers via `configure_logging()`. Trade-off: regex-based sanitization has edge cases (e.g., URLs containing @ signs), but false-positive redaction is safer than false-negative leakage.
+
+## D-47: ISO SoA self-assessment — 15 "IMPLEMENTED" controls based on code evidence
+
+Self-assessed 93 ISO 27001:2022 Annex A controls. "IMPLEMENTED" status assigned only when code evidence exists (e.g., A.8.28 secure coding → parameterised queries + input validation, verified by tests). An external auditor may disagree on status levels, particularly for controls where "implemented" means "the code does this" rather than "a formal policy mandates and monitors this."
+
+## D-48: Risk register scores credentials-exposed as highest priority (R-001, score 15)
+
+20 risks scored on L×I (1-5 scales). R-001 (credentials in git history) scored L=3 × I=5 = 15. This is the single highest risk. Six items scored 12: single-box deployment, no credential rotation, Cara privacy, DPIA, no MFA. Treatment plan recommends credential rotation within one week.
+
+## D-49: ISO 42001 AI inventory counts 64 AI capabilities across 5 systems
+
+Counted all AI capabilities: 57 agents (from CANONICAL_AGENT_COUNT) + 7 governance-platform AI functions = 64. Classified ExecFlex recruitment agents (AI-002) as high-risk under EU AI Act Annex III, 4(a). GovCompli AI service (AI-005) classified as low-risk since it assists with compliance assessment, not employment decisions.
+
+## D-50: DFY pack list-numbering fix preserves original numbers via ListItem `value` param
+
+transparency-platform's `dfy_pack_pdf.py` had a defect where `bulletType="1"` auto-numbered from 1, discarding the original numbering in agent-generated markdown. Fix captures the original number with `r"^(\d+)\. (.*)$"` and passes it as `value=num` to each `ListItem`. Also collects continuation lines into the preceding item to prevent multi-paragraph items from splitting into orphaned text blocks.
