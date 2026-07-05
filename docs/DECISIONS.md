@@ -1,6 +1,6 @@
-# Decisions Log — ExecFlex v1 Rebuild
+# Decisions Log — ExecFlex v1 Rebuild + Estate Consolidation
 
-Decisions made during autonomous rebuild. Numbered for reference.
+Decisions made during autonomous rebuild and consolidation. Numbered for reference.
 
 ## D-01: New matching engine lives at `services/matching/`, not as a replacement for `modules/match_finder.py`
 
@@ -137,3 +137,39 @@ Frontend uses a Sparkles icon + "AI-Generated" badge on all AI-produced content 
 ## D-33: Agent service fails gracefully — never blocks the deterministic path
 
 When an AI feature flag is on but the agent fails (API key missing, LLM error, timeout), the agent service returns `None` and the endpoint returns deterministic-only results. No user-visible error. Logged at ERROR level for ops. The deterministic path is never gated on LLM availability.
+
+---
+
+## Phase 3 — Estate Consolidation Decisions
+
+## D-34: Compliance module replaces governance-platform AI functions with 5 clean agents
+
+governance-platform's `ai_service.py` has 7 interleaved functions with hardcoded model names. Ported to agentic-core as `agents/compliance/` with a clear separation: 2 pure-logic modules (prohibited_practices, snapshot_scorer) and 3 LLM-powered agents (RiskSummaryAgent, ScoringEngineAgent, SnapshotGapsAgent). The scoring algorithm was rewritten — weights differ from the original. Pure-logic modules require no LLM calls and can run offline.
+
+## D-35: Compliance module gated behind multi-consumer requirement
+
+Production consumption requires all three test suites passing: transparency-platform (231), ExecFlex (217), and new compliance tests (131). This is stated in `agentic_core/agents/compliance/__init__.py` docstring. The gate prevents a compliance-module merge from breaking transparency-platform's consumption of agentic-core primitives.
+
+## D-36: Transcript privacy toggle defaults to OFF (GDPR-safe)
+
+Cara (hr-advisory-agent) admin transcript visibility defaults to `False`. Admins viewing other employees' conversations see `ConversationAggregateOut` (id, module_type, status, created_at, message_count, topic_summary) — no message content. This protects employee-initiated HR conversations (grievances, mental health) from employer surveillance. Toggle is per-company via `Company.settings["admin_transcript_visibility"]`.
+
+## D-37: governance-platform RAG service has no agentic-core equivalent — documented, not ported
+
+ChromaDB-based RAG (375-word chunks, 38-word overlap) used for Stage D assessment completion. Deliberate decision NOT to port tonight — RAG requires infrastructure decisions (vector store choice, embedding model, chunking strategy) that shouldn't be made under time pressure. Documented in PROD_CLEANUP.md as a prerequisite before governance-platform decommissioning.
+
+## D-38: AI badges on all pending decision cards (Art. 14 transparency)
+
+Added Sparkles icon + blue "AI" badge to all pending AI decision cards across AgencyDashboard, ScreeningReview, and ComplianceCentre. EU AI Act Art. 14 requires that human overseers can identify AI-generated outputs. The badge is visual-only (no functional gate) — it signals "this needs human review" without blocking workflow.
+
+## D-39: EXECFLEX_AI_COMPLIANCE_CHECK flag controls all compliance agent endpoints
+
+Added a sixth feature flag (`EXECFLEX_AI_COMPLIANCE_CHECK`) controlling `POST /ai/compliance/snapshot` and `POST /ai/compliance/prohibited-check`. Off by default. Independent of other AI flags — compliance can be enabled without enabling match re-rank or screening summary.
+
+## D-40: Compliance snapshot endpoint runs both scorer and gaps agent in one call
+
+`POST /ai/compliance/snapshot` runs `calculate_snapshot_score` (pure logic, always) and `snapshot_gaps` (LLM-powered, when flag on). Returns combined result. If the gaps agent fails, the response still includes the score with `gaps: null`. This keeps the endpoint useful even without LLM availability.
+
+## D-41: Frontend compliance UI uses 5-question snapshot form, not full Stage D assessment
+
+The AI Act Snapshot tab in ComplianceCentre uses a simplified 5-question form (uses_ai, business_functions, affects_people, in_eu, has_documentation) — not the full multi-stage assessment from governance-platform. This is intentional: the snapshot is a quick-check tool, not a compliance certification. Full assessment remains in governance-platform until a dedicated workflow is built.

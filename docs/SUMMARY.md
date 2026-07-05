@@ -1,6 +1,38 @@
-# SUMMARY — ExecFlex v1 Rebuild + AI-First Integration
+# SUMMARY — ExecFlex v1 Rebuild + AI-First Integration + Estate Consolidation
 
-Fifteen decisions the owner most needs to review, ordered by how wrong I might be. Shared-library boundary decisions at the top per instructions.
+Decisions the owner most needs to review, ordered by how wrong I might be. Fold-boundary calls (shared-library, compliance module, privacy) at the top.
+
+---
+
+## C-1. Compliance module replaces governance-platform's 7 functions with 5 agents (D-34) — HIGH UNCERTAINTY
+
+Ported governance-platform's AI Act assessment engine into agentic-core as `agents/compliance/`. Replaced 7 interwoven service functions with 5 clean agents: 2 pure logic (prohibited practices, snapshot scorer) + 3 LLM-powered (risk summary, scoring engine, snapshot gaps). The rewrite changes the scoring algorithm — governance-platform's `_calculate_risk_score` uses different weights than the new `calculate_snapshot_score`. Any org comparing old vs new scores will see different numbers.
+
+**Risk:** Score drift between governance-platform and the new compliance module. Existing governance-platform users may question why their score changed. Should document the delta before decommissioning governance-platform.
+
+## C-2. Compliance module multi-consumer gate — not production-consumable yet (D-35) — HIGH UNCERTAINTY
+
+Production consumption of the compliance module requires: transparency-platform suite passes (231 tests), ExecFlex suite passes (217 tests), AND new compliance tests pass (131 tests). Tonight's work is on `recruitment-agents` branch only. A premature merge could break transparency-platform's consumption of agentic-core.
+
+**Risk:** Branch divergence. The longer `recruitment-agents` stays unmerged, the harder the merge becomes.
+
+## C-3. Cara transcript privacy defaults to OFF — GDPR-safe but limits admin visibility (D-36) — MEDIUM-HIGH UNCERTAINTY
+
+Admin transcript visibility for Cara (ainm/hr-advisory-agent) defaults to False. Admins see aggregate-only views (message count, topic summary) for other employees' conversations. This is GDPR-safe but means an employer investigating a legitimate HR concern (e.g. misconduct investigation with legal basis) cannot access transcripts without first toggling the setting.
+
+**Risk:** Employers may expect access by default. The toggle is per-company, not per-conversation — it's all-or-nothing. A more nuanced approach (per-conversation access with legal basis documentation) would be safer but was cut for scope.
+
+## C-4. governance-platform RAG capability has no agentic-core equivalent (D-37) — MEDIUM UNCERTAINTY
+
+governance-platform has a ChromaDB-backed RAG service used for Stage D assessment completion. No equivalent exists in agentic-core. If governance-platform is decommissioned before a RAG primitive is built, document intelligence is lost.
+
+**Risk:** Decommissioning governance-platform prematurely. RAG primitive is a prerequisite.
+
+## C-5. Frontend AI badges assume all unreviewed decisions are AI-generated (D-38) — LOW-MEDIUM UNCERTAINTY
+
+The consistency pass added Sparkles + "AI" badges to all pending decision cards on AgencyDashboard, ScreeningReview, and ComplianceCentre. In practice, ALL decisions in the log ARE AI-generated (the compliance layer only logs AI-initiated decisions). But if manual decisions are ever logged, they'll also show the AI badge.
+
+**Risk:** Misleading if non-AI decisions enter the log. The fix is to check `ai_generated` field on each decision, but the field isn't surfaced in the current API response.
 
 ---
 
@@ -149,6 +181,50 @@ When a job is updated or closed, the syndication table records original submissi
 | JD generator button + UI | `execo-bridge: src/pages/agency/JobForm.tsx` | Done |
 | Build verification | `vite build` passes | Done |
 
+### Phase 3 — Estate Consolidation: Compliance Module (agentic-core)
+
+| Item | Location | Status |
+|------|----------|--------|
+| Prohibited practices checker (pure logic) | `agentic-core: agents/compliance/prohibited_practices.py` | Done |
+| Snapshot scorer (pure logic) | `agentic-core: agents/compliance/snapshot_scorer.py` | Done |
+| Risk summary agent (LLM/SYNTHESIS) | `agentic-core: agents/compliance/risk_summary.py` | Done |
+| Scoring engine agent (LLM/REASONING) | `agentic-core: agents/compliance/scoring_engine.py` | Done |
+| Snapshot gaps agent (LLM/REASONING) | `agentic-core: agents/compliance/snapshot_gaps.py` | Done |
+| Compliance test suite (131 new) | `agentic-core: tests/test_compliance_*.py` | Done |
+
+### Phase 3 — Estate Consolidation: ExecFlex Compliance Wiring
+
+| Item | Location | Status |
+|------|----------|--------|
+| Compliance feature flag | `services/ai/feature_flags.py` | Done |
+| Compliance agent service | `services/ai/agent_service.py` | Done |
+| Compliance API endpoints | `routes/api_v1/ai.py` | Done |
+
+### Phase 3 — Frontend Consistency Pass (execo-bridge)
+
+| Item | Location | Status |
+|------|----------|--------|
+| Error states on 4 pages | PipelineBoard, ScreeningReview, ComplianceCentre, AgencyDashboard | Done |
+| AI badges on pending decisions | AgencyDashboard, ScreeningReview, ComplianceCentre | Done |
+| AI Act Snapshot tab | ComplianceCentre (5-question form + score display + gaps) | Done |
+| Compliance API types | `src/lib/api-v1.ts` | Done |
+| Build verification | `vite build` + `tsc --noEmit` pass | Done |
+
+### Phase 4 — Cara Transcript Privacy (hr-advisory-agent)
+
+| Item | Location | Status |
+|------|----------|--------|
+| Aggregate-only schema | `backend/app/modules/faq/schemas.py` | Done |
+| Privacy helper + endpoint guards | `backend/app/modules/faq/router.py` | Done |
+| Privacy settings GET/PUT endpoints | `backend/app/modules/faq/router.py` | Done |
+
+### Phase 4 — Production Hygiene Audit
+
+| Item | Location | Status |
+|------|----------|--------|
+| ESTATE_MAP.md | `execflex-backend/ESTATE_MAP.md` | Done |
+| PROD_CLEANUP.md | `execflex-backend/PROD_CLEANUP.md` | Done |
+
 ## Test Summary
 
 | Suite | Tests | Time |
@@ -168,5 +244,22 @@ When a job is updated or closed, the syndication table records original submissi
 | CV parser agent | ~20 | <0.1s |
 | JD generator agent | ~20 | <0.1s |
 | Question flow data | ~23 | <0.1s |
-| **New recruitment agent tests** | **~108** | **<0.2s** |
-| **agentic-core total** | **605** | **<1s** |
+| Prohibited practices | 18 | <0.1s |
+| Snapshot scorer | 28 | <0.1s |
+| Risk summary agent | ~20 | <0.1s |
+| Scoring engine agent | ~30 | <0.1s |
+| Snapshot gaps agent | ~20 | <0.1s |
+| **New recruitment tests** | **~108** | **<0.2s** |
+| **New compliance tests** | **~131** | **<0.3s** |
+| **agentic-core total** | **736** | **<1s** |
+
+## Branch Map
+
+| Repo | Branch | Head | Status |
+|------|--------|------|--------|
+| execflex-backend | rebuild-v1 | 277d518 | PROD_CLEANUP.md committed |
+| agentic-core | recruitment-agents | 525c8c4 | compliance module committed |
+| execo-bridge | rebuild-v1 | 06e46ed | consistency pass committed |
+| hr-advisory-agent | cara-privacy | 117b73c | privacy toggle committed |
+| governance-platform | (READ-ONLY) | — | not touched |
+| transparency-platform | (untouched) | — | not touched |
