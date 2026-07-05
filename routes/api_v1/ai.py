@@ -147,3 +147,71 @@ def list_question_flows():
         return api_ok({"role_types": list_role_types()})
     except ImportError:
         return api_error("agentic-core not available", 500)
+
+
+@api_v1_bp.route('/ai/compliance/snapshot', methods=['POST'])
+@require_org()
+def compliance_snapshot():
+    """Run an EU AI Act snapshot self-assessment.
+
+    Requires EXECFLEX_AI_COMPLIANCE_CHECK=1.
+    Returns deterministic risk score + LLM-generated gap statements.
+    Output includes ai_generated: true for EU AI Act Art. 50 transparency.
+    """
+    from services.ai.feature_flags import compliance_check_enabled
+    if not compliance_check_enabled():
+        return api_error("Compliance check not enabled", 404)
+
+    data = request.get_json()
+    if not data:
+        return api_error("Request body required", 400)
+
+    uses_ai = data.get("uses_ai")
+    if not uses_ai:
+        return api_error("uses_ai is required", 400)
+
+    kwargs = {
+        "uses_ai": uses_ai,
+        "business_functions": data.get("business_functions"),
+        "affects_people": data.get("affects_people", "no"),
+        "in_eu": data.get("in_eu", "no"),
+        "has_documentation": data.get("has_documentation", "no"),
+    }
+
+    from services.ai.agent_service import snapshot_score, snapshot_gaps
+    score_result = snapshot_score(**kwargs)
+    if score_result is None:
+        return api_error("Snapshot scoring failed — check logs", 500)
+
+    gaps_result = snapshot_gaps(**kwargs)
+
+    return api_ok({
+        "score": score_result,
+        "gaps": gaps_result,
+        "ai_generated": True,
+    })
+
+
+@api_v1_bp.route('/ai/compliance/prohibited-check', methods=['POST'])
+@require_org()
+def compliance_prohibited_check():
+    """Check answers against EU AI Act Article 5 prohibited practices.
+
+    Requires EXECFLEX_AI_COMPLIANCE_CHECK=1.
+    Pure logic — no LLM call. Returns hard-stop, prohibited, and
+    high-risk flags with article references.
+    """
+    from services.ai.feature_flags import compliance_check_enabled
+    if not compliance_check_enabled():
+        return api_error("Compliance check not enabled", 404)
+
+    data = request.get_json()
+    if not data or not data.get("answers"):
+        return api_error("answers object is required", 400)
+
+    from services.ai.agent_service import check_prohibited_practices
+    result = check_prohibited_practices(data["answers"])
+    if result is None:
+        return api_error("Prohibited practices check failed — check logs", 500)
+
+    return api_ok(result)

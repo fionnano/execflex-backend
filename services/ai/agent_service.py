@@ -20,6 +20,7 @@ from services.ai.feature_flags import (
     cv_parser_enabled,
     jd_generator_enabled,
     question_flow_enabled,
+    compliance_check_enabled,
 )
 
 logger = logging.getLogger("execflex.ai.agent_service")
@@ -230,4 +231,101 @@ def get_question_flow_data(role_type: str) -> dict[str, Any] | None:
         return flow.to_dict()
     except Exception:
         logger.exception("Question flow lookup failed")
+        return None
+
+
+def check_prohibited_practices(
+    answers: dict[str, str],
+) -> dict[str, Any] | None:
+    """Check answers against EU AI Act Article 5 prohibited practices.
+
+    Pure logic — no LLM call. Returns None if flag off.
+    """
+    if not compliance_check_enabled():
+        return None
+
+    try:
+        from agentic_core.agents.compliance import check_prohibited_practices as run_check
+        result = run_check(answers)
+        logger.info(
+            "Prohibited practices check: hard_stop=%s prohibited=%s high_risk=%s flags=%d",
+            result.has_hard_stop,
+            result.has_prohibited,
+            result.has_high_risk,
+            len(result.flags),
+        )
+        return result.to_dict()
+    except Exception:
+        logger.exception("Prohibited practices check failed")
+        return None
+
+
+def snapshot_score(
+    *,
+    uses_ai: str,
+    business_functions: list[str] | None = None,
+    affects_people: str = "no",
+    in_eu: str = "no",
+    has_documentation: str = "no",
+) -> dict[str, Any] | None:
+    """Deterministic snapshot risk score. No LLM call. Returns None if flag off."""
+    if not compliance_check_enabled():
+        return None
+
+    try:
+        from agentic_core.agents.compliance import calculate_snapshot_score
+        result = calculate_snapshot_score(
+            uses_ai=uses_ai,
+            business_functions=business_functions,
+            affects_people=affects_people,
+            in_eu=in_eu,
+            has_documentation=has_documentation,
+        )
+        logger.info(
+            "Snapshot score: score=%d risk=%s colour=%s",
+            result.score,
+            result.risk_level,
+            result.colour,
+        )
+        return result.to_dict()
+    except Exception:
+        logger.exception("Snapshot scoring failed")
+        return None
+
+
+def snapshot_gaps(
+    *,
+    uses_ai: str,
+    business_functions: list[str] | None = None,
+    affects_people: str = "no",
+    in_eu: str = "no",
+    has_documentation: str = "no",
+) -> dict[str, Any] | None:
+    """LLM-generated gap analysis from snapshot answers. Returns None if flag off."""
+    if not compliance_check_enabled():
+        return None
+
+    client = _get_llm_client()
+    if client is None:
+        return None
+
+    try:
+        from agentic_core.agents.compliance import SnapshotGapsAgent
+        agent = SnapshotGapsAgent(client)
+        result = agent.run(
+            uses_ai=uses_ai,
+            business_functions=business_functions,
+            affects_people=affects_people,
+            in_eu=in_eu,
+            has_documentation=has_documentation,
+        )
+        logger.info(
+            "Snapshot gaps: count=%d confidence=%s cost=$%.4f",
+            len(result.gaps),
+            result.confidence.level,
+            result.cost_usd or 0,
+        )
+        return result.to_dict()
+    except Exception:
+        logger.exception("Snapshot gaps agent failed")
         return None
