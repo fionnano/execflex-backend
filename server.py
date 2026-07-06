@@ -90,6 +90,10 @@ app.register_blueprint(clients_bp)
 app.register_blueprint(seed_bp)
 app.register_blueprint(monitor_bp)
 
+# v1 API — org-scoped, multi-tenant, compliance-aware
+from routes.api_v1 import api_v1_bp
+app.register_blueprint(api_v1_bp)
+
 # Alias: POST /screen_candidate → same handler as POST /screening
 from routes.screening import screen_candidate as _screen_candidate_handler
 app.add_url_rule("/screen_candidate", "screen_candidate_alias", _screen_candidate_handler, methods=["POST"])
