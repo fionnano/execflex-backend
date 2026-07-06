@@ -73,7 +73,7 @@ class TestFeatureFlags:
     def test_get_flags_status_returns_all_keys(self):
         status = get_flags_status()
         expected_keys = {"match_rerank", "screening_summary", "cv_parser",
-                         "jd_generator", "question_flow"}
+                         "jd_generator", "question_flow", "compliance_check"}
         assert set(status.keys()) == expected_keys
 
     def test_get_flags_status_reflects_env(self):

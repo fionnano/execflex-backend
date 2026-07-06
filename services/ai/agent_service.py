@@ -40,8 +40,8 @@ def _get_llm_client():
         return None
 
     try:
-        from agentic_core.primitives.llm.anthropic_client import AnthropicLLMClient
-        _llm_client = AnthropicLLMClient(api_key=api_key)
+        from agentic_core.primitives.llm.anthropic_client import AnthropicClient
+        _llm_client = AnthropicClient(api_key=api_key)
         return _llm_client
     except ImportError:
         logger.error("agentic-core not installed — AI agents unavailable")
