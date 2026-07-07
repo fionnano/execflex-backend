@@ -35,11 +35,20 @@ def health_ai_selftest():
         return jsonify({"error": "not found"}), 404
 
     import traceback
+    # Safe key fingerprint — no key material revealed, just shape + any non-ascii.
+    _k = os.getenv("ANTHROPIC_API_KEY", "")
+    _first_bad = next(((i, repr(c)) for i, c in enumerate(_k) if ord(c) > 127), None)
+    key_check = {
+        "present": bool(_k),
+        "len": len(_k),
+        "is_ascii": _k.isascii(),
+        "first_non_ascii": _first_bad,  # (index, char) or null
+    }
     try:
         from services.ai.agent_service import _get_llm_client
         client = _get_llm_client()
         if client is None:
-            return ok({"stage": "client", "ok": False, "detail": "LLM client is None (missing key/import)"})
+            return ok({"stage": "client", "ok": False, "key_check": key_check, "detail": "LLM client is None (missing key/import)"})
         from agentic_core.agents.recruitment import JDGeneratorAgent
         agent = JDGeneratorAgent(client)
         result = agent.run(
@@ -55,14 +64,16 @@ def health_ai_selftest():
         return ok({
             "stage": "complete",
             "ok": True,
+            "key_check": key_check,
             "word_count": getattr(result, "word_count", None),
             "cost_usd": getattr(result, "cost_usd", None),
         })
     except Exception as e:
         return jsonify({
             "ok": False,
+            "key_check": key_check,
             "error": f"{type(e).__name__}: {e}",
-            "traceback": traceback.format_exc()[-3000:],
+            "traceback": traceback.format_exc()[-1200:],
         }), 200
 
 
