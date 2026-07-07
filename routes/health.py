@@ -24,6 +24,40 @@ def health_check():
     return ok({"status": "healthy", "service": "ExecFlex API", "message": "Service is running"})
 
 
+@health_bp.route("/health/runtime", methods=["GET"])
+def health_runtime():
+    """Diagnostic: which commit is live + the process text encoding. No auth, no PII.
+    Lets us confirm a deploy landed and whether Python UTF-8 mode is active."""
+    import sys
+    import locale
+    commit = os.getenv("RENDER_GIT_COMMIT", "")
+    if not commit:
+        try:
+            import subprocess
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL, text=True
+            ).strip()
+        except Exception:
+            commit = "unknown"
+    try:
+        preferred = locale.getpreferredencoding(False)
+    except Exception:
+        preferred = "?"
+    return ok({
+        "commit": commit[:12],
+        "python": sys.version.split()[0],
+        "utf8_mode": bool(sys.flags.utf8_mode),
+        "preferred_encoding": preferred,
+        "stdout_encoding": getattr(sys.stdout, "encoding", None),
+        "env": {
+            "PYTHONUTF8": os.getenv("PYTHONUTF8", "(unset)"),
+            "PYTHONIOENCODING": os.getenv("PYTHONIOENCODING", "(unset)"),
+            "LANG": os.getenv("LANG", "(unset)"),
+            "LC_ALL": os.getenv("LC_ALL", "(unset)"),
+        },
+    })
+
+
 @health_bp.route("/submit-brief", methods=["POST"])
 def submit_brief():
     """Capture landing page lead submissions. No auth required."""
