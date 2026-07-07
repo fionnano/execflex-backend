@@ -24,6 +24,48 @@ def health_check():
     return ok({"status": "healthy", "service": "ExecFlex API", "message": "Service is running"})
 
 
+@health_bp.route("/health/ai-selftest", methods=["GET"])
+def health_ai_selftest():
+    """Token-free AI diagnostic. Only active when AI_DEBUG_ERRORS=1 (else 404).
+    Runs the JD generator on hardcoded synthetic input (no PII, no request data)
+    and returns the raw traceback tail on failure so we can pinpoint errors
+    without an auth token. Temporary — remove with the rest of the AI_DEBUG
+    scaffolding once the AI path is healthy."""
+    if os.getenv("AI_DEBUG_ERRORS", "").strip().lower() not in ("1", "true", "yes"):
+        return jsonify({"error": "not found"}), 404
+
+    import traceback
+    try:
+        from services.ai.agent_service import _get_llm_client
+        client = _get_llm_client()
+        if client is None:
+            return ok({"stage": "client", "ok": False, "detail": "LLM client is None (missing key/import)"})
+        from agentic_core.agents.recruitment import JDGeneratorAgent
+        agent = JDGeneratorAgent(client)
+        result = agent.run(
+            role_title="Test Engineer",
+            company_summary="",
+            responsibilities="Own the platform.",
+            requirements="5 plus years experience.",
+            pay_range_min=80000,
+            pay_range_max=100000,
+            pay_currency="EUR",
+            location="Dublin",
+        )
+        return ok({
+            "stage": "complete",
+            "ok": True,
+            "word_count": getattr(result, "word_count", None),
+            "cost_usd": getattr(result, "cost_usd", None),
+        })
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": f"{type(e).__name__}: {e}",
+            "traceback": traceback.format_exc()[-3000:],
+        }), 200
+
+
 @health_bp.route("/health/runtime", methods=["GET"])
 def health_runtime():
     """Diagnostic: which commit is live + the process text encoding. No auth, no PII.
