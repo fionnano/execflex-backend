@@ -28,6 +28,24 @@ logger = logging.getLogger("execflex.ai.agent_service")
 _llm_client = None
 
 
+class AIAgentError(Exception):
+    """Raised (only when AI_DEBUG_ERRORS=1) to surface the real agent failure
+    to the caller instead of silently returning None. Temporary diagnostic —
+    the route maps it to a 502 carrying the exception text."""
+
+
+def _debug_errors_enabled() -> bool:
+    return os.environ.get("AI_DEBUG_ERRORS", "").strip().lower() in ("1", "true", "yes")
+
+
+def _maybe_raise(e: Exception) -> None:
+    """When AI_DEBUG_ERRORS=1, surface the real agent failure to the caller as
+    AIAgentError (routes map it to a 502) instead of silently returning None.
+    Default (flag off): no-op, callers return None exactly as before."""
+    if _debug_errors_enabled():
+        raise AIAgentError(f"{type(e).__name__}: {e}") from e
+
+
 def _get_llm_client():
     """Lazy-init the Anthropic LLM client."""
     global _llm_client
@@ -77,8 +95,9 @@ def rerank_matches(
             "cost_usd": result.cost_usd,
             "ai_generated": True,
         }
-    except Exception:
+    except Exception as e:
         logger.exception("Match re-rank agent failed")
+        _maybe_raise(e)
         return None
 
 
@@ -125,8 +144,9 @@ def summarise_screening(
             "cost_usd": result.cost_usd,
             "ai_generated": True,
         }
-    except Exception:
+    except Exception as e:
         logger.exception("Screening summary agent failed")
+        _maybe_raise(e)
         return None
 
 
@@ -160,8 +180,9 @@ def parse_cv(
             "cost_usd": result.cost_usd,
             "ai_generated": True,
         }
-    except Exception:
+    except Exception as e:
         logger.exception("CV parser agent failed")
+        _maybe_raise(e)
         return None
 
 
@@ -215,8 +236,9 @@ def generate_jd(
             "cost_usd": result.cost_usd,
             "ai_generated": True,
         }
-    except Exception:
+    except Exception as e:
         logger.exception("JD generator agent failed")
+        _maybe_raise(e)
         return None
 
 
@@ -229,8 +251,9 @@ def get_question_flow_data(role_type: str) -> dict[str, Any] | None:
         from agentic_core.agents.recruitment import get_question_flow
         flow = get_question_flow(role_type)
         return flow.to_dict()
-    except Exception:
+    except Exception as e:
         logger.exception("Question flow lookup failed")
+        _maybe_raise(e)
         return None
 
 
@@ -255,8 +278,9 @@ def check_prohibited_practices(
             len(result.flags),
         )
         return result.to_dict()
-    except Exception:
+    except Exception as e:
         logger.exception("Prohibited practices check failed")
+        _maybe_raise(e)
         return None
 
 
@@ -288,8 +312,9 @@ def snapshot_score(
             result.colour,
         )
         return result.to_dict()
-    except Exception:
+    except Exception as e:
         logger.exception("Snapshot scoring failed")
+        _maybe_raise(e)
         return None
 
 
@@ -326,6 +351,7 @@ def snapshot_gaps(
             result.cost_usd or 0,
         )
         return result.to_dict()
-    except Exception:
+    except Exception as e:
         logger.exception("Snapshot gaps agent failed")
+        _maybe_raise(e)
         return None
