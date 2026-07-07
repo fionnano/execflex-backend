@@ -65,3 +65,18 @@ cryptography==44.0.0
 stripe==11.4.1
 posthog==3.7.0
 openpyxl==3.1.5
+
+# ── AI agents (agentic-core) ────────────────────────────────────────────────
+# execflex's services/ai/agent_service.py imports agentic_core.agents.recruitment
+# and .compliance — these modules exist only from agentic-core v0.17.0 onward
+# (transparency-platform pins v0.16.4, which predates them — do NOT copy that pin).
+anthropic>=0.43
+# agentic-core is a PRIVATE GitHub repo. This git+https pin installs cleanly given
+# a git credential. Render (native Python build, not Docker) cannot use the Docker
+# BuildKit ssh-secret mount that transparency-platform relies on, so the git+ssh
+# host-alias approach does NOT transfer here. Render's build must supply a
+# credential for this private repo — either a GitHub PAT (https) or an SSH deploy
+# key added in the Render dashboard (then switch this line to
+# git+ssh://git@github.com/fionnano/agentic-core.git@v0.17.0). Without one of
+# those configured in Render, `pip install` fails with an auth error at deploy.
+agentic-core @ git+https://github.com/fionnano/agentic-core.git@v0.17.0
