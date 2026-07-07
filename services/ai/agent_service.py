@@ -40,10 +40,13 @@ def _debug_errors_enabled() -> bool:
 
 def _maybe_raise(e: Exception) -> None:
     """When AI_DEBUG_ERRORS=1, surface the real agent failure to the caller as
-    AIAgentError (routes map it to a 502) instead of silently returning None.
+    AIAgentError (routes map it to a 500) instead of silently returning None.
+    Includes a compact traceback so the exact encode/failure site is visible.
     Default (flag off): no-op, callers return None exactly as before."""
     if _debug_errors_enabled():
-        raise AIAgentError(f"{type(e).__name__}: {e}") from e
+        import traceback
+        tb = traceback.format_exc()
+        raise AIAgentError(f"{type(e).__name__}: {e}\n--- TRACEBACK (tail) ---\n{tb[-1800:]}") from e
 
 
 def _get_llm_client():
