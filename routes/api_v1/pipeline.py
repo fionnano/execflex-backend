@@ -37,6 +37,8 @@ def get_pipeline():
     pipeline = {stage: [] for stage in VALID_STAGES}
     for c in result.data:
         stage = c.get("pipeline_stage", "sourced") or "sourced"
+        c["full_name"] = (f"{c.get('first_name') or ''} {c.get('last_name') or ''}".strip()
+                          or c.get("headline") or "Unnamed candidate")
         if stage in pipeline:
             pipeline[stage].append(c)
 
