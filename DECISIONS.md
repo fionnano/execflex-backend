@@ -50,3 +50,40 @@ Live-cred Twilio call from the console path will be attempted only if creds are 
 this repo's .env AND the dispatcher can run; otherwise ship with a real-path test of
 the new endpoints (transport stubbed at the create_screening_job/Twilio boundary)
 plus honest logging in SHIPPED.md that a live-cred prod verification remains.
+
+## D-8: Console contract fixes shipped with the port
+Three real-backend contract mismatches the Aidan flow would trip over were fixed
+server-side: pipeline board now returns `{stages:[...]}` (was a stage-keyed dict
+the board couldn't render), `GET /compliance/decisions?type=` prefix-matches
+decision families (screening → screening_score), and candidates are serialized
+to the console shape. Client-side, ScreeningDetail no longer crashes on real
+outcome objects, and ScreeningReview builds its name/session maps from live
+data instead of demo fixtures.
+
+## D-9: Add Candidate intake added
+No console surface called `candidatesApi.create` — a brand-new org had no way
+to get a candidate in front of Aidan. Added a minimal Add Candidate dialog
+(dashboard + pipeline board). Bulk import remains on the roadmap (FEATURE_GAP).
+
+## D-10: security-hardening branch — already merged
+The audit flagged it as parked; `git log main..security-hardening` is empty, so
+the prod smoke-bypass guard is on main. No action needed.
+
+## D-11: index.html cleanup
+Rebranded head to ainm Search and removed the leftover `gptengineer.js`
+(Lovable dev tool) from the production page.
+
+## D-12: Org provisioning verified empirically
+A repo sweep finds no hook code (it is configured in the Supabase dashboard,
+not in git), but a live test proves it: a brand-new user created via the admin
+API logs in with `app_metadata = {org_id, role: "owner"}` in the JWT, and the
+org-scoped v1 endpoints accept it. The "new user cannot use the console"
+concern from the code-only audit is disproven in prod.
+
+## D-13: Live verification method
+Created a synthetic prod user (fionnano+aidan-console-selftest@gmail.com) via
+the Supabase admin API, logged in with password grant, created a synthetic
+candidate ("Aidan Selftest") whose phone is the owner's own number (the one
+that received tonight's proven old-app call), and started a real Aidan call
+through POST /api/v1/screens/phone on the deployed backend. No real candidate
+data used; the only phone dialled is the owner's.
