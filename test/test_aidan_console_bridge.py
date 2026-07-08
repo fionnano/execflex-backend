@@ -41,6 +41,10 @@ class FakeQuery:
     def or_(self, expr):
         return self  # search fan-out not exercised in these tests
 
+    def like(self, col, pattern):
+        self.filters.append(("like", col, pattern))
+        return self
+
     def in_(self, col, vals):
         self.filters.append(("in", col, vals))
         return self
@@ -68,6 +72,10 @@ class FakeQuery:
                 return False
             if op == "in" and row.get(col) not in val:
                 return False
+            if op == "like":
+                prefix = val.rstrip("%")
+                if not str(row.get(col) or "").startswith(prefix):
+                    return False
         return True
 
     def execute(self):
@@ -342,6 +350,32 @@ class TestCallStatusAndSync:
         session = fake_db.store["screening_sessions"][0]
         assert session["state"] == "handoff"
         assert session["handoff_reason"] == "call_no_answer"
+
+
+# ── Console contract regressions ────────────────────────────────────
+
+class TestConsoleContracts:
+    def test_pipeline_board_returns_stages_array(self, client, fake_db):
+        seed_candidate(fake_db)
+        resp = client.get("/api/v1/pipeline", headers=auth_headers())
+        assert resp.status_code == 200
+        body = resp.get_json()["data"]
+        assert "stages" in body
+        stages = {s["stage"]: s for s in body["stages"]}
+        assert stages["sourced"]["count"] == 1
+        assert stages["sourced"]["candidates"][0]["full_name"] == "Testa Candidate"
+
+    def test_decision_family_filter_prefix_matches(self, client, fake_db):
+        fake_db.store.setdefault("ai_decision_log", []).append({
+            "id": str(uuid.uuid4()),
+            "organization_id": ORG_A,
+            "decision_type": "screening_score",
+            "candidate_id": "c1",
+            "human_reviewed": False,
+        })
+        resp = client.get("/api/v1/compliance/decisions?type=screening", headers=auth_headers())
+        assert resp.status_code == 200
+        assert len(resp.get_json()["data"]["decisions"]) == 1
 
 
 # ── Candidates serializer ───────────────────────────────────────────

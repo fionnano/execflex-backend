@@ -23,7 +23,10 @@ def list_decisions():
 
     decision_type = request.args.get('type')
     if decision_type:
-        query = query.eq("decision_type", decision_type)
+        # The console filters by family ("screening", "matching"); rows are
+        # logged with specific types ("screening_score", "match_rank") —
+        # prefix-match so family filters actually return their rows.
+        query = query.like("decision_type", f"{decision_type}%")
 
     unreviewed = request.args.get('unreviewed')
     if unreviewed == 'true':

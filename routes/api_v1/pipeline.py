@@ -7,6 +7,18 @@ from services.api.responses import api_ok, api_error
 VALID_STAGES = {'sourced', 'screened', 'shortlisted', 'interviewing',
                 'offered', 'placed', 'rejected', 'withdrawn'}
 
+# Display order for the console board
+STAGE_ORDER = ['sourced', 'screened', 'shortlisted', 'interviewing',
+               'offered', 'placed', 'rejected', 'withdrawn']
+
+
+def _board_payload(pipeline: dict) -> dict:
+    """Shape the board the way the console expects: {stages: [{stage, candidates, count}]}."""
+    return {"stages": [
+        {"stage": s, "candidates": pipeline.get(s, []), "count": len(pipeline.get(s, []))}
+        for s in STAGE_ORDER
+    ]}
+
 
 @api_v1_bp.route('/pipeline', methods=['GET'])
 @require_org()
@@ -29,7 +41,7 @@ def get_pipeline():
             .execute()
         candidate_ids = [a["candidate_id"] for a in app_result.data]
         if not candidate_ids:
-            return api_ok({stage: [] for stage in VALID_STAGES})
+            return api_ok(_board_payload({}))
         query = query.in_("id", candidate_ids)
 
     result = query.execute()
@@ -42,7 +54,7 @@ def get_pipeline():
         if stage in pipeline:
             pipeline[stage].append(c)
 
-    return api_ok(pipeline)
+    return api_ok(_board_payload(pipeline))
 
 
 @api_v1_bp.route('/pipeline/move', methods=['POST'])
