@@ -96,6 +96,100 @@ def create_screening_job(
 
 
 # ---------------------------------------------------------------------------
+# Job status
+# ---------------------------------------------------------------------------
+
+def get_screening_status(job_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Build the status payload for an outbound screening call job.
+
+    Single source of truth used by both the legacy GET /screening/<job_id>/status
+    route and the org-scoped /api/v1/screens phone-call bridge.
+
+    Returns None when the job does not exist.
+    """
+    if not supabase_client:
+        raise RuntimeError("Supabase client not available")
+
+    job_resp = (
+        supabase_client.table("outbound_call_jobs")
+        .select("*")
+        .eq("id", job_id)
+        .limit(1)
+        .execute()
+    )
+    if not job_resp.data:
+        return None
+
+    job = job_resp.data[0]
+    artifacts = job.get("artifacts", {}) or {}
+    call_status_raw = artifacts.get("call_status")
+    interaction_id = job.get("interaction_id")
+
+    job_status_map = {
+        "queued": "queued",
+        "running": "in_progress",
+        "succeeded": "completed",
+        "failed": "failed",
+    }
+    twilio_status_map = {
+        "queued": "queued",
+        "ringing": "ringing",
+        "in-progress": "in_progress",
+        "completed": "completed",
+        "failed": "failed",
+        "busy": "failed",
+        "no-answer": "no_answer",
+        "canceled": "failed",
+    }
+    if call_status_raw:
+        status = twilio_status_map.get(call_status_raw, job_status_map.get(job["status"], "queued"))
+    else:
+        status = job_status_map.get(job["status"], "queued")
+
+    response: Dict[str, Any] = {
+        "job_id": job_id,
+        "status": status,
+        "interaction_id": interaction_id,
+    }
+
+    if status == "completed" and interaction_id:
+        interaction_resp = (
+            supabase_client.table("interactions")
+            .select("transcript_text, screening_scores, screening_recommendation, artifacts")
+            .eq("id", interaction_id)
+            .limit(1)
+            .execute()
+        )
+        if interaction_resp.data:
+            ix = interaction_resp.data[0] or {}
+            response["transcript"] = ix.get("transcript_text")
+            response["scores"] = ix.get("screening_scores")
+            response["recommendation"] = ix.get("screening_recommendation")
+            ix_artifacts = ix.get("artifacts") or {}
+            if ix_artifacts.get("candidate_extraction"):
+                response["candidate_profile"] = ix_artifacts["candidate_extraction"]
+            if ix_artifacts.get("employer_extraction"):
+                response["employer_brief"] = ix_artifacts["employer_extraction"]
+            has_extraction = bool(
+                ix_artifacts.get("candidate_extraction")
+                or ix_artifacts.get("employer_extraction")
+            )
+            has_error = bool(
+                (ix_artifacts.get("candidate_extraction") or {}).get("error")
+                or (ix_artifacts.get("employer_extraction") or {}).get("error")
+            )
+            if has_extraction and not has_error:
+                response["extraction_status"] = "complete"
+            elif has_error:
+                response["extraction_status"] = "failed"
+            else:
+                response["extraction_status"] = "processing"
+
+    return response
+
+
+# ---------------------------------------------------------------------------
 # Post-call scoring
 # ---------------------------------------------------------------------------
 

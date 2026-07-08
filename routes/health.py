@@ -24,59 +24,6 @@ def health_check():
     return ok({"status": "healthy", "service": "ExecFlex API", "message": "Service is running"})
 
 
-@health_bp.route("/health/ai-selftest", methods=["GET"])
-def health_ai_selftest():
-    """Token-free AI diagnostic. Only active when AI_DEBUG_ERRORS=1 (else 404).
-    Runs the JD generator on hardcoded synthetic input (no PII, no request data)
-    and returns the raw traceback tail on failure so we can pinpoint errors
-    without an auth token. Temporary — remove with the rest of the AI_DEBUG
-    scaffolding once the AI path is healthy."""
-    if os.getenv("AI_DEBUG_ERRORS", "").strip().lower() not in ("1", "true", "yes"):
-        return jsonify({"error": "not found"}), 404
-
-    import traceback
-    # Safe key fingerprint — no key material revealed, just shape + any non-ascii.
-    _k = os.getenv("ANTHROPIC_API_KEY", "")
-    _first_bad = next(((i, repr(c)) for i, c in enumerate(_k) if ord(c) > 127), None)
-    key_check = {
-        "present": bool(_k),
-        "len": len(_k),
-        "is_ascii": _k.isascii(),
-        "first_non_ascii": _first_bad,  # (index, char) or null
-    }
-    try:
-        from services.ai.agent_service import _get_llm_client
-        client = _get_llm_client()
-        if client is None:
-            return ok({"stage": "client", "ok": False, "key_check": key_check, "detail": "LLM client is None (missing key/import)"})
-        from agentic_core.agents.recruitment import JDGeneratorAgent
-        agent = JDGeneratorAgent(client)
-        result = agent.run(
-            role_title="Test Engineer",
-            company_summary="",
-            responsibilities="Own the platform.",
-            requirements="5 plus years experience.",
-            pay_range_min=80000,
-            pay_range_max=100000,
-            pay_currency="EUR",
-            location="Dublin",
-        )
-        return ok({
-            "stage": "complete",
-            "ok": True,
-            "key_check": key_check,
-            "word_count": getattr(result, "word_count", None),
-            "cost_usd": getattr(result, "cost_usd", None),
-        })
-    except Exception as e:
-        return jsonify({
-            "ok": False,
-            "key_check": key_check,
-            "error": f"{type(e).__name__}: {e}",
-            "traceback": traceback.format_exc()[-1200:],
-        }), 200
-
-
 @health_bp.route("/health/runtime", methods=["GET"])
 def health_runtime():
     """Diagnostic: which commit is live + the process text encoding. No auth, no PII.

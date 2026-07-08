@@ -170,83 +170,10 @@ def screening_status(job_id: str):
         if not supabase_client:
             return jsonify({"error": "Database not available"}), 503
 
-        job_resp = (
-            supabase_client.table("outbound_call_jobs")
-            .select("*")
-            .eq("id", job_id)
-            .limit(1)
-            .execute()
-        )
-        if not job_resp.data:
+        from services.screening_service import get_screening_status
+        response = get_screening_status(job_id)
+        if response is None:
             return jsonify({"error": "Job not found"}), 404
-
-        job = job_resp.data[0]
-        artifacts = job.get("artifacts", {}) or {}
-        call_status_raw = artifacts.get("call_status")
-        interaction_id = job.get("interaction_id")
-
-        # Map to screening status
-        job_status_map = {
-            "queued": "queued",
-            "running": "in_progress",
-            "succeeded": "completed",
-            "failed": "failed",
-        }
-        twilio_status_map = {
-            "queued": "queued",
-            "ringing": "ringing",
-            "in-progress": "in_progress",
-            "completed": "completed",
-            "failed": "failed",
-            "busy": "failed",
-            "no-answer": "no_answer",
-            "canceled": "failed",
-        }
-        if call_status_raw:
-            status = twilio_status_map.get(call_status_raw, job_status_map.get(job["status"], "queued"))
-        else:
-            status = job_status_map.get(job["status"], "queued")
-
-        response: dict = {
-            "job_id": job_id,
-            "status": status,
-            "interaction_id": interaction_id,
-        }
-
-        if status == "completed" and interaction_id:
-            interaction_resp = (
-                supabase_client.table("interactions")
-                .select("transcript_text, screening_scores, screening_recommendation, artifacts")
-                .eq("id", interaction_id)
-                .limit(1)
-                .execute()
-            )
-            if interaction_resp.data:
-                ix = interaction_resp.data[0] or {}
-                response["transcript"] = ix.get("transcript_text")
-                response["scores"] = ix.get("screening_scores")
-                response["recommendation"] = ix.get("screening_recommendation")
-                # Include extracted profile/brief data from post-call analysis
-                ix_artifacts = ix.get("artifacts") or {}
-                if ix_artifacts.get("candidate_extraction"):
-                    response["candidate_profile"] = ix_artifacts["candidate_extraction"]
-                if ix_artifacts.get("employer_extraction"):
-                    response["employer_brief"] = ix_artifacts["employer_extraction"]
-                # Tell frontend whether extraction is complete or still processing
-                has_extraction = bool(
-                    ix_artifacts.get("candidate_extraction")
-                    or ix_artifacts.get("employer_extraction")
-                )
-                has_error = bool(
-                    (ix_artifacts.get("candidate_extraction") or {}).get("error")
-                    or (ix_artifacts.get("employer_extraction") or {}).get("error")
-                )
-                if has_extraction and not has_error:
-                    response["extraction_status"] = "complete"
-                elif has_error:
-                    response["extraction_status"] = "failed"
-                else:
-                    response["extraction_status"] = "processing"
 
         return jsonify(response), 200
 
