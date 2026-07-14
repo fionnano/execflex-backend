@@ -17,4 +17,5 @@ from routes.api_v1 import (  # noqa
     compliance,
     talent_pools,
     ai,
+    marketplace,
 )
