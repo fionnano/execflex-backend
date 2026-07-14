@@ -87,3 +87,51 @@ candidate ("Aidan Selftest") whose phone is the owner's own number (the one
 that received tonight's proven old-app call), and started a real Aidan call
 through POST /api/v1/screens/phone on the deployed backend. No real candidate
 data used; the only phone dialled is the owner's.
+
+## D-14: Marketplace MVP storage — reuse existing durable tables (no new prod DDL)
+There is no autonomous path to apply DDL to the execflex prod Supabase
+(krzacydualjpsapffpfm): no DB password / pooler string in any repo, no
+`exec_sql`-style RPC, no management token. Prior migrations (rebuild-v1) were
+applied by a human via the Supabase dashboard SQL editor. Rather than block the
+run, the /marketplace MVP persists on the existing durable, org-scoped tables,
+namespaced so it never collides with the /console recruiter product:
+  - **Leaders** → `people_profiles`, `organization_id = MARKETPLACE_ORG_ID`
+    (a single dedicated "ainm Marketplace" org), `source='marketplace_leader'`;
+    seniority/sectors/engagement/comp/vetting_status/vetting_score/rationale live
+    in `source_metadata` (JSONB). The pool is read GLOBALLY (a curated public
+    catalog by design) — never org-filtered — so it appears in /marketplace but
+    in no recruiter's console (which filters people_profiles by the caller's own
+    org_id, never the marketplace org).
+  - **Companies + Opportunities** → `opportunities`, `metadata.marketplace=true`,
+    company captured in `metadata.company`.
+  - **Introductions (billable event)** → `activity_log`, `entity_type='placement'`,
+    `metadata.marketplace=true` + the full intro record (leader/company/opportunity,
+    status, placement_fee_pct, placement_fee_amount, first_year_comp, hired).
+    Owned by the requesting company's org_id.
+  - **Vetting audit** → `ai_decision_log`, `decision_type='screening_score'`,
+    `model_used='marketplace_vetting_v1'`.
+This reuses the estate (an explicit goal) and is fully durable tonight with zero
+human step. A clean dedicated-tables migration
+(`supabase/migrations/20260714_marketplace.sql`) is committed as the graduation
+path; it is idempotent and ready but NOT yet applied to prod (needs a human to
+paste it into the dashboard). Flagged in SHIPPED.md.
+
+## D-15: Marketplace is a separate surface, org-auth reused
+/marketplace (frontend) + /api/v1/marketplace (backend) are a NEW product surface.
+They reuse the console's org-scoped JWT auth (`require_org`) but do NOT modify
+ainm Search /console, ainm.ai, transparency, or governance. The leader pool is a
+shared curated catalog; the demand side (browse + request intro) and the admin
+introductions pipeline are the two sides plus the operator view.
+
+## D-16: Vetting engine — agentic-core with deterministic fallback
+Vetting scores a structured technical+leadership response set via agentic-core's
+AnthropicClient: per-answer mechanical scoring routed to Haiku
+(claude-haiku-4-5), the overall explainable rationale + pass/fail routed to
+Sonnet (claude-sonnet-4-5), matching the ModelRouter policy (EXTRACTION→Haiku,
+REASONING→Sonnet). When the AI flag is off or the LLM is unavailable, a
+deterministic heuristic scorer produces a score + rationale + pass/fail so the
+demo and tests never depend on live tokens. Pass threshold = 70/100 →
+vetting_status='verified', badge "Independently vetted" (no "top X%" claim);
+methodology in VETTING_METHODOLOGY.md. This is a structured assessment, not a
+live proctored coding test — the assessment-adapter seam is preserved so a real
+proctored tool can plug in later.
