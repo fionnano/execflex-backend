@@ -32,6 +32,35 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_system_actor_cache: Optional[str] = None
+
+
+def _system_actor() -> Optional[str]:
+    """A valid users.id to satisfy NOT-NULL FK columns (opportunities.created_by_user_id).
+
+    Marketplace catalog rows have no human owner, so reuse any existing user id
+    as the system actor. Discovered once from an existing opportunity and cached.
+    """
+    global _system_actor_cache
+    if _system_actor_cache:
+        return _system_actor_cache
+    db = _db()
+    try:
+        rows = db.table("opportunities").select("created_by_user_id").limit(1).execute().data
+        if rows and rows[0].get("created_by_user_id"):
+            _system_actor_cache = rows[0]["created_by_user_id"]
+            return _system_actor_cache
+    except Exception:
+        pass
+    try:
+        rows = db.table("people_profiles").select("user_id").not_.is_("user_id", "null").limit(1).execute().data
+        if rows and rows[0].get("user_id"):
+            _system_actor_cache = rows[0]["user_id"]
+    except Exception:
+        pass
+    return _system_actor_cache
+
+
 # ── Marketplace org (namespace anchor) ───────────────────────────────────────
 
 def ensure_marketplace_org() -> str:
@@ -90,7 +119,7 @@ def list_leaders(*, status: Optional[str] = "verified", skill: Optional[str] = N
     db = _db()
     rows = (db.table("people_profiles")
             .select("*")
-            .eq("source", LEADER_SOURCE)
+            .eq("organization_id", MARKETPLACE_ORG_ID)
             .order("created_at", desc=True)
             .limit(limit).execute().data) or []
     leaders = [_leader_from_row(r) for r in rows]
@@ -118,7 +147,7 @@ def list_leaders(*, status: Optional[str] = "verified", skill: Optional[str] = N
 def get_leader(leader_id: str) -> Optional[dict]:
     db = _db()
     rows = (db.table("people_profiles").select("*")
-            .eq("id", leader_id).eq("source", LEADER_SOURCE).execute().data)
+            .eq("id", leader_id).eq("organization_id", MARKETPLACE_ORG_ID).execute().data)
     return _leader_from_row(rows[0]) if rows else None
 
 
@@ -148,20 +177,20 @@ def create_leader(*, name: str, headline: str, bio: str = "", location: str = ""
         "display_name": name,
         "headline": headline,
     }
+    # NOTE: industries / availability_type / skills are constrained columns
+    # (enum arrays) on people_profiles. All marketplace-specific list/typed data
+    # lives in source_metadata (JSONB, unconstrained); the marketplace namespace
+    # marker is organization_id = MARKETPLACE_ORG_ID (used for every read/purge).
+    source_metadata["skills"] = skills or []
     row = {
         "id": row_id,
         "organization_id": MARKETPLACE_ORG_ID,
-        "source": LEADER_SOURCE,
         "first_name": first,
         "last_name": last,
         "headline": headline,
         "bio": bio,
         "location": location,
-        "skills": skills or [],
-        "industries": sectors or [],
         "years_experience": years_experience,
-        "availability_type": engagement,
-        "rate_range": comp_expectation,
         "source_metadata": source_metadata,
     }
     existing = db.table("people_profiles").select("id").eq("id", row_id).execute().data
@@ -176,7 +205,7 @@ def set_leader_vetting(leader_id: str, vetting: dict, status: str) -> Optional[d
     """Persist a vetting result onto a leader and update vetting_status."""
     db = _db()
     rows = (db.table("people_profiles").select("source_metadata")
-            .eq("id", leader_id).eq("source", LEADER_SOURCE).execute().data)
+            .eq("id", leader_id).eq("organization_id", MARKETPLACE_ORG_ID).execute().data)
     if not rows:
         return None
     meta = rows[0].get("source_metadata") or {}
@@ -232,20 +261,28 @@ def create_opportunity(*, title: str, company: dict, description: str = "",
     ensure_marketplace_org()
     db = _db()
     row_id = opp_id or str(uuid.uuid4())
+    # opportunities.type and .commitment_type are enums. Map the marketplace's
+    # engagement vocabulary onto DB-valid values; keep the display value in
+    # metadata.engagement so the UI can show "Permanent"/"Fractional".
+    db_commitment = "fractional" if commitment_type == "fractional" else "full_time"
+    db_type = "hire_fractional"
     row = {
         "id": row_id,
         "organization_id": MARKETPLACE_ORG_ID,
+        "created_by_user_id": _system_actor() or MARKETPLACE_ORG_ID,  # NOT NULL FK → users
+        "type": db_type,
         "title": title,
         "description": description,
         "location": location,
-        "commitment_type": commitment_type,
+        "commitment_type": db_commitment,
         "is_remote": is_remote,
         "industry": sector,
         "pay_range_min": pay_range_min,
         "pay_range_max": pay_range_max,
         "pay_range_currency": pay_range_currency,
         "status": "open",
-        "metadata": {"marketplace": True, "company": company, "track": track},
+        "metadata": {"marketplace": True, "company": company, "track": track,
+                     "engagement": commitment_type},
     }
     existing = db.table("opportunities").select("id").eq("id", row_id).execute().data
     if existing:
@@ -416,7 +453,7 @@ def purge_marketplace() -> dict:
         db.table("opportunities").delete().eq("id", r["id"]).execute()
     counts["opportunities"] = len(opps)
     leaders = (db.table("people_profiles").select("id")
-               .eq("source", LEADER_SOURCE).execute().data) or []
+               .eq("organization_id", MARKETPLACE_ORG_ID).execute().data) or []
     for r in leaders:
         db.table("people_profiles").delete().eq("id", r["id"]).execute()
     counts["leaders"] = len(leaders)
