@@ -14,6 +14,7 @@ from typing import Optional
 from flask import Blueprint, request, jsonify
 from utils.auth_helpers import require_auth, require_admin
 from utils.response_helpers import ok, bad
+from utils.encoding_helpers import decode_text_bytes
 from config.clients import supabase_client
 
 billing_bp = Blueprint("billing", __name__)
@@ -1005,7 +1006,7 @@ def bulk_upload_candidates():
 
     try:
         raw_bytes = file_field.read()
-        text = raw_bytes.decode("utf-8-sig", errors="replace")
+        text = decode_text_bytes(raw_bytes)
     except Exception as e:
         return bad(f"Could not read file: {e}", 400)
 

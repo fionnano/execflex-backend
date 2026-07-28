@@ -19,6 +19,7 @@ from flask import Blueprint, request
 
 from utils.auth_helpers import require_admin
 from utils.response_helpers import ok, bad
+from utils.encoding_helpers import decode_text_bytes
 from config.clients import supabase_client
 
 
@@ -242,7 +243,7 @@ def _read_rows_from_upload(file_field) -> tuple:
     try:
         import csv
         import io as _io
-        text = raw_bytes.decode("utf-8-sig", errors="replace")
+        text = decode_text_bytes(raw_bytes)
         reader = csv.reader(_io.StringIO(text))
         all_rows = list(reader)
         if not all_rows:
