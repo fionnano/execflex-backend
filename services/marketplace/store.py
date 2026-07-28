@@ -108,7 +108,10 @@ def _leader_from_row(row: dict, *, include_contact: bool = False) -> dict:
     track = meta.get("track") or ""
     out = {
         "id": row.get("id"),
-        "user_id": row.get("user_id"),
+        # Owning auth account. Stored in source_metadata (NOT the people_profiles
+        # user_id column) because that column has a GLOBAL unique constraint and
+        # the onboarding hook already claims each user_id for their own-org row.
+        "user_id": meta.get("owner_user_id") or row.get("user_id"),
         "name": name,
         "headline": row.get("headline") or meta.get("headline") or "",
         "bio": row.get("bio") or "",
@@ -179,16 +182,23 @@ def get_leader(leader_id: str, *, include_contact: bool = False) -> Optional[dic
 
 
 def get_leader_by_user(user_id: str, *, include_contact: bool = True) -> Optional[dict]:
-    """Find the marketplace leader profile owned by an auth account, if any."""
+    """Find the marketplace leader profile owned by an auth account, if any.
+
+    Ownership is keyed on source_metadata.owner_user_id (see _leader_from_row),
+    so we read the namespaced pool and match in Python — the people_profiles
+    user_id column is globally unique and reserved by the onboarding hook.
+    """
     if not user_id:
         return None
     db = _db()
     rows = (db.table("people_profiles").select("*")
             .eq("organization_id", MARKETPLACE_ORG_ID)
-            .eq("user_id", user_id).execute().data) or []
-    if not rows:
-        return None
-    return _leader_from_row(rows[0], include_contact=include_contact)
+            .limit(1000).execute().data) or []
+    for r in rows:
+        meta = r.get("source_metadata") or {}
+        if meta.get("owner_user_id") == user_id:
+            return _leader_from_row(r, include_contact=include_contact)
+    return None
 
 
 def create_leader(*, name: str, headline: str, bio: str = "", location: str = "",
@@ -221,6 +231,8 @@ def create_leader(*, name: str, headline: str, bio: str = "", location: str = ""
         "contact": contact or {},
         "updated_at": _now(),
     }
+    if user_id:
+        source_metadata["owner_user_id"] = user_id
     # NOTE: industries / availability_type / skills are constrained columns
     # (enum arrays) on people_profiles. All marketplace-specific list/typed data
     # lives in source_metadata (JSONB, unconstrained); the marketplace namespace
@@ -237,8 +249,9 @@ def create_leader(*, name: str, headline: str, bio: str = "", location: str = ""
         "years_experience": years_experience,
         "source_metadata": source_metadata,
     }
-    if user_id:
-        row["user_id"] = user_id
+    # NOTE: we deliberately do NOT set the people_profiles.user_id column — it is
+    # globally unique and already claimed by the onboarding hook for the user's
+    # own-org row. Ownership lives in source_metadata.owner_user_id.
     existing = db.table("people_profiles").select("id").eq("id", row_id).execute().data
     if existing:
         db.table("people_profiles").update(row).eq("id", row_id).execute()
