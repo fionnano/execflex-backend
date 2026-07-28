@@ -135,3 +135,41 @@ vetting_status='verified', badge "Independently vetted" (no "top X%" claim);
 methodology in VETTING_METHODOLOGY.md. This is a structured assessment, not a
 live proctored coding test — the assessment-adapter seam is preserved so a real
 proctored tool can plug in later.
+
+## D-17: Marketplace v2 — make every flow REAL (2026-07-28 autonomous run)
+Turned the demoable MVP into a functional marketplace real users sign up to and
+use, WITHOUT new prod DDL (same D-14 constraint holds — no autonomous DB
+password/management token). All v2 features run on the namespaced tables; the
+dedicated-schema + RLS graduation path is generated as `MARKETPLACE_MIGRATION.sql`
+at repo root (the single human step) and reflects the v2 shape.
+- **Real auth accounts.** Signup already exists (frontend Supabase magic-link;
+  the handle_new_user hook provisions org_id/role — D-12). A leader profile is
+  now LINKED to its owner via people_profiles.user_id (still under
+  MARKETPLACE_ORG_ID so the console never sees it). `get_leader_by_user` powers
+  "my profile", inbox, and GDPR. POST /leaders is an idempotent claim (one
+  profile per account).
+- **Real search engine (Phase 2).** services/marketplace/search.py ranks the
+  verified pool by lexical relevance across headline/skills/sectors/bio/
+  seniority/discipline with per-result match reasons, combined with structured
+  facets (skill/track/seniority/engagement/sector/comp range). Empty query ranks
+  by vetting_score. Optional Sonnet semantic re-rank behind MARKETPLACE_SEARCH_AI
+  (degrades to lexical on any failure). GET /marketplace/search + /facets.
+- **Contact privacy.** A leader's contact (email/phone/linkedin) lives in
+  source_metadata.contact and is serialized out ONLY to the owner or to a company
+  on an ACCEPTED introduction (snapshotted as leader_contact, contact_revealed).
+  The public catalog and search never expose contact.
+- **Leader accept/decline.** Introductions carry leader_response; the leader's
+  inbox (GET /inbox) lists requests to them; POST /introductions/<id>/respond
+  accepts (reveals contact + emails the company) or declines (nothing shared).
+- **Tenant isolation.** GET /introductions is scoped to the caller's org
+  (a company sees only its own). The all-tenants operator pipeline moved to
+  GET /admin/introductions, gated by _is_marketplace_admin (operating AS the
+  marketplace org, or MARKETPLACE_ADMIN_USER_IDS allowlist). Seed intros are
+  owned by the marketplace org → visible only to the operator, not to buyers.
+- **Company profile.** GET/PUT /company (one per org) so leaders see who's asking;
+  captured onto the intro's requester_contact.
+- **GDPR + hardening.** GET /me/export and DELETE /me (erase profile);
+  services/marketplace/validation.py validates every public form; the vetting
+  endpoint is rate-limited (per-IP 8/h + per-leader 3/day, farming guard) and
+  owner-gated. Email notifications on vetting result and intro request/response
+  reuse modules/email_sender.py (best-effort; log-and-continue if unconfigured).

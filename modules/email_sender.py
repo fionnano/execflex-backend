@@ -567,6 +567,177 @@ def _admin_alert(subject: str, lines: list, tag: str = "NOTIFY") -> bool:
         return False
 
 
+# ── ainm Marketplace notifications ───────────────────────────────────────────
+
+def send_marketplace_vetting_result(leader_email: str,
+                                    leader_name: str,
+                                    passed: bool,
+                                    score: int,
+                                    threshold: int,
+                                    rationale: str,
+                                    track: str | None = None) -> bool:
+    """Notify a leader of their vetting outcome (verified or not yet)."""
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        print(f"[MKT-VETTING] Would email {leader_email}: passed={passed} score={score}")
+        return False
+    if not _is_valid_email(leader_email):
+        print(f"[MKT-VETTING] Invalid recipient: {leader_email}")
+        return False
+
+    first = (leader_name or "there").strip().split(" ", 1)[0] or "there"
+    if passed:
+        subject = "You're verified on the ainm Marketplace"
+        opener = (f"Congratulations {first} — you passed the independent vetting "
+                  f"assessment and your profile is now listed as “Independently "
+                  f"vetted” on the ainm Marketplace.")
+        nextstep = ("Hiring companies can now find you in search and request an "
+                    "introduction. You'll get an email whenever a company asks to be "
+                    "introduced, and you decide whether to accept.")
+    else:
+        subject = "Your ainm Marketplace vetting result"
+        opener = (f"Thanks for completing the ainm Marketplace assessment, {first}. "
+                  f"On this attempt your responses scored {score}/{threshold} needed, "
+                  f"so we haven't listed the profile as verified yet.")
+        nextstep = ("You're welcome to revise your answers with more specific, "
+                    "quantified examples and re-take the assessment from your profile.")
+
+    lines = [
+        f"Hi {first},",
+        "",
+        opener,
+        "",
+        f"Score: {score}/100 (pass mark {threshold})" + (f" · track: {track}" if track else ""),
+        "",
+        "Assessor's rationale:",
+        rationale or "(no rationale recorded)",
+        "",
+        nextstep,
+        "",
+        "Every vetting decision is logged and explainable (EU AI Act Art. 13/14); a "
+        "human reviews before any profile is promoted. Questions: compliance@ainm.ai.",
+        "",
+        "Best regards,",
+        "The ainm Marketplace team",
+        f"ainm Marketplace | https://execflex.ai/marketplace | {datetime.utcnow().isoformat()}Z",
+    ]
+    msg = EmailMessage()
+    msg["From"] = formataddr(("ainm Marketplace", EMAIL_ADDRESS))
+    msg["To"] = leader_email
+    msg["Bcc"] = EMAIL_ADDRESS
+    msg["Subject"] = subject
+    msg.set_content("\n".join(lines))
+    try:
+        _send_message(msg)
+        print(f"[MKT-VETTING] Result email sent to {leader_email} (passed={passed})")
+        return True
+    except Exception as e:
+        print(f"[MKT-VETTING] Failed to send: {e}")
+        return False
+
+
+def send_marketplace_intro_request_to_leader(leader_email: str,
+                                             leader_name: str,
+                                             company_name: str,
+                                             role_title: str | None,
+                                             message: str | None) -> bool:
+    """Tell a leader a company has requested an introduction (they can accept/decline)."""
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        print(f"[MKT-INTRO] Would email {leader_email}: intro from {company_name}")
+        return False
+    if not _is_valid_email(leader_email):
+        return False
+    first = (leader_name or "there").strip().split(" ", 1)[0] or "there"
+    base = (os.environ.get("FRONTEND_URL") or "https://execflex.ai").rstrip("/")
+    lines = [
+        f"Hi {first},",
+        "",
+        f"{company_name} has requested an introduction to you on the ainm Marketplace"
+        + (f" for the role: {role_title}." if role_title else "."),
+        "",
+        "Their message:",
+        (message or "(no message provided)"),
+        "",
+        "Your contact details stay private until you accept. Review the request and "
+        f"accept or decline from your marketplace inbox: {base}/marketplace/inbox",
+        "",
+        "If you accept, we share your contact details with the company so they can "
+        "reach you directly. If you decline, nothing is shared.",
+        "",
+        "Best regards,",
+        "The ainm Marketplace team",
+    ]
+    msg = EmailMessage()
+    msg["From"] = formataddr(("ainm Marketplace", EMAIL_ADDRESS))
+    msg["To"] = leader_email
+    msg["Bcc"] = EMAIL_ADDRESS
+    msg["Subject"] = f"{company_name} wants an introduction"
+    msg.set_content("\n".join(lines))
+    try:
+        _send_message(msg)
+        print(f"[MKT-INTRO] Intro request emailed to {leader_email}")
+        return True
+    except Exception as e:
+        print(f"[MKT-INTRO] Failed to send: {e}")
+        return False
+
+
+def send_marketplace_intro_response_to_company(company_email: str,
+                                               company_contact_name: str | None,
+                                               leader_name: str,
+                                               accepted: bool,
+                                               leader_contact: dict | None = None) -> bool:
+    """Tell the requesting company whether the leader accepted (and share contact)."""
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        print(f"[MKT-INTRO] Would email {company_email}: {leader_name} accepted={accepted}")
+        return False
+    if not _is_valid_email(company_email):
+        return False
+    who = (company_contact_name or "there").strip().split(" ", 1)[0] or "there"
+    if accepted:
+        subject = f"{leader_name} accepted your introduction"
+        contact = leader_contact or {}
+        contact_lines = [f"  Email:    {contact.get('email') or '(not provided)'}",
+                         f"  Phone:    {contact.get('phone') or '(not provided)'}",
+                         f"  LinkedIn: {contact.get('linkedin') or '(not provided)'}"]
+        body = [
+            f"Hi {who},",
+            "",
+            f"Good news — {leader_name} has accepted your introduction request and is "
+            "happy to be contacted directly. Here are their details:",
+            "",
+            *contact_lines,
+            "",
+            "You can now reach out to arrange a conversation. A placement fee applies "
+            "only if you go on to hire — see your introductions dashboard for terms.",
+        ]
+    else:
+        subject = f"Update on your introduction to {leader_name}"
+        body = [
+            f"Hi {who},",
+            "",
+            f"{leader_name} has declined the introduction on this occasion, so we "
+            "haven't shared their contact details. There's no charge for a declined "
+            "introduction.",
+            "",
+            "Plenty of other vetted leaders are available — browse the marketplace to "
+            "find another strong match.",
+        ]
+    body += ["", "Best regards,", "The ainm Marketplace team"]
+    msg = EmailMessage()
+    msg["From"] = formataddr(("ainm Marketplace", EMAIL_ADDRESS))
+    msg["To"] = company_email
+    msg["Bcc"] = EMAIL_ADDRESS
+    msg["Subject"] = subject
+    msg.set_content("\n".join(body))
+    try:
+        _send_message(msg)
+        print(f"[MKT-INTRO] Response ({'accept' if accepted else 'decline'}) emailed to {company_email}")
+        return True
+    except Exception as e:
+        print(f"[MKT-INTRO] Failed to send: {e}")
+        return False
+
+
 def send_talent_network_admin_alert(candidate_name: str,
                                     candidate_email: str,
                                     phone: str,

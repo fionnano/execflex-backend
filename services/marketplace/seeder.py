@@ -51,6 +51,16 @@ def _synthetic_vetting(leader: dict) -> dict:
     }
 
 
+def _synthetic_contact(ld: dict) -> dict:
+    """Deterministic synthetic contact details (example.com — never real)."""
+    handle = ld["key"].replace("-", ".")
+    return {
+        "email": f"{handle}@example.com",
+        "phone": "+353 1 555 0100",
+        "linkedin": f"https://linkedin.com/in/{ld['key']}",
+    }
+
+
 def seed(purge_first: bool = True) -> dict:
     """Seed the full synthetic marketplace pool. Idempotent."""
     result = {"purged": None, "leaders": 0, "opportunities": 0, "introductions": 0}
@@ -60,15 +70,18 @@ def seed(purge_first: bool = True) -> dict:
 
     # Leaders
     leader_by_key = {}
+    contact_by_key = {}
     for ld in LEADERS:
         status = ld.get("status", "verified")
         vetting = _synthetic_vetting(ld) if status == "verified" and ld.get("score") else {}
+        contact = _synthetic_contact(ld)
+        contact_by_key[ld["key"]] = contact
         created = store.create_leader(
             leader_id=ld["id"], name=ld["name"], headline=ld["headline"],
             location=ld["location"], skills=ld["skills"], sectors=ld["sectors"],
             seniority=ld["seniority"], track=ld["track"], engagement=ld["engagement"],
             comp_expectation=ld["comp"], years_experience=ld["years"],
-            vetting=vetting, vetting_status=status,
+            vetting=vetting, vetting_status=status, contact=contact,
         )
         leader_by_key[ld["key"]] = ld
         result["leaders"] += 1
@@ -88,17 +101,23 @@ def seed(purge_first: bool = True) -> dict:
     from services.marketplace.constants import MARKETPLACE_ORG_ID
     opp_by_key = {op["key"]: op for op in OPPORTUNITIES}
     comp_by_name = {c["name"]: c for c in COMPANIES}
+    from services.marketplace.constants import CONTACT_REVEALED_STATES
     for intro in INTRODUCTIONS:
         ld = leader_by_key[intro["leader"]]
         opp = opp_by_key[intro["opp"]]
+        company = comp_by_name[intro["company"]]
+        revealed = intro["status"] in CONTACT_REVEALED_STATES
         store.create_introduction(
             intro_id=intro["id"], org_id=MARKETPLACE_ORG_ID, actor_id=MARKETPLACE_ORG_ID,
             leader_id=ld["id"], leader_name=ld["name"],
-            company=comp_by_name[intro["company"]],
+            company=company,
             opportunity_id=opp["id"], opportunity_title=opp["title"],
             message=intro["message"], first_year_comp=intro["first_year_comp"],
             fee_pct=intro["fee_pct"], status=intro["status"],
             hired=(intro["status"] == "hired"),
+            leader_contact=contact_by_key[intro["leader"]] if revealed else None,
+            requester_contact={"name": "Talent Lead", "email": f"talent@{company['website']}",
+                               "company": company["name"]},
         )
         result["introductions"] += 1
 
