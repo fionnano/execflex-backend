@@ -18,4 +18,5 @@ from routes.api_v1 import (  # noqa
     talent_pools,
     ai,
     marketplace,
+    aiact,
 )
