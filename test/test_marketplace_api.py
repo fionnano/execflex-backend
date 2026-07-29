@@ -553,6 +553,24 @@ def test_gdpr_export_and_delete(client):
     assert client.get("/api/v1/marketplace/me", headers=h).get_json()["data"]["is_leader"] is False
 
 
+def test_gdpr_delete_leader_with_introductions(client):
+    # A leader with existing introductions can still be erased (ON DELETE handled
+    # in code — the leader's introductions are removed first).
+    leader_h = auth_as(org_id=LEADER_ORG, user_id=LEADER_USER)
+    company_h = auth_as(org_id=COMPANY_ORG, user_id=COMPANY_USER)
+    lid, _ = _apply_and_vet_leader(client, leader_h, email="leader@example.com")
+    req = client.post(f"/api/v1/marketplace/leaders/{lid}/introductions",
+                      headers=company_h, json={"company": {"name": "Acme AI"}})
+    assert req.status_code == 201
+    # Leader erases their profile despite having an introduction addressed to them.
+    dele = client.delete("/api/v1/marketplace/me", headers=leader_h)
+    assert dele.status_code == 200 and dele.get_json()["data"]["deleted"] is True
+    # Leader profile gone, and the introduction was removed with it.
+    assert client.get(f"/api/v1/marketplace/leaders/{lid}", headers=leader_h).status_code == 404
+    company_view = client.get("/api/v1/marketplace/introductions", headers=company_h).get_json()["data"]
+    assert company_view["total"] == 0
+
+
 # ── Validation ───────────────────────────────────────────────────────────────
 
 def test_apply_validation_rejects_bad_email(client):
