@@ -276,3 +276,25 @@ those back on GET so the edit form round-trips. Frontend JobForm enum reconciled
 DB values (full_time/part_time/contract/fractional). Verified: exact insert now
 succeeds against prod (type=hire_fractional, commitment=full_time, metadata carries
 skills+experience). Backend normalisation is the safety net for any old client.
+
+Fix 3 — forgot-password. execflex + marketplace share ONE passwordless magic-link
+auth surface (AuthForm → supabase.auth.signInWithOtp). It is HONEST: real send,
+"Check your email" only after success, error-handled, "Resend link" genuinely
+re-sends. NO forgot-password stub/lie exists here (the referenced bug is in
+transparency-platform — OUT OF SCOPE, needs a separate run). AuthContext.resetPassword
+is wired to real Supabase but is dead code (no UI renders it) — left as-is. Prod OTP
+endpoint returns 200; ACTUAL email deliverability depends on Supabase SMTP config —
+flagged for the owner (magic-link is the only login path).
+
+Fix 4 — AI Act "AI-powered". Chose option (a): enable the AI narrative. Render env
+is not settable from here, so the lever is the code default — services/aiact/engine.py
+_ai_enabled() now returns True when ANTHROPIC_API_KEY is present (unless AIACT_AI=off),
+mirroring the marketplace vetting engine. The key IS present in prod (marketplace
+vetting fires). Deterministic path still stands in on any AI failure. UI already
+shows the "AI-generated" marker only when ai_generated=true, so it becomes honest
+once the call fires. Tests forced to AIACT_AI=off to stay deterministic.
+
+Fix 5 — skill matching. After 1(c), a posted job's skills_required lands in
+metadata.required_skills, which matches.py turns into Role.required_skills.
+test/test_jobs_matching.py proves the full seam: skill-matched candidate outscores
+skill-blind for a real posted job (skills_fit 100 vs 0).

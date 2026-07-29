@@ -206,9 +206,13 @@ def score_assessment(*, system_name: str, answers: dict,
 # ── Optional AI narrative (scoring_engine, Sonnet) ───────────────────────────
 
 def _ai_enabled() -> bool:
-    if os.environ.get("AIACT_AI", "").lower() in ("1", "true", "on", "yes"):
-        return bool(os.environ.get("ANTHROPIC_API_KEY"))
-    return False
+    """AI narrative is ON by default when an Anthropic key is present (mirrors the
+    marketplace vetting engine); explicitly disable with AIACT_AI=off. The
+    deterministic path always stands in if the AI call fails, so this never
+    breaks scoring — it only decides whether a marked AI summary is attempted."""
+    if os.environ.get("AIACT_AI", "").lower() in ("0", "false", "off", "no"):
+        return False
+    return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
 def _grouped_answers(answers: dict) -> dict[str, dict]:

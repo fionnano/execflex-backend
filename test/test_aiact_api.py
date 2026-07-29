@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 import jwt as pyjwt
 
-os.environ.pop("AIACT_AI", None)  # deterministic engine in tests
+os.environ["AIACT_AI"] = "off"  # force deterministic engine in tests (AI now on-by-key in prod)
 
 
 # ── In-memory fake Supabase ──────────────────────────────────────────────────
