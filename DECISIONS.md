@@ -173,3 +173,39 @@ at repo root (the single human step) and reflects the v2 shape.
   endpoint is rate-limited (per-IP 8/h + per-leader 3/day, farming guard) and
   owner-gated. Email notifications on vetting result and intro request/response
   reuse modules/email_sender.py (best-effort; log-and-continue if unconfigured).
+
+## D-18: ainm AI Act Check — new /ai-act compliance product surface (2026-07-29)
+Shipped a live EU AI Act readiness-assessment product a company uses to assess
+its own AI-in-hiring (and general AI) for EU AI Act risk. Separate surface from
+the console's existing /compliance decisions API and from ainm.ai/transparency/
+marketplace core flows.
+- **Engine = agentic-core (shared).** Phase 1 EXTENDED the already-ported
+  agentic-core compliance module (v0.17.0 had prohibited_practices/snapshot_scorer/
+  scoring_engine/risk_summary/snapshot_gaps) with two ADDITIVE, deterministic
+  units → v0.18.0: `question_set.py` (staged intake, hiring-AI focused, stable
+  ids) and `obligations.py` (risk-tier → concrete Article obligations with
+  deployer actions). Additive only → no break to transparency/execflex suites
+  (multi-consumer gate honoured). execflex pins agentic-core @v0.18.0 in
+  requirements.txt; Render reinstalls on deploy. LOCAL agentic-core is editable
+  so changes are live in dev immediately.
+- **Deterministic backbone, AI narrative marked.** services/aiact/engine.py runs
+  prohibited screen + snapshot score + rule-based classification + obligation
+  mapping + gap analysis with ZERO tokens (reliable, explainable, defensible for
+  a compliance tool). An optional AI-generated narrative (agentic-core
+  scoring_engine / Sonnet) is added behind AIACT_AI (default off) and ALWAYS
+  carries ai_generated=True; deterministic rationale stands in on any failure.
+  Classification/obligations/gaps are deterministic (NOT AI) by design.
+- **Storage (no new prod DDL — same D-14 constraint).** Assessments persist in
+  activity_log, entity_type='client' (a permitted CHECK value; the assessment is
+  about the org itself), activity_type='ai_act_assessment', metadata.aiact=True.
+  Owned by ctx.org_id; every read is tenant-scoped. AI_ACT_MIGRATION.sql (repo
+  root) is the dedicated-table + RLS graduation path (single human step).
+- **Safety.** Tenant isolation (org-scoped reads); validation.py validates every
+  answer against the question set's allowed options; scoring endpoint rate-limited
+  (per-IP 20/h + per-org 40/h); GDPR export + delete. Disclaimer ("readiness/
+  decision-support, not legal advice") returned with the question set and every
+  result, and rendered in the product UI. AI narrative decisions logged to
+  ai_decision_log (decision_type='ai_act_readiness').
+- Frontend surface: /ai-act (execo-bridge), staged assessment + readiness report,
+  responsive 375/1440. Trust marker "EU AI Act assessed" links in from console +
+  marketplace. Methodology in AI_ACT_METHODOLOGY.md.
