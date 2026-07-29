@@ -265,3 +265,14 @@ around the products:
   separate sign-in — a full cross-product SSO or account-link would require changing
   ainm.ai's auth, which is explicitly out of scope (live product). No product's
   internals were changed; the shell is purely additive and reversible.
+
+## D-21: Pre-launch blocker fixes (2026-07-29, per LAUNCH_READINESS_AUDIT.md)
+Fix 1 — job posting 500. routes/api_v1/jobs.py POST omitted the NOT-NULL
+opportunities.type enum → 23502. Fixed: populate type (default hire_fractional,
+override via type/is_ned → hire_ned); normalise commitment_type to the DB enum
+(full-time→full_time, interim→contract, etc.); route skills_required/experience
+into metadata.required_skills/min_experience where matches.py reads them; serialize
+those back on GET so the edit form round-trips. Frontend JobForm enum reconciled to
+DB values (full_time/part_time/contract/fractional). Verified: exact insert now
+succeeds against prod (type=hire_fractional, commitment=full_time, metadata carries
+skills+experience). Backend normalisation is the safety net for any old client.
