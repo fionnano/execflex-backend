@@ -209,3 +209,59 @@ marketplace core flows.
 - Frontend surface: /ai-act (execo-bridge), staged assessment + readiness report,
   responsive 375/1440. Trust marker "EU AI Act assessed" links in from console +
   marketplace. Methodology in AI_ACT_METHODOLOGY.md.
+
+## D-19: Graduate marketplace + AI Act onto dedicated prod tables (2026-07-29)
+The dedicated tables from MARKETPLACE_MIGRATION.sql / AI_ACT_MIGRATION.sql are now
+applied in prod, so both products moved off the namespaced workaround onto them.
+- services/marketplace/store.py rewritten against marketplace_leaders/_companies/
+  _opportunities/_introductions/_vetting_assessments; services/aiact/store.py
+  against aiact_assessments. Public signatures + serialized shapes UNCHANGED, so
+  routes/frontend/tests are untouched.
+- **Schema deltas found at migrate time** (the applied SQL differed slightly from
+  the file): marketplace_introductions has NO leader_name column (leader_name is
+  resolved from the leader_id FK at read time) and marketplace_opportunities has
+  NO updated_at. The store was adjusted to match the REAL prod schema.
+- **Leader↔account link now uses the real user_id column** (UNIQUE on
+  marketplace_leaders) — the source_metadata.owner_user_id workaround is gone
+  (that was only needed because people_profiles.user_id was globally unique; the
+  dedicated table has no such collision).
+- **ON DELETE fix (in code, no DDL needed):** delete_leader removes the leader's
+  introductions first (leader_id FK is RESTRICT), then the leader
+  (marketplace_vetting_assessments cascades). GDPR erase now works for a leader
+  with introductions. +1 test.
+- **purge_marketplace is SEED-ONLY** (deletes by deterministic seed ids) so a
+  re-seed never nukes real signups.
+- **Migration:** scripts/migrate_marketplace_to_dedicated.py (idempotent, in-code)
+  copied the namespaced rows → dedicated tables. Ran against prod: 15 leaders / 7
+  companies / 6 opportunities / 5 introductions. **The namespaced source rows were
+  left intact** so the repoint is fully REVERSIBLE (revert the deploy → reads the
+  old store again). Zero-downtime: data was migrated BEFORE the deploy.
+
+## D-20: Unified suite shell — auth reality + safe integration (2026-07-29)
+**Auth reality (detected, logged as required):**
+- **execflex.ai** — Search (/console), Marketplace (/marketplace), AI Act Check
+  (/ai-act) are all in ONE SPA (execo-bridge) on ONE Supabase project
+  (krzacydualjpsapffpfm). These three ALREADY share a single login — moving
+  between them is seamless today.
+- **ainm.ai (hr-advisory-agent)** — a SEPARATE app with its OWN custom JWT auth
+  and its OWN Postgres (DATABASE_URL); NO Supabase. It is the LIVE client product
+  (Republic of Work). **Transparency (transparency.ainm.ai)** is likewise a
+  separate app. So execflex and ainm.ai/transparency are SEPARATE auth/accounts.
+
+**Decision (given the hard rule to never risk ainm.ai's live auth):** do NOT merge
+user databases and do NOT modify ainm.ai/transparency. Build the unifying SHELL
+around the products:
+- Backend: services/suite (config-driven module registry) + GET /api/v1/suite/modules
+  returns the caller's entitled modules. Internal modules (search/marketplace/aiact)
+  are one-login; external modules (hr → ainm.ai, transparency → transparency.ainm.ai)
+  are marked external + separate_login with their URL. Entitlements are config-driven
+  (SUITE_ORG_MODULES per-org JSON, SUITE_DEFAULT_MODULES global) — enough that "one
+  suite, modular access" is real and demoable; NOT a billing integration.
+- Frontend: SuiteHome (/suite) is the new post-login front door (module dashboard);
+  a SuiteSwitcher drops into every module's top bar. Internal modules navigate
+  in-app (seamless single login); external modules open in a new tab.
+- **SSO status (honest):** real SSO exists ONLY across the three internal execflex
+  modules (same Supabase session). HR and Transparency are SHELL-LINKED with a
+  separate sign-in — a full cross-product SSO or account-link would require changing
+  ainm.ai's auth, which is explicitly out of scope (live product). No product's
+  internals were changed; the shell is purely additive and reversible.

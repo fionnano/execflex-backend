@@ -19,4 +19,5 @@ from routes.api_v1 import (  # noqa
     ai,
     marketplace,
     aiact,
+    suite,
 )
