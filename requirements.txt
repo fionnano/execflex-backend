@@ -77,6 +77,6 @@ anthropic>=0.43
 # host-alias approach does NOT transfer here. Render's build must supply a
 # credential for this private repo — either a GitHub PAT (https) or an SSH deploy
 # key added in the Render dashboard (then switch this line to
-# git+ssh://git@github.com/fionnano/agentic-core.git@v0.18.0). Without one of
+# git+ssh://git@github.com/fionnano/agentic-core.git@v0.18.1). Without one of
 # those configured in Render, `pip install` fails with an auth error at deploy.
-agentic-core @ git+https://github.com/fionnano/agentic-core.git@v0.18.0
+agentic-core @ git+https://github.com/fionnano/agentic-core.git@v0.18.1
