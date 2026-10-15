@@ -92,6 +92,7 @@ def screen_candidate():
             purpose=data.get("purpose"),
             user_id=user_id if user_id not in ("unknown", None) and not user_id.startswith("service:") else None,
             role_id=data.get("role_id"),
+            sign_callback=is_service,
         )
         return jsonify(result), 201
     except Exception as e:

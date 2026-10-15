@@ -1,8 +1,12 @@
 """
 Screening service: candidate screening call creation, scoring, and webhook delivery.
 """
+import hashlib
+import hmac
 import json
+import os
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -26,9 +30,15 @@ def create_screening_job(
     purpose: Optional[str] = None,
     user_id: Optional[str] = None,
     role_id: Optional[str] = None,
+    sign_callback: bool = False,
 ) -> Dict[str, Any]:
     """
     Create an outbound_call_job for a candidate screening call.
+
+    sign_callback: HMAC-sign the results webhook (see _signed_callback_headers).
+    Set only for service-to-service callers (ainm) — never for jobs created by
+    ordinary users, otherwise any account could obtain a genuinely signed
+    payload for an arbitrary source_candidate_id.
 
     The job is picked up automatically by the existing call_dispatcher worker.
 
@@ -76,6 +86,7 @@ def create_screening_job(
                 "callback_url": callback_url,
                 "source_candidate_id": source_candidate_id,
                 "role_id": role_id,
+                "sign_callback": bool(sign_callback),
                 # Aidan asks for verbal consent at the start of every
                 # call; the bias-audit logger captures the response.
                 "consent_requested": True,
@@ -227,6 +238,7 @@ def score_screening_call(interaction_id: str, job_id: str) -> Optional[Dict[str,
         questions = ctx.get("questions", [])
         callback_url = ctx.get("callback_url")
         source_candidate_id = ctx.get("source_candidate_id")
+        sign_callback = bool(ctx.get("sign_callback"))
         call_duration_seconds = int(artifacts.get("call_duration") or 0)
         recording_url = artifacts.get("recording_url")
         call_status_raw = artifacts.get("call_status", "completed")
@@ -271,6 +283,7 @@ def score_screening_call(interaction_id: str, job_id: str) -> Optional[Dict[str,
                         "call_status": "incomplete",
                     },
                     job_id=job_id,
+                    sign=sign_callback,
                 )
             return None
 
@@ -466,6 +479,7 @@ Respond ONLY with valid JSON:
                     "candidate_portal_url": f"https://execflex.ai/my-screening?token={candidate_token}",
                 },
                 job_id=job_id,
+                sign=sign_callback,
             )
 
         return {
@@ -596,10 +610,31 @@ def _log_bias_audit(
 # Webhook delivery
 # ---------------------------------------------------------------------------
 
-def _fire_callback(callback_url: str, payload: Dict[str, Any], job_id: Optional[str] = None):
+def _signed_callback_headers(body: bytes, timestamp: Optional[int] = None) -> Dict[str, str]:
+    """Headers authenticating a callback body to ainm's /hiring/screening-callback.
+
+    X-Execflex-Signature = "sha256=" + HMAC-SHA256(AINM_SERVICE_KEY,
+    f"{timestamp}." + body). A signature, never the key itself, because
+    callback_url is caller-supplied. Returns {} when the key is unset (ainm
+    fails closed, so an unsigned callback is rejected there).
+    """
+    key = os.getenv("AINM_SERVICE_KEY")
+    if not key:
+        return {}
+    ts = int(time.time()) if timestamp is None else int(timestamp)
+    sig = hmac.new(key.encode(), f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
+    return {"X-Execflex-Timestamp": str(ts), "X-Execflex-Signature": f"sha256={sig}"}
+
+
+def _fire_callback(callback_url: str, payload: Dict[str, Any], job_id: Optional[str] = None,
+                   sign: bool = False):
     """POST results to the callback URL. Errors are logged; not re-raised."""
     try:
-        resp = http_requests.post(callback_url, json=payload, timeout=15)
+        body = json.dumps(payload).encode()
+        headers = {"Content-Type": "application/json"}
+        if sign:
+            headers.update(_signed_callback_headers(body))
+        resp = http_requests.post(callback_url, data=body, headers=headers, timeout=15)
         if resp.status_code >= 400:
             print(
                 f"⚠️ Callback returned {resp.status_code} for job {job_id}: "
