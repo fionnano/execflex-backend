@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 import requests as http_requests
 
 from config.clients import supabase_client, gpt_client
+from services.screening_service import _signed_callback_headers
 
 
 # ---------------------------------------------------------------------------
@@ -26,10 +27,17 @@ def _create_call_job(
     call_type: str,
     call_context: Dict[str, Any],
     callback_url: Optional[str],
+    sign_callback: bool = False,
 ) -> Dict[str, Any]:
     """
     Insert an outbound_call_job + interaction row.
     The existing Twilio dispatcher picks up queued jobs automatically.
+
+    sign_callback: HMAC-sign the results webhook (see
+    screening_service._signed_callback_headers). Set only for
+    service-to-service callers (ainm), never for user-created jobs, so an
+    ordinary account can't obtain a genuinely signed payload for an
+    arbitrary source id.
     """
     if not supabase_client:
         raise RuntimeError("Supabase client not available")
@@ -63,6 +71,7 @@ def _create_call_job(
             "screening_context": {   # reuse key — voice_websocket reads this
                 **call_context,
                 "callback_url": callback_url,
+                "sign_callback": bool(sign_callback),
             },
         },
     }).execute()
@@ -89,6 +98,7 @@ def create_onboarding_call_job(
     first_day_instructions: str,
     callback_url: Optional[str],
     source_tracker_id: Optional[str],
+    sign_callback: bool = False,
 ) -> Dict[str, Any]:
     return _create_call_job(
         phone=employee_phone,
@@ -103,6 +113,7 @@ def create_onboarding_call_job(
             "source_tracker_id": source_tracker_id,
         },
         callback_url=callback_url,
+        sign_callback=sign_callback,
     )
 
 
@@ -135,7 +146,7 @@ def process_onboarding_call(interaction_id: str, job_id: str):
                 "transcript": transcript,
                 "call_status": call_status,
                 "call_duration_seconds": int(artifacts.get("call_duration") or 0),
-            }, job_id)
+            }, job_id, sign=bool(ctx.get("sign_callback")))
 
     except Exception as e:
         print(f"❌ Error processing onboarding call: {e}")
@@ -160,6 +171,7 @@ def create_reference_call_job(
     questions: List[str],
     callback_url: Optional[str],
     source_ref_id: Optional[str],
+    sign_callback: bool = False,
 ) -> Dict[str, Any]:
     return _create_call_job(
         phone=referee_phone,
@@ -174,6 +186,7 @@ def create_reference_call_job(
             "source_ref_id": source_ref_id,
         },
         callback_url=callback_url,
+        sign_callback=sign_callback,
     )
 
 
@@ -244,7 +257,7 @@ Respond ONLY with valid JSON."""
                 "key_quotes": result.get("key_quotes", []),
                 "call_status": call_status,
                 "call_duration_seconds": int(artifacts.get("call_duration") or 0),
-            }, job_id)
+            }, job_id, sign=bool(ctx.get("sign_callback")))
 
     except Exception as e:
         print(f"❌ Error processing reference call: {e}")
@@ -268,6 +281,7 @@ def create_exit_interview_call_job(
     manager_name: str,
     callback_url: Optional[str],
     source_user_id: Optional[str],
+    sign_callback: bool = False,
 ) -> Dict[str, Any]:
     return _create_call_job(
         phone=employee_phone,
@@ -281,6 +295,7 @@ def create_exit_interview_call_job(
             "source_user_id": source_user_id,
         },
         callback_url=callback_url,
+        sign_callback=sign_callback,
     )
 
 
@@ -356,7 +371,7 @@ Respond ONLY with valid JSON."""
                 "actionable_feedback": result.get("actionable_feedback", []),
                 "call_status": call_status,
                 "call_duration_seconds": int(artifacts.get("call_duration") or 0),
-            }, job_id)
+            }, job_id, sign=bool(ctx.get("sign_callback")))
 
     except Exception as e:
         print(f"❌ Error processing exit interview: {e}")
@@ -392,9 +407,19 @@ def _build_transcript(interaction_id: str) -> str:
         return ""
 
 
-def _fire_callback(callback_url: str, payload: Dict[str, Any], job_id: Optional[str] = None):
+def _fire_callback(callback_url: str, payload: Dict[str, Any], job_id: Optional[str] = None,
+                   sign: bool = False):
+    """POST results to the callback URL, HMAC-signed when the job asked for it.
+
+    Sends the exact signed bytes (data=, not json=). Never sends the shared
+    key itself: callback_url is caller-supplied.
+    """
     try:
-        resp = http_requests.post(callback_url, json=payload, timeout=15)
+        body = json.dumps(payload).encode()
+        headers = {"Content-Type": "application/json"}
+        if sign:
+            headers.update(_signed_callback_headers(body))
+        resp = http_requests.post(callback_url, data=body, headers=headers, timeout=15)
         if resp.status_code >= 400:
             print(f"⚠️ Callback {callback_url} returned {resp.status_code}: {resp.text[:200]}")
         else:

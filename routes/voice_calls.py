@@ -20,6 +20,16 @@ from utils.auth_helpers import require_auth
 voice_calls_bp = Blueprint("voice_calls", __name__, url_prefix="/voice-call")
 
 
+def _is_service_caller() -> bool:
+    """True for service-to-service callers (ainm via X-Service-Key).
+
+    Only their jobs get an HMAC-signed results webhook; see
+    voice_call_service._create_call_job.
+    """
+    user_id = request.environ.get("authenticated_user_id") or ""
+    return user_id.startswith("service:")
+
+
 @voice_calls_bp.route("/onboarding", methods=["POST"])
 @require_auth
 def onboarding_welcome_call():
@@ -57,6 +67,7 @@ def onboarding_welcome_call():
             first_day_instructions=data.get("first_day_instructions", ""),
             callback_url=data.get("callback_url"),
             source_tracker_id=data.get("source_tracker_id"),
+            sign_callback=_is_service_caller(),
         )
         return jsonify(result), 201
     except Exception as e:
@@ -112,6 +123,7 @@ def reference_check_call():
             questions=data.get("questions") or default_questions,
             callback_url=data.get("callback_url"),
             source_ref_id=data.get("source_ref_id"),
+            sign_callback=_is_service_caller(),
         )
         return jsonify(result), 201
     except Exception as e:
@@ -155,6 +167,7 @@ def exit_interview_call():
             manager_name=data.get("manager_name", "their manager"),
             callback_url=data.get("callback_url"),
             source_user_id=data.get("source_user_id"),
+            sign_callback=_is_service_caller(),
         )
         return jsonify(result), 201
     except Exception as e:
