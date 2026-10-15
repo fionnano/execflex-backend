@@ -235,7 +235,8 @@ def set_leader_vetting(leader_id: str, vetting: dict, status: str) -> Optional[d
             "questions": [],
             "responses": [],
             "score": vetting.get("score"),
-            "passed": vetting.get("passed"),
+            # The AI's own verdict, even when the profile is held for review.
+            "passed": vetting.get("ai_passed", vetting.get("passed")),
             "rationale": vetting.get("rationale"),
             "per_competency": vetting.get("per_competency") or [],
             "model_used": vetting.get("model_used"),
@@ -243,6 +244,20 @@ def set_leader_vetting(leader_id: str, vetting: dict, status: str) -> Optional[d
         }).execute()
     except Exception:
         pass  # audit is best-effort; never block the vetting result
+    return get_leader(leader_id)
+
+
+def set_leader_vetting_review(leader_id: str, vetting: dict, status: str) -> Optional[dict]:
+    """Persist a human review of an existing vetting result (no new assessment row)."""
+    db = _db()
+    rows = db.table(LEADERS_TBL).select("id").eq("id", leader_id).execute().data
+    if not rows:
+        return None
+    db.table(LEADERS_TBL).update({
+        "vetting": vetting,
+        "vetting_status": status,
+        "updated_at": _now(),
+    }).eq("id", leader_id).execute()
     return get_leader(leader_id)
 
 

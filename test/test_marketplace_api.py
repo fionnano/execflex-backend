@@ -603,3 +603,104 @@ def test_vetting_rate_limit(client):
         codes.append(rr.status_code)
     assert codes[:3] == [200, 200, 200]
     assert codes[3] == 429
+
+
+# ── Vetting: AI fail is held for human review (GDPR Art. 22) ─────────
+
+_WEAK = "Yes."
+
+
+@pytest.fixture
+def vetting_emails(monkeypatch):
+    sent = []
+    import modules.email_sender as es
+    monkeypatch.setattr(es, "send_marketplace_vetting_result", lambda **kw: sent.append(kw) or True)
+    return sent
+
+
+def _apply_and_fail(client, headers, email="leader@example.com"):
+    a = client.post("/api/v1/marketplace/leaders", headers=headers,
+                    json={"name": "Weak Leader", "track": "ml_platform", "email": email})
+    assert a.status_code in (200, 201), a.get_data(as_text=True)
+    lid = a.get_json()["data"]["id"]
+    qs = client.get("/api/v1/marketplace/vetting/questions?track=ml_platform",
+                    headers=headers).get_json()["data"]["questions"]
+    responses = [{"question_id": q["id"], "competency": q["competency"],
+                  "weight": q["weight"], "text": _WEAK} for q in qs]
+    v = client.post(f"/api/v1/marketplace/leaders/{lid}/vetting", headers=headers,
+                    json={"track": "ml_platform", "responses": responses})
+    assert v.status_code == 200, v.get_data(as_text=True)
+    return lid, v.get_json()["data"]
+
+
+def test_ai_fail_is_held_for_review_not_rejected(client, vetting_emails):
+    h = auth_as(org_id=LEADER_ORG, user_id=LEADER_USER)
+    lid, data = _apply_and_fail(client, h)
+    assert data["leader"]["vetting_status"] == "in_progress"
+    assert data["vetting"]["status"] == "pending_human_review"
+    assert data["vetting"]["passed"] is None
+    assert data["vetting"]["ai_status"] == "rejected"
+    assert vetting_emails == []  # no rejection email before a human decides
+    # The audit row still records the AI's own verdict.
+    audit = client._db.store["marketplace_vetting_assessments"]
+    assert audit[-1]["leader_id"] == lid and audit[-1]["passed"] is False
+    # Not listed while under review.
+    leaders = client.get("/api/v1/marketplace/leaders", headers=auth()).get_json()["data"]["leaders"]
+    assert lid not in [l["id"] for l in leaders]
+
+
+def test_ai_pass_still_emails(client, vetting_emails):
+    h = auth_as(org_id=LEADER_ORG, user_id=LEADER_USER)
+    a = client.post("/api/v1/marketplace/leaders", headers=h,
+                    json={"name": "Strong Leader", "track": "ml_platform", "email": "s@example.com"})
+    lid = a.get_json()["data"]["id"]
+    qs = client.get("/api/v1/marketplace/vetting/questions?track=ml_platform",
+                    headers=h).get_json()["data"]["questions"]
+    responses = [{"question_id": q["id"], "competency": q["competency"],
+                  "weight": q["weight"], "text": _STRONG} for q in qs]
+    client.post(f"/api/v1/marketplace/leaders/{lid}/vetting", headers=h,
+                json={"track": "ml_platform", "responses": responses})
+    assert [e["passed"] for e in vetting_emails] == [True]
+
+
+def test_admin_confirms_rejection_then_leader_is_told(client, vetting_emails):
+    h = auth_as(org_id=LEADER_ORG, user_id=LEADER_USER)
+    lid, _ = _apply_and_fail(client, h)
+    r = client.post(f"/api/v1/marketplace/leaders/{lid}/vetting/review", headers=admin_auth(),
+                    json={"decision": "rejected", "reason": "Answers lacked concrete examples"})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    data = r.get_json()["data"]
+    assert data["leader"]["vetting_status"] == "rejected"
+    assert data["vetting"]["human_review"]["human_override"] is False
+    assert [e["passed"] for e in vetting_emails] == [False]
+    assert "Answers lacked concrete examples" in vetting_emails[0]["rationale"]
+
+
+def test_admin_rejection_requires_reason(client, vetting_emails):
+    h = auth_as(org_id=LEADER_ORG, user_id=LEADER_USER)
+    lid, _ = _apply_and_fail(client, h)
+    r = client.post(f"/api/v1/marketplace/leaders/{lid}/vetting/review", headers=admin_auth(),
+                    json={"decision": "rejected"})
+    assert r.status_code == 400
+    assert vetting_emails == []
+
+
+def test_admin_can_override_ai_fail_to_verified(client, vetting_emails):
+    h = auth_as(org_id=LEADER_ORG, user_id=LEADER_USER)
+    lid, _ = _apply_and_fail(client, h)
+    r = client.post(f"/api/v1/marketplace/leaders/{lid}/vetting/review", headers=admin_auth(),
+                    json={"decision": "verified", "reason": "Strong references verified by phone"})
+    assert r.status_code == 200
+    assert r.get_json()["data"]["vetting"]["human_review"]["human_override"] is True
+    leaders = client.get("/api/v1/marketplace/leaders", headers=auth()).get_json()["data"]["leaders"]
+    assert lid in [l["id"] for l in leaders]
+    assert [e["passed"] for e in vetting_emails] == [True]
+
+
+def test_non_admin_cannot_review_vetting(client, vetting_emails):
+    h = auth_as(org_id=LEADER_ORG, user_id=LEADER_USER)
+    lid, _ = _apply_and_fail(client, h)
+    r = client.post(f"/api/v1/marketplace/leaders/{lid}/vetting/review", headers=h,
+                    json={"decision": "rejected", "reason": "Answers lacked concrete examples"})
+    assert r.status_code == 403
+    assert vetting_emails == []

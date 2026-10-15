@@ -579,6 +579,7 @@ def candidate_status():
         role_title = "the role"
         company_name = "the company"
         duration_seconds = 0
+        human_review = None
 
         if job_resp.data:
             artifacts = (job_resp.data[0] or {}).get("artifacts") or {}
@@ -587,13 +588,17 @@ def candidate_status():
             role_title = ctx.get("role_title", role_title)
             company_name = ctx.get("company_name", company_name)
             duration_seconds = int(artifacts.get("call_duration") or 0)
+            human_review = artifacts.get("human_review")
 
-        # Map recommendation to candidate-friendly status
-        rec = ix.get("screening_recommendation")
+        # Map recommendation to candidate-friendly status. An AI "reject" is
+        # shown as under review until a recruiter confirms it (GDPR Art. 22).
+        from services.compliance.human_review import candidate_facing_outcome
+        rec = candidate_facing_outcome(ix.get("screening_recommendation"), human_review)
         status_map = {
             "strong_proceed": "progressed",
             "proceed": "progressed",
             "hold": "under_review",
+            "pending_human_review": "under_review",
             "reject": "not_progressed",
             "incomplete": "under_review",
         }
@@ -607,6 +612,102 @@ def candidate_status():
             "status": status_map.get(rec, "under_review"),
             "token": token,
         }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+_HUMAN_DECISIONS = ("strong_proceed", "proceed", "hold", "reject")
+
+
+@screening_bp.route("/<job_id>/human-review", methods=["POST"])
+@require_auth
+def record_human_review(job_id: str):
+    """
+    POST /screening/<job_id>/human-review
+
+    A recruiter records the decision on an AI screening. Until this is called,
+    an AI "reject" is shown to the candidate as "under review" and the Art 86
+    feedback email does not say "not proceeding" (GDPR Art. 22 — no solely
+    automated adverse decision).
+
+    Body (JSON):
+        decision  str — strong_proceed | proceed | hold | reject
+        reason    str — required for reject (candidate's right to explanation)
+        reviewer  str — recruiter identity; required for service callers (ainm),
+                        whose own recruiter made the decision
+
+    Allowed callers: the user who created the screening, or the ainm service.
+    """
+    user_id = request.environ.get("authenticated_user_id") or ""
+    is_service = user_id.startswith("service:")
+    data = request.get_json(force=True) or {}
+
+    decision = (data.get("decision") or "").strip().lower()
+    if decision not in _HUMAN_DECISIONS:
+        return jsonify({"error": f"decision must be one of {', '.join(_HUMAN_DECISIONS)}"}), 400
+    reason = (data.get("reason") or "").strip()
+    reviewer_id = (data.get("reviewer") or "").strip() if is_service else user_id
+    if not reviewer_id:
+        return jsonify({"error": "reviewer is required for service callers"}), 400
+
+    try:
+        from config.clients import supabase_client
+        from datetime import datetime, timezone
+        from types import SimpleNamespace
+        from services.compliance.human_review import require_human_review_for_reject
+        if not supabase_client:
+            return jsonify({"error": "Database not available"}), 503
+
+        job_resp = (
+            supabase_client.table("outbound_call_jobs")
+            .select("id, user_id, interaction_id, artifacts")
+            .eq("id", job_id)
+            .limit(1)
+            .execute()
+        )
+        if not job_resp.data:
+            return jsonify({"error": "Screening job not found"}), 404
+        job = job_resp.data[0]
+        if not is_service and job.get("user_id") != user_id:
+            return jsonify({"error": "Screening job not found"}), 404
+
+        if decision == "reject":
+            check = require_human_review_for_reject(
+                SimpleNamespace(user_id=reviewer_id), job_id, reason)
+            if not check["allowed"]:
+                return jsonify({"error": check["message"]}), 400
+
+        ai_recommendation = None
+        if job.get("interaction_id"):
+            ix_resp = (
+                supabase_client.table("interactions")
+                .select("screening_recommendation")
+                .eq("id", job["interaction_id"])
+                .limit(1)
+                .execute()
+            )
+            if ix_resp.data:
+                ai_recommendation = (ix_resp.data[0] or {}).get("screening_recommendation")
+
+        human_review = {
+            "decision": decision,
+            "reason": reason or None,
+            "reviewer_id": reviewer_id,
+            "reviewed_via": "service" if is_service else "user",
+            "ai_recommendation": ai_recommendation,
+            "human_override": bool(ai_recommendation) and ai_recommendation != decision,
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        artifacts = dict(job.get("artifacts") or {})
+        artifacts["human_review"] = human_review
+        supabase_client.table("outbound_call_jobs").update(
+            {"artifacts": artifacts}
+        ).eq("id", job_id).execute()
+
+        return jsonify({"job_id": job_id, "human_review": human_review}), 200
 
     except Exception as e:
         import traceback

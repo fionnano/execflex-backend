@@ -43,12 +43,14 @@ Routes (all under /api/v1/marketplace):
 """
 import threading
 import time
+from datetime import datetime, timezone
 
 from flask import request
 
 from routes.api_v1 import api_v1_bp
 from services.api.auth import require_org, get_org_context
 from services.api.responses import api_ok, api_error
+from services.compliance.human_review import PENDING_HUMAN_REVIEW
 from services.marketplace import store
 from services.marketplace import validation as V
 from services.marketplace.constants import (
@@ -346,8 +348,17 @@ def marketplace_submit_vetting(leader_id):
     result = score_vetting(leader_name=leader["name"], track=track, responses=responses)
     vetting = result.to_dict()
     vetting["track"] = track
+    status = result.status
 
-    updated = store.set_leader_vetting(leader_id, vetting, result.status)
+    # An AI fail is not a decision: hold the profile for a marketplace admin
+    # (GDPR Art. 22 — no solely automated adverse decision). 'in_progress' is
+    # the existing "under review" status; the AI verdict is kept as ai_*.
+    if not result.passed:
+        vetting["ai_status"], vetting["ai_passed"] = vetting["status"], vetting["passed"]
+        vetting["status"], vetting["passed"] = PENDING_HUMAN_REVIEW, None
+        status = "in_progress"
+
+    updated = store.set_leader_vetting(leader_id, vetting, status)
     store.record_vetting_attempt(leader_id)
 
     # Audit the AI decision (EU AI Act Art. 13 transparency).
@@ -364,20 +375,90 @@ def marketplace_submit_vetting(leader_id):
     except Exception:
         pass
 
-    # Notify the leader of the outcome (best-effort; only if they gave an email).
-    contact = (leader.get("contact") or {})
-    if contact.get("email"):
-        try:
-            from modules.email_sender import send_marketplace_vetting_result
-            send_marketplace_vetting_result(
-                leader_email=contact["email"], leader_name=leader["name"],
-                passed=result.passed, score=result.score,
-                threshold=vetting.get("threshold", 70), rationale=result.rationale,
-                track=track,
-            )
-        except Exception:
-            pass
+    # Notify the leader of a pass (best-effort; only if they gave an email). A
+    # fail is only emailed once an admin confirms it (vetting/review below).
+    if result.passed:
+        _email_vetting_outcome(leader, passed=True, vetting=vetting)
 
+    return api_ok({"leader": updated, "vetting": vetting})
+
+
+def _email_vetting_outcome(leader: dict, *, passed: bool, vetting: dict, note: str = ""):
+    contact = (leader.get("contact") or {})
+    if not contact.get("email"):
+        return
+    rationale = vetting.get("rationale") or ""
+    if note:
+        rationale = f"Reviewer's note: {note}\n\n{rationale}"
+    try:
+        from modules.email_sender import send_marketplace_vetting_result
+        send_marketplace_vetting_result(
+            leader_email=contact["email"], leader_name=leader["name"],
+            passed=passed, score=vetting.get("score") or 0,
+            threshold=vetting.get("threshold", 70), rationale=rationale,
+            track=vetting.get("track"),
+        )
+    except Exception:
+        pass
+
+
+@api_v1_bp.route('/marketplace/leaders/<leader_id>/vetting/review', methods=['POST'])
+@require_org()
+def marketplace_review_vetting(leader_id):
+    """Marketplace admin confirms or overrides an AI vetting result.
+
+    Body: {"decision": "verified" | "rejected", "reason": str}. A rejection
+    needs a reason (require_human_review_for_reject); only then is the leader
+    told they were not verified.
+    """
+    ctx = get_org_context()
+    if not _is_marketplace_admin(ctx):
+        return api_error("Only marketplace admins can review vetting results", 403)
+    leader = store.get_leader(leader_id, include_contact=True)
+    if not leader:
+        return api_error("Leader not found", 404)
+    vetting = dict(leader.get("vetting") or {})
+    if not vetting:
+        return api_error("This leader has no vetting result to review", 400)
+
+    data = request.get_json() or {}
+    decision = (data.get("decision") or "").strip().lower()
+    if decision not in ("verified", "rejected"):
+        return api_error("decision must be 'verified' or 'rejected'", 400)
+    reason = (data.get("reason") or "").strip()
+    if decision == "rejected":
+        from services.compliance.human_review import require_human_review_for_reject
+        check = require_human_review_for_reject(ctx, leader_id, reason)
+        if not check["allowed"]:
+            return api_error(check["message"], 400)
+
+    ai_status = vetting.get("ai_status") or vetting.get("status")
+    vetting["status"], vetting["passed"] = decision, decision == "verified"
+    vetting["human_review"] = {
+        "decision": decision,
+        "reason": reason or None,
+        "reviewer_id": ctx.user_id,
+        "ai_status": ai_status,
+        "human_override": bool(ai_status) and ai_status != decision,
+        "reviewed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    updated = store.set_leader_vetting_review(leader_id, vetting, decision)
+
+    try:
+        from services.compliance.decision_logger import log_decision
+        log_decision(
+            org_id=ctx.org_id, decision_type="reject" if decision == "rejected" else "screening_score",
+            candidate_id=leader_id, opportunity_id=None,
+            inputs={"channel": "marketplace_vetting_review", "ai_status": ai_status},
+            model_used=vetting.get("model_used"),
+            score=round((vetting.get("score") or 0) / 100.0, 2),
+            explanation=reason or vetting.get("rationale"),
+            human_reviewed=True, human_reviewer_id=ctx.user_id,
+        )
+    except Exception:
+        pass
+
+    _email_vetting_outcome(leader, passed=decision == "verified", vetting=vetting, note=reason)
     return api_ok({"leader": updated, "vetting": vetting})
 
 
