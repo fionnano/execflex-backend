@@ -31,6 +31,7 @@ def create_screening_job(
     user_id: Optional[str] = None,
     role_id: Optional[str] = None,
     sign_callback: bool = False,
+    candidate_email: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create an outbound_call_job for a candidate screening call.
@@ -39,6 +40,10 @@ def create_screening_job(
     Set only for service-to-service callers (ainm) — never for jobs created by
     ordinary users, otherwise any account could obtain a genuinely signed
     payload for an arbitrary source_candidate_id.
+
+    candidate_email: the candidate's email on record. Stored so the Art 86
+    feedback endpoint can send results ONLY to this address (never to one
+    the requester types in).
 
     The job is picked up automatically by the existing call_dispatcher worker.
 
@@ -87,6 +92,7 @@ def create_screening_job(
                 "source_candidate_id": source_candidate_id,
                 "role_id": role_id,
                 "sign_callback": bool(sign_callback),
+                "candidate_email": (candidate_email or "").strip().lower() or None,
                 # Aidan asks for verbal consent at the start of every
                 # call; the bias-audit logger captures the response.
                 "consent_requested": True,
