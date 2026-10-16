@@ -52,15 +52,19 @@ def test_signed_callback_verifies_with_ainm_algorithm(captured):
     assert "test-shared-key" not in json.dumps(headers)
 
 
-def test_unsigned_callback_has_no_signature_headers(captured):
-    screening_service._fire_callback("https://example.com/cb", {"a": 1}, job_id="j1")
-    _, kwargs = captured[0]
-    assert "X-Execflex-Signature" not in kwargs["headers"]
-    assert "X-Execflex-Timestamp" not in kwargs["headers"]
+def test_unsigned_callback_is_not_delivered(captured):
+    # GDPR-E-005: an unsigned callback (user-created job) is never posted.
+    screening_service._fire_callback("https://ainm.ai/cb", {"a": 1}, job_id="j1")
+    assert captured == []
 
 
-def test_no_key_means_no_signature(captured, monkeypatch):
+def test_callback_outside_allow_list_is_not_delivered(captured):
+    screening_service._fire_callback("https://example.com/cb", {"a": 1}, job_id="j1", sign=True)
+    assert captured == []
+
+
+def test_no_key_means_no_delivery(captured, monkeypatch):
+    # Without the shared key the payload cannot be signed, so it is not sent.
     monkeypatch.delenv("AINM_SERVICE_KEY", raising=False)
     screening_service._fire_callback("https://ainm.ai/cb", {"a": 1}, job_id="j1", sign=True)
-    _, kwargs = captured[0]
-    assert "X-Execflex-Signature" not in kwargs["headers"]
+    assert captured == []

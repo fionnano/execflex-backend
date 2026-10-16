@@ -12,7 +12,7 @@ from flask_cors import CORS
 from flask_sock import Sock
 
 # Configuration
-from config.app_config import validate_config, print_config_status, PORT
+from config.app_config import validate_config, validate_auth_config, print_config_status, PORT
 from config.clients import supabase_client  # Initialize clients
 
 # Rate limiting
@@ -38,8 +38,9 @@ from routes import (
     monitor_bp,
 )
 
-# Validate configuration
+# Validate configuration (auth secrets are mandatory outside local dev)
 validate_config()
+validate_auth_config()
 print_config_status()
 
 # Create Flask app

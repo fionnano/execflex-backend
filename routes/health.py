@@ -82,9 +82,10 @@ def submit_brief():
                 "message": message,
                 "source": source,
             }).execute()
-            print(f"[LEAD] Stored lead: email={email!r} name={name!r} company={company!r} source={source!r}")
+            from utils.log_redaction import mask_email
+            print(f"[LEAD] Stored lead: email={mask_email(email)} source={source!r}")
         else:
-            print(f"[LEAD] Supabase unavailable, skipping insert: email={email!r}")
+            print("[LEAD] Supabase unavailable, skipping insert")
     except Exception as exc:
         print(f"[LEAD] DB insert failed: {exc}")
 

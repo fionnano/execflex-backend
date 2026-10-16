@@ -6,7 +6,21 @@ from flask import request, jsonify
 from routes import roles_bp
 from utils.response_helpers import ok, bad
 from utils.auth_helpers import require_auth, require_admin
+from utils.org_scope import caller_owns_opportunity
 from config.clients import supabase_client
+
+
+# Status flags only: no provider ids, LinkedIn URLs or enriched contact
+# values leave the server on list endpoints (SEC-E-010).
+_PUBLIC_SOURCE_METADATA_KEYS = (
+    "opportunity_id", "provider", "has_email", "has_phone", "outreach_ready",
+    "next_action", "enriched", "organization_name",
+)
+
+
+def public_source_metadata(source_metadata) -> dict:
+    sm = source_metadata or {}
+    return {k: sm.get(k) for k in _PUBLIC_SOURCE_METADATA_KEYS if k in sm}
 
 
 @roles_bp.route("/post-role", methods=["POST"])
@@ -22,7 +36,8 @@ def post_role():
             return bad(quota_msg, 403, error_code="upgrade_required", upgrade_url="/pricing")
 
         data = request.get_json(force=True, silent=True) or {}
-        print("🚀 /post-role payload:", data)
+        # The payload carries contact name/e-mail/phone: log field names only (GDPR-E-003).
+        print(f"🚀 /post-role payload fields: {sorted(data.keys())}")
 
         # Only require truly essential fields
         required_fields = [
@@ -200,12 +215,20 @@ def sourced_candidates(opportunity_id: str):
     """
     GET /roles/<opportunity_id>/sourced-candidates
 
-    Return Apollo-sourced candidate suggestions for an opportunity.
+    Return PDL/Apollo-sourced candidate suggestions for an opportunity.
     Ordered by years_experience DESC (NULLS LAST), limit 20.
+
+    SEC-E-010: the caller must own the opportunity (same organisation, or
+    its creator); otherwise 404. source_metadata is reduced to status flags,
+    never provider ids, LinkedIn URLs or enriched contact values.
     """
     try:
         if not supabase_client:
             return bad("Database not available", 503)
+
+        user_id = request.environ.get("authenticated_user_id")
+        if not caller_owns_opportunity(user_id, opportunity_id):
+            return bad("Opportunity not found", 404)
 
         resp = (
             supabase_client.table("people_profiles")
@@ -233,7 +256,7 @@ def sourced_candidates(opportunity_id: str):
                 "location": r.get("location"),
                 "years_experience": r.get("years_experience"),
                 "approved": r.get("approved"),
-                "source_metadata": r.get("source_metadata") or {},
+                "source_metadata": public_source_metadata(r.get("source_metadata")),
             })
 
         return jsonify(candidates), 200

@@ -84,6 +84,23 @@ def screen_candidate():
     if not isinstance(questions, list) or not questions:
         return jsonify({"error": "questions must be a non-empty array"}), 400
 
+    # Results webhooks carry the transcript and scores, so they only go to
+    # allow-listed hosts and only for service integrations that can verify
+    # the HMAC signature (GDPR-E-005).
+    callback_url = data.get("callback_url") or None
+    if callback_url:
+        if not is_service:
+            return jsonify({"error": "callback_url is only available to service integrations"}), 400
+        from services.callback_policy import validate_callback_url
+        reason = validate_callback_url(callback_url)
+        if reason:
+            return jsonify({"error": reason}), 400
+
+    # Refuse to dial anyone on the do-not-contact list (GDPR-E-004).
+    from services.compliance.suppression import is_suppressed
+    if is_suppressed(email=data.get("candidate_email"), phone=data["candidate_phone"]):
+        return jsonify({"error": "Candidate has opted out of contact", "code": "suppressed"}), 409
+
     # Stamp the caller's organisation on the job so later reads (status,
     # retry-extraction, bias audit) can be scoped to it. Service callers
     # (ainm's backend) have no ExecFlex organisation.
@@ -96,7 +113,7 @@ def screen_candidate():
             role_title=data["role_title"],
             company_name=data["company_name"],
             questions=questions,
-            callback_url=data.get("callback_url"),
+            callback_url=callback_url,
             source_candidate_id=data.get("source_candidate_id"),
             purpose=data.get("purpose"),
             user_id=user_id if user_id not in ("unknown", None) and not user_id.startswith("service:") else None,
@@ -434,6 +451,65 @@ def _email_on_record(supabase_client, job: dict):
     return None
 
 
+# One Art 86 request per phone/e-mail/token per hour: the lookup keys are
+# not secrets, so without this a caller could flood a candidate's inbox.
+_FEEDBACK_THROTTLE_SECONDS = 3600
+_feedback_requests_seen: dict = {}
+
+
+def _feedback_throttled(key: str) -> bool:
+    now = time.time()
+    for k, ts in list(_feedback_requests_seen.items()):
+        if now - ts > _FEEDBACK_THROTTLE_SECONDS:
+            _feedback_requests_seen.pop(k, None)
+    if key in _feedback_requests_seen:
+        return True
+    _feedback_requests_seen[key] = now
+    return False
+
+
+def _feedback_accepted():
+    """The one response every outcome gets (SEC-E-006).
+
+    Whether a screening exists, has scores or has an address on file is
+    answered only in the mailbox on record, never to the caller, so the
+    endpoint cannot be used to enumerate screened phone numbers.
+    """
+    return jsonify({
+        "status": "accepted",
+        "message": (
+            "Thanks. If we hold a screening record for these details, the "
+            "feedback will be sent to the email address we have on file for it. "
+            "If you do not receive it, contact compliance@ainm.ai."
+        ),
+    }), 202
+
+
+def _find_feedback_job_by_token(supabase_client, candidate_token: str):
+    """The screening job whose interaction carries this portal token.
+
+    The token is issued to the candidate only (portal link in the results
+    e-mail), so presenting it proves ownership of the screening.
+    """
+    ix_resp = (
+        supabase_client.table("interactions")
+        .select("id")
+        .eq("candidate_token", candidate_token)
+        .limit(1)
+        .execute()
+    )
+    if not ix_resp.data:
+        return None
+    job_resp = (
+        supabase_client.table("outbound_call_jobs")
+        .select("id, interaction_id, artifacts, user_id")
+        .eq("interaction_id", ix_resp.data[0]["id"])
+        .limit(1)
+        .execute()
+    )
+    return job_resp.data[0] if job_resp.data else None
+
+
 @screening_bp.route("/feedback-request", methods=["POST"])
 def feedback_request():
     """
@@ -443,21 +519,31 @@ def feedback_request():
     EU AI Act Article 86 compliance.
 
     Body (JSON):
-        email   str — candidate's email address
-        phone   str — candidate's phone (optional, alternative lookup)
+        candidate_token str — portal token from the results e-mail (preferred;
+                              proves ownership of the screening)
+        email           str — candidate's email address
+        phone           str — candidate's phone (alternative lookup)
 
-    No auth required — candidates may not have an account. Because of that,
-    the email/phone in the body are only LOOKUP keys: the feedback is sent
-    solely to the email address already on record for that screening, never
-    to a caller-supplied address (otherwise anyone holding a candidate's phone
-    number could have that candidate's scores sent to themselves).
+    No login — candidates may not have an account. Because of that
+    (SEC-E-006):
+      * email/phone in the body are only LOOKUP keys; the feedback goes solely
+        to the email address already on record for that screening, never to
+        a caller-supplied address;
+      * every outcome returns the same 202, so the endpoint reveals nothing
+        about whether a phone number was screened;
+      * one request per key per hour.
     """
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True, silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     phone = (data.get("phone") or "").strip()
+    candidate_token = (data.get("candidate_token") or "").strip()
 
-    if not email and not phone:
-        return jsonify({"error": "email or phone is required"}), 400
+    if not email and not phone and not candidate_token:
+        return jsonify({"error": "candidate_token, email or phone is required"}), 400
+
+    throttle_key = candidate_token or phone or email
+    if _feedback_throttled(f"feedback:{throttle_key}"):
+        return _feedback_accepted()
 
     try:
         from config.clients import supabase_client
@@ -467,21 +553,21 @@ def feedback_request():
 
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        job = _find_feedback_job(supabase_client, email, phone)
+        if candidate_token:
+            job = _find_feedback_job_by_token(supabase_client, candidate_token)
+        else:
+            job = _find_feedback_job(supabase_client, email, phone)
 
         if not job:
             # Log the request even if no screening found
             supabase_client.table("screening_feedback_requests").insert({
-                "candidate_email": email or phone,
+                "candidate_email": email or phone or "token",
                 "candidate_phone": phone,
                 "status": "no_data",
                 "error_message": "No screening found for this candidate",
                 "requested_at": now_iso,
             }).execute()
-            return jsonify({
-                "status": "no_screening_found",
-                "message": "We couldn't find a screening record for this email/phone. Please contact compliance@ainm.ai for assistance.",
-            }), 404
+            return _feedback_accepted()
 
         job_id = job["id"]
         interaction_id = job.get("interaction_id")
@@ -520,16 +606,13 @@ def feedback_request():
                 "error_message": "Screening found but scores not yet available",
                 "requested_at": now_iso,
             }).execute()
-            return jsonify({
-                "status": "scores_not_ready",
-                "message": "Your screening has been found but scores are still being processed. Please try again in a few minutes.",
-            }), 202
+            return _feedback_accepted()
 
         # Send feedback ONLY to the email on record for this screening.
         feedback_email = _email_on_record(supabase_client, job)
         if not feedback_email:
             supabase_client.table("screening_feedback_requests").insert({
-                "candidate_email": email or phone,
+                "candidate_email": email or phone or "token",
                 "candidate_phone": phone,
                 "interaction_id": interaction_id,
                 "job_id": job_id,
@@ -538,10 +621,7 @@ def feedback_request():
                 "error_message": "No email address on record for this screening",
                 "requested_at": now_iso,
             }).execute()
-            return jsonify({
-                "status": "no_email_on_record",
-                "message": "We found your screening but have no email address on file to send it to. Please contact compliance@ainm.ai and we will verify your identity and send your feedback.",
-            }), 422
+            return _feedback_accepted()
 
         from modules.email_sender import send_screening_feedback_email
         sent = send_screening_feedback_email(
@@ -566,22 +646,16 @@ def feedback_request():
             "requested_at": now_iso,
         }).execute()
 
-        if sent:
-            # Don't echo the address: the requester may not be its owner.
-            return jsonify({
-                "status": "sent",
-                "message": "Screening feedback has been sent to the email address we hold on file for this screening. Check your inbox.",
-            }), 200
-        else:
-            return jsonify({
-                "status": "failed",
-                "message": "We found your screening but could not send the email. Please contact compliance@ainm.ai.",
-            }), 500
+        if not sent:
+            print(f"[Feedback] delivery failed for job={job_id}", flush=True)
+        # Don't echo the address or the outcome: the requester may not be
+        # the candidate.
+        return _feedback_accepted()
 
-    except Exception as e:
+    except Exception:
         import traceback
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Request could not be processed"}), 500
 
 
 @screening_bp.route("/candidate-status", methods=["GET"])

@@ -260,7 +260,6 @@ def extract_candidate_profile(interaction_id: str, job_id: str) -> Optional[dict
             f"{transcript.count(chr(10)) + 1} lines). Sending to GPT-4o...",
             flush=True,
         )
-        print(f"[Extraction] Transcript preview: {transcript[:500]}...", flush=True)
 
         prompt = _CANDIDATE_EXTRACTION_PROMPT.format(transcript=transcript)
         completion = gpt_client.chat.completions.create(
@@ -337,7 +336,6 @@ def extract_employer_brief(interaction_id: str, job_id: str) -> Optional[dict]:
             f"{transcript.count(chr(10)) + 1} lines). Sending to GPT-4o...",
             flush=True,
         )
-        print(f"[Extraction] Transcript preview: {transcript[:500]}...", flush=True)
 
         prompt = _EMPLOYER_EXTRACTION_PROMPT.format(transcript=transcript)
         completion = gpt_client.chat.completions.create(

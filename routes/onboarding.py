@@ -1455,7 +1455,8 @@ def delete_user():
         
         # If phone provided, find user_id first
         if phone and not target_user_id:
-            print(f"🔐 Admin {admin_user_id} searching for user by phone: {phone}")
+            from utils.log_redaction import mask_phone
+            print(f"🔐 Admin {admin_user_id} searching for user by phone: {mask_phone(phone)}")
             
             # Search for user by phone in auth.users (requires admin API)
             headers = {
@@ -1472,22 +1473,43 @@ def delete_user():
             
             users = response.json().get("users", [])
             if not users:
-                return bad(f"User with phone {phone} not found", 404)
-            
+                # No account behind this phone: a sourced, CSV-uploaded or
+                # talent-network person. Erase by contact value (GDPR-E-002).
+                from services.compliance.erasure import erase_candidate
+                report = erase_candidate(phone=phone, reason="admin_delete", source=f"admin:{admin_user_id}")
+                return ok({
+                    "user_id": None,
+                    "success": not report.get("warnings"),
+                    "message": "No auth user for this phone; erased candidate data by phone instead.",
+                    "erasure": report,
+                })
+
             target_user_id = users[0]["id"]
             print(f"  Found user ID: {target_user_id}")
-        
+
         if not target_user_id:
             return bad("Could not determine user_id", 400)
-        
+
         print(f"🔐 Admin {admin_user_id} deleting user {target_user_id}")
-        
+
         deletion_results = {
             "user_id": target_user_id,
             "deleted_tables": [],
             "errors": [],
             "warnings": []
         }
+
+        # Erase transcripts, scores, tokens, call jobs and contact-keyed rows
+        # first, while channel_identities can still expand the identifiers
+        # (GDPR-E-002). Interactions are scrubbed in place, not left behind.
+        try:
+            from services.compliance.erasure import erase_candidate
+            deletion_results["erasure"] = erase_candidate(
+                user_id=target_user_id, phone=phone,
+                reason="admin_delete", source=f"admin:{admin_user_id}",
+            )
+        except Exception as e:
+            deletion_results["warnings"].append(f"erasure: {e}")
         
         # Delete from related tables (order matters due to foreign keys)
         tables_to_delete = [
@@ -1527,8 +1549,7 @@ def delete_user():
             deletion_results["warnings"].append(f"threads: {e}")
             print(f"  ⚠️  Error updating threads: {e}")
         
-        deletion_results["warnings"].append("Interactions are append-only and remain as historical records")
-        print("  ℹ️  Interactions are append-only and remain as historical records")
+        print("  ℹ️  Interaction rows are append-only; their transcript, scores and token were scrubbed above")
         
         # Update organizations (set created_by_user_id to NULL)
         try:
