@@ -319,7 +319,7 @@ def process_queued_jobs(limit: int = 10) -> int:
                 # The interaction was created at enqueue time with initial state
                 # Call status will be tracked via the job record and status callbacks
                 
-                print(f"✅ Initiated onboarding call (realtime): job_id={job_id}, call_sid={call_sid}, phone={phone}")
+                print(f"✅ Initiated onboarding call (realtime): job_id={job_id}, call_sid={call_sid}")
                 processed += 1
                 
             except Exception as e:

@@ -412,13 +412,18 @@ def _fire_callback(callback_url: str, payload: Dict[str, Any], job_id: Optional[
     """POST results to the callback URL, HMAC-signed when the job asked for it.
 
     Sends the exact signed bytes (data=, not json=). Never sends the shared
-    key itself: callback_url is caller-supplied.
+    key itself: callback_url is caller-supplied. Refuses unless the host is
+    allow-listed and the payload is signed (GDPR-E-005).
     """
+    from services.screening_service import callback_delivery_blocked
+    blocked = callback_delivery_blocked(callback_url, sign)
+    if blocked:
+        print(f"⛔ Callback for job {job_id} not sent: {blocked}", flush=True)
+        return
     try:
         body = json.dumps(payload).encode()
         headers = {"Content-Type": "application/json"}
-        if sign:
-            headers.update(_signed_callback_headers(body))
+        headers.update(_signed_callback_headers(body))
         resp = http_requests.post(callback_url, data=body, headers=headers, timeout=15)
         if resp.status_code >= 400:
             print(f"⚠️ Callback {callback_url} returned {resp.status_code}: {resp.text[:200]}")

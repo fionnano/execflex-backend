@@ -30,6 +30,22 @@ def _is_service_caller() -> bool:
     return user_id.startswith("service:")
 
 
+def _callback_url_or_error(data: dict):
+    """(callback_url, error_response) — results webhooks carry transcripts,
+    so only service integrations may set one and only to allow-listed https
+    hosts (GDPR-E-005)."""
+    callback_url = data.get("callback_url") or None
+    if not callback_url:
+        return None, None
+    if not _is_service_caller():
+        return None, (jsonify({"error": "callback_url is only available to service integrations"}), 400)
+    from services.callback_policy import validate_callback_url
+    reason = validate_callback_url(callback_url)
+    if reason:
+        return None, (jsonify({"error": reason}), 400)
+    return callback_url, None
+
+
 @voice_calls_bp.route("/onboarding", methods=["POST"])
 @require_auth
 def onboarding_welcome_call():
@@ -55,6 +71,9 @@ def onboarding_welcome_call():
     missing = [f for f in required if not data.get(f)]
     if missing:
         return jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400
+    callback_url, err = _callback_url_or_error(data)
+    if err:
+        return err
 
     try:
         result = create_onboarding_call_job(
@@ -65,7 +84,7 @@ def onboarding_welcome_call():
             manager_name=data["manager_name"],
             office_location=data.get("office_location", "the office"),
             first_day_instructions=data.get("first_day_instructions", ""),
-            callback_url=data.get("callback_url"),
+            callback_url=callback_url,
             source_tracker_id=data.get("source_tracker_id"),
             sign_callback=_is_service_caller(),
         )
@@ -102,6 +121,10 @@ def reference_check_call():
     if missing:
         return jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400
 
+    callback_url, err = _callback_url_or_error(data)
+    if err:
+        return err
+
     default_questions = [
         "How long did you work with the candidate and in what capacity?",
         "What was their role and main responsibilities?",
@@ -121,7 +144,7 @@ def reference_check_call():
             company_name=data["company_name"],
             relationship=data.get("relationship", "colleague"),
             questions=data.get("questions") or default_questions,
-            callback_url=data.get("callback_url"),
+            callback_url=callback_url,
             source_ref_id=data.get("source_ref_id"),
             sign_callback=_is_service_caller(),
         )
@@ -156,6 +179,9 @@ def exit_interview_call():
     missing = [f for f in required if not data.get(f)]
     if missing:
         return jsonify({"error": f"Missing required fields: {', '.join(missing)}"}), 400
+    callback_url, err = _callback_url_or_error(data)
+    if err:
+        return err
 
     try:
         result = create_exit_interview_call_job(
@@ -165,7 +191,7 @@ def exit_interview_call():
             role_title=data["role_title"],
             tenure=data["tenure"],
             manager_name=data.get("manager_name", "their manager"),
-            callback_url=data.get("callback_url"),
+            callback_url=callback_url,
             source_user_id=data.get("source_user_id"),
             sign_callback=_is_service_caller(),
         )

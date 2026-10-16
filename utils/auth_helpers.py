@@ -43,10 +43,9 @@ def get_authenticated_user_id() -> Tuple[Optional[str], Optional[str]]:
     2. X-Service-Key header (service-to-service, e.g. Ainm backend)
     3. Authorization: Bearer <JWT> (Supabase user tokens)
 
-    JWT verification:
-    - If SUPABASE_JWT_SECRET is set, tokens are verified against it.
-    - If not set (dev mode), tokens are decoded without signature verification
-      and a warning is logged.
+    JWT verification (SEC-E-008): tokens are always verified against
+    SUPABASE_JWT_SECRET, with audience "authenticated". When the secret is
+    unset every bearer token is rejected; there is no unverified fallback.
 
     Returns:
         Tuple[user_id, error_message]
@@ -82,29 +81,22 @@ def get_authenticated_user_id() -> Tuple[Optional[str], Optional[str]]:
     if not token:
         return None, "Missing token in Authorization header"
 
+    jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
+    if not jwt_secret:
+        # Fail closed: never decode a token we cannot verify (SEC-E-008).
+        if not getattr(get_authenticated_user_id, "_warned_no_secret", False):
+            print("SECURITY: SUPABASE_JWT_SECRET not set — rejecting all bearer tokens", flush=True)
+            get_authenticated_user_id._warned_no_secret = True
+        return None, "Token verification is not configured"
+
     try:
-        jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
-
-        if jwt_secret:
-            # Production: verify signature against Supabase JWT secret
-            decoded = jwt.decode(
-                token,
-                jwt_secret,
-                algorithms=["HS256"],
-                options={"verify_exp": True, "verify_aud": False},
-            )
-        else:
-            # Dev mode: decode without verification (log warning once)
-            if not getattr(get_authenticated_user_id, "_warned_no_secret", False):
-                print("WARNING: SUPABASE_JWT_SECRET not set — JWT signature verification disabled (dev mode)")
-                get_authenticated_user_id._warned_no_secret = True
-            decoded = jwt.decode(token, options={"verify_signature": False})
-
-            # Manual expiration check for unverified tokens
-            if "exp" in decoded:
-                import time
-                if decoded["exp"] < time.time():
-                    return None, "Token has expired"
+        decoded = jwt.decode(
+            token,
+            jwt_secret,
+            algorithms=["HS256"],
+            audience="authenticated",
+            options={"verify_exp": True},
+        )
 
         user_id = decoded.get("sub")
         if not user_id:
@@ -116,12 +108,13 @@ def get_authenticated_user_id() -> Tuple[Optional[str], Optional[str]]:
         return None, "Token has expired"
     except jwt.InvalidSignatureError:
         return None, "Invalid token signature"
-    except jwt.DecodeError as e:
-        print(f"JWT decode error: {e}")
-        return None, f"Invalid token format: {str(e)}"
+    except jwt.InvalidAudienceError:
+        return None, "Invalid token audience"
+    except jwt.DecodeError:
+        return None, "Invalid token format"
     except Exception as e:
-        print(f"Token verification failed: {e}")
-        return None, f"Token verification failed: {str(e)}"
+        print(f"Token verification failed: {type(e).__name__}", flush=True)
+        return None, "Token verification failed"
 
 
 def require_auth(f):
