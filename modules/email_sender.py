@@ -212,9 +212,15 @@ def send_screening_feedback_email(
     overall_score: float,
     scores: list,
     recommendation: str,
+    human_confirmed: bool = False,
 ) -> bool:
     """
     Send screening feedback to a candidate (EU AI Act Article 86 compliance).
+
+    An AI "reject" is only ever communicated as a rejection when
+    human_confirmed=True (a recruiter recorded the decision). Otherwise the
+    outcome reads "under review" — GDPR Art. 22: no solely automated adverse
+    decision reaches the candidate.
     """
     if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
         print("[Feedback] Email not configured, cannot send feedback")
@@ -243,11 +249,15 @@ def send_screening_feedback_email(
         else:
             score_lines_plain.append(f"  - {q}\n    Not assessed")
 
+    if (recommendation or "").lower() == "reject" and not human_confirmed:
+        recommendation = "pending_human_review"
     recommendation_label = {
         "strong_proceed": "Strong Proceed",
         "proceed": "Proceed",
         "hold": "Hold",
         "reject": "Not proceeding at this stage",
+        "pending_human_review": "Under review — a recruiter has not yet made a decision",
+        "pending": "Under review",
     }.get(recommendation, recommendation)
 
     subject = f"Your Screening Feedback — {role_title} at {company_name}"

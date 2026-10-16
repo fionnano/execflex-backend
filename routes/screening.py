@@ -51,6 +51,8 @@ def screen_candidate():
         questions             list — [{question, competency, weight}, ...]
         callback_url          str  — Webhook URL for results (optional)
         source_candidate_id   str  — ID from calling system e.g. ainm.ai (optional)
+        candidate_email       str  — Candidate email on record (optional; the only
+                                     address Art 86 feedback is ever sent to)
 
     Returns:
         201 { job_id, thread_id, interaction_id, status }
@@ -100,6 +102,8 @@ def screen_candidate():
             user_id=user_id if user_id not in ("unknown", None) and not user_id.startswith("service:") else None,
             role_id=data.get("role_id"),
             organization_id=organization_id,
+            sign_callback=is_service,
+            candidate_email=data.get("candidate_email"),
         )
         return jsonify(result), 201
     except Exception as e:
@@ -356,6 +360,80 @@ def bias_policy():
     }), 200
 
 
+def _job_screening_context(job: dict) -> dict:
+    return (job.get("artifacts") or {}).get("screening_context") or {}
+
+
+def _latest_job_for_user(supabase_client, user_id: str):
+    resp = (
+        supabase_client.table("outbound_call_jobs")
+        .select("id, interaction_id, artifacts, user_id")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return resp.data[0] if resp.data else None
+
+
+def _find_feedback_job(supabase_client, email: str, phone: str):
+    """Most recent screening job for this phone (preferred) or email."""
+    if phone:
+        normalized_phone = phone if phone.startswith("+") else "+" + phone.replace(" ", "").replace("-", "")
+        job_resp = (
+            supabase_client.table("outbound_call_jobs")
+            .select("id, interaction_id, artifacts, user_id")
+            .eq("phone_e164", normalized_phone)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if job_resp.data and job_resp.data[0].get("interaction_id"):
+            return job_resp.data[0]
+
+    if email:
+        ci_resp = (
+            supabase_client.table("channel_identities")
+            .select("user_id")
+            .eq("channel", "email")
+            .eq("value", email)
+            .limit(1)
+            .execute()
+        )
+        if ci_resp.data and ci_resp.data[0].get("user_id"):
+            job = _latest_job_for_user(supabase_client, ci_resp.data[0]["user_id"])
+            if job and job.get("interaction_id"):
+                return job
+    return None
+
+
+def _email_on_record(supabase_client, job: dict):
+    """The candidate email we already hold for this screening job, or None.
+
+    Sources, in order: the email captured when the job was created
+    (screening_context.candidate_email), then the email channel identity of
+    the job's platform user. Never anything the feedback requester supplied.
+    """
+    ctx_email = (_job_screening_context(job).get("candidate_email") or "").strip().lower()
+    if ctx_email:
+        return ctx_email
+    user_id = job.get("user_id")
+    if user_id:
+        ci_resp = (
+            supabase_client.table("channel_identities")
+            .select("value")
+            .eq("channel", "email")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if ci_resp.data:
+            value = (ci_resp.data[0].get("value") or "").strip().lower()
+            if value:
+                return value
+    return None
+
+
 @screening_bp.route("/feedback-request", methods=["POST"])
 def feedback_request():
     """
@@ -368,7 +446,11 @@ def feedback_request():
         email   str — candidate's email address
         phone   str — candidate's phone (optional, alternative lookup)
 
-    No auth required — candidates may not have an account.
+    No auth required — candidates may not have an account. Because of that,
+    the email/phone in the body are only LOOKUP keys: the feedback is sent
+    solely to the email address already on record for that screening, never
+    to a caller-supplied address (otherwise anyone holding a candidate's phone
+    number could have that candidate's scores sent to themselves).
     """
     data = request.get_json(force=True) or {}
     email = (data.get("email") or "").strip().lower()
@@ -385,68 +467,9 @@ def feedback_request():
 
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        # Look up the most recent screening for this candidate
-        # Search by phone in outbound_call_jobs, or by email in channel_identities
-        interaction_id = None
-        job_id = None
-        candidate_name = "Candidate"
-        role_title = "the role"
-        company_name = "the company"
-        scores = []
-        overall_score = None
-        recommendation = None
+        job = _find_feedback_job(supabase_client, email, phone)
 
-        # Try phone lookup first (most screening calls are by phone)
-        if phone:
-            normalized_phone = phone if phone.startswith("+") else "+" + phone.replace(" ", "").replace("-", "")
-            job_resp = (
-                supabase_client.table("outbound_call_jobs")
-                .select("id, interaction_id, artifacts")
-                .eq("phone_e164", normalized_phone)
-                .order("created_at", desc=True)
-                .limit(1)
-                .execute()
-            )
-            if job_resp.data:
-                job = job_resp.data[0]
-                job_id = job["id"]
-                interaction_id = job.get("interaction_id")
-                ctx = (job.get("artifacts") or {}).get("screening_context") or {}
-                candidate_name = ctx.get("candidate_name", candidate_name)
-                role_title = ctx.get("role_title", role_title)
-                company_name = ctx.get("company_name", company_name)
-
-        # Fallback: try email lookup via channel_identities → user → jobs
-        if not interaction_id and email:
-            ci_resp = (
-                supabase_client.table("channel_identities")
-                .select("user_id")
-                .eq("channel", "email")
-                .eq("value", email)
-                .limit(1)
-                .execute()
-            )
-            if ci_resp.data:
-                user_id = ci_resp.data[0].get("user_id")
-                if user_id:
-                    job_resp = (
-                        supabase_client.table("outbound_call_jobs")
-                        .select("id, interaction_id, artifacts")
-                        .eq("user_id", user_id)
-                        .order("created_at", desc=True)
-                        .limit(1)
-                        .execute()
-                    )
-                    if job_resp.data:
-                        job = job_resp.data[0]
-                        job_id = job["id"]
-                        interaction_id = job.get("interaction_id")
-                        ctx = (job.get("artifacts") or {}).get("screening_context") or {}
-                        candidate_name = ctx.get("candidate_name", candidate_name)
-                        role_title = ctx.get("role_title", role_title)
-                        company_name = ctx.get("company_name", company_name)
-
-        if not interaction_id:
+        if not job:
             # Log the request even if no screening found
             supabase_client.table("screening_feedback_requests").insert({
                 "candidate_email": email or phone,
@@ -459,6 +482,16 @@ def feedback_request():
                 "status": "no_screening_found",
                 "message": "We couldn't find a screening record for this email/phone. Please contact compliance@ainm.ai for assistance.",
             }), 404
+
+        job_id = job["id"]
+        interaction_id = job.get("interaction_id")
+        ctx = _job_screening_context(job)
+        candidate_name = ctx.get("candidate_name", "Candidate")
+        role_title = ctx.get("role_title", "the role")
+        company_name = ctx.get("company_name", "the company")
+        scores = []
+        overall_score = None
+        recommendation = None
 
         # Get scores from interaction
         ix_resp = (
@@ -492,23 +525,23 @@ def feedback_request():
                 "message": "Your screening has been found but scores are still being processed. Please try again in a few minutes.",
             }), 202
 
-        # Send feedback email
-        feedback_email = email
+        # Send feedback ONLY to the email on record for this screening.
+        feedback_email = _email_on_record(supabase_client, job)
         if not feedback_email:
             supabase_client.table("screening_feedback_requests").insert({
-                "candidate_email": phone,
+                "candidate_email": email or phone,
                 "candidate_phone": phone,
                 "interaction_id": interaction_id,
                 "job_id": job_id,
                 "role_title": role_title,
                 "status": "failed",
-                "error_message": "No email address available to send feedback",
+                "error_message": "No email address on record for this screening",
                 "requested_at": now_iso,
             }).execute()
             return jsonify({
-                "status": "email_required",
-                "message": "Please provide your email address so we can send the feedback.",
-            }), 400
+                "status": "no_email_on_record",
+                "message": "We found your screening but have no email address on file to send it to. Please contact compliance@ainm.ai and we will verify your identity and send your feedback.",
+            }), 422
 
         from modules.email_sender import send_screening_feedback_email
         sent = send_screening_feedback_email(
@@ -534,9 +567,10 @@ def feedback_request():
         }).execute()
 
         if sent:
+            # Don't echo the address: the requester may not be its owner.
             return jsonify({
                 "status": "sent",
-                "message": f"Screening feedback has been sent to {feedback_email}. Check your inbox.",
+                "message": "Screening feedback has been sent to the email address we hold on file for this screening. Check your inbox.",
             }), 200
         else:
             return jsonify({
@@ -604,6 +638,7 @@ def candidate_status():
         role_title = "the role"
         company_name = "the company"
         duration_seconds = 0
+        human_review = None
 
         if job_resp.data:
             artifacts = (job_resp.data[0] or {}).get("artifacts") or {}
@@ -612,13 +647,17 @@ def candidate_status():
             role_title = ctx.get("role_title", role_title)
             company_name = ctx.get("company_name", company_name)
             duration_seconds = int(artifacts.get("call_duration") or 0)
+            human_review = artifacts.get("human_review")
 
-        # Map recommendation to candidate-friendly status
-        rec = ix.get("screening_recommendation")
+        # Map recommendation to candidate-friendly status. An AI "reject" is
+        # shown as under review until a recruiter confirms it (GDPR Art. 22).
+        from services.compliance.human_review import candidate_facing_outcome
+        rec = candidate_facing_outcome(ix.get("screening_recommendation"), human_review)
         status_map = {
             "strong_proceed": "progressed",
             "proceed": "progressed",
             "hold": "under_review",
+            "pending_human_review": "under_review",
             "reject": "not_progressed",
             "incomplete": "under_review",
         }
@@ -632,6 +671,102 @@ def candidate_status():
             "status": status_map.get(rec, "under_review"),
             "token": token,
         }), 200
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+_HUMAN_DECISIONS = ("strong_proceed", "proceed", "hold", "reject")
+
+
+@screening_bp.route("/<job_id>/human-review", methods=["POST"])
+@require_auth
+def record_human_review(job_id: str):
+    """
+    POST /screening/<job_id>/human-review
+
+    A recruiter records the decision on an AI screening. Until this is called,
+    an AI "reject" is shown to the candidate as "under review" and the Art 86
+    feedback email does not say "not proceeding" (GDPR Art. 22 — no solely
+    automated adverse decision).
+
+    Body (JSON):
+        decision  str — strong_proceed | proceed | hold | reject
+        reason    str — required for reject (candidate's right to explanation)
+        reviewer  str — recruiter identity; required for service callers (ainm),
+                        whose own recruiter made the decision
+
+    Allowed callers: the user who created the screening, or the ainm service.
+    """
+    user_id = request.environ.get("authenticated_user_id") or ""
+    is_service = user_id.startswith("service:")
+    data = request.get_json(force=True) or {}
+
+    decision = (data.get("decision") or "").strip().lower()
+    if decision not in _HUMAN_DECISIONS:
+        return jsonify({"error": f"decision must be one of {', '.join(_HUMAN_DECISIONS)}"}), 400
+    reason = (data.get("reason") or "").strip()
+    reviewer_id = (data.get("reviewer") or "").strip() if is_service else user_id
+    if not reviewer_id:
+        return jsonify({"error": "reviewer is required for service callers"}), 400
+
+    try:
+        from config.clients import supabase_client
+        from datetime import datetime, timezone
+        from types import SimpleNamespace
+        from services.compliance.human_review import require_human_review_for_reject
+        if not supabase_client:
+            return jsonify({"error": "Database not available"}), 503
+
+        job_resp = (
+            supabase_client.table("outbound_call_jobs")
+            .select("id, user_id, interaction_id, artifacts")
+            .eq("id", job_id)
+            .limit(1)
+            .execute()
+        )
+        if not job_resp.data:
+            return jsonify({"error": "Screening job not found"}), 404
+        job = job_resp.data[0]
+        if not is_service and job.get("user_id") != user_id:
+            return jsonify({"error": "Screening job not found"}), 404
+
+        if decision == "reject":
+            check = require_human_review_for_reject(
+                SimpleNamespace(user_id=reviewer_id), job_id, reason)
+            if not check["allowed"]:
+                return jsonify({"error": check["message"]}), 400
+
+        ai_recommendation = None
+        if job.get("interaction_id"):
+            ix_resp = (
+                supabase_client.table("interactions")
+                .select("screening_recommendation")
+                .eq("id", job["interaction_id"])
+                .limit(1)
+                .execute()
+            )
+            if ix_resp.data:
+                ai_recommendation = (ix_resp.data[0] or {}).get("screening_recommendation")
+
+        human_review = {
+            "decision": decision,
+            "reason": reason or None,
+            "reviewer_id": reviewer_id,
+            "reviewed_via": "service" if is_service else "user",
+            "ai_recommendation": ai_recommendation,
+            "human_override": bool(ai_recommendation) and ai_recommendation != decision,
+            "reviewed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        artifacts = dict(job.get("artifacts") or {})
+        artifacts["human_review"] = human_review
+        supabase_client.table("outbound_call_jobs").update(
+            {"artifacts": artifacts}
+        ).eq("id", job_id).execute()
+
+        return jsonify({"job_id": job_id, "human_review": human_review}), 200
 
     except Exception as e:
         import traceback

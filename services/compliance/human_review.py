@@ -5,7 +5,26 @@ Terminal candidate decisions (reject, withdrawn) MUST have human review
 before execution. This prevents fully automated rejection, which is
 prohibited under GDPR Art. 22 and EU AI Act for high-risk AI systems.
 """
-from typing import Dict
+from typing import Dict, Optional
+
+# Candidate-facing outcome while an adverse AI recommendation awaits a human.
+PENDING_HUMAN_REVIEW = "pending_human_review"
+
+
+def candidate_facing_outcome(ai_recommendation: Optional[str],
+                             human_review: Optional[Dict] = None) -> Optional[str]:
+    """The screening outcome a candidate may be told.
+
+    A recruiter's recorded decision always wins. Without one, an AI "reject"
+    is never disclosed as a rejection — it becomes PENDING_HUMAN_REVIEW until
+    a human confirms it (GDPR Art. 22: no solely automated adverse decision).
+    """
+    decision = (human_review or {}).get("decision")
+    if decision:
+        return decision
+    if (ai_recommendation or "").lower() == "reject":
+        return PENDING_HUMAN_REVIEW
+    return ai_recommendation
 
 
 def require_human_review_for_reject(ctx, entity_id: str, reason: str) -> Dict:
