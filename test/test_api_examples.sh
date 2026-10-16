@@ -18,28 +18,7 @@ echo "2. View Roles:"
 curl -s "${API_BASE}/view-roles" | jq '.' 2>/dev/null || curl -s "${API_BASE}/view-roles"
 echo -e "\n"
 
-# Find Match
-echo "3. Find Match:"
-curl -s -X POST "${API_BASE}/match" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "industry": "Fintech",
-    "expertise": "CFO",
-    "availability": "fractional",
-    "min_experience": "10",
-    "max_salary": "150000",
-    "location": "Ireland"
-  }' | jq '.' 2>/dev/null || curl -s -X POST "${API_BASE}/match" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "industry": "Fintech",
-    "expertise": "CFO",
-    "availability": "fractional",
-    "min_experience": "10",
-    "max_salary": "150000",
-    "location": "Ireland"
-  }'
-echo -e "\n"
+# (Legacy POST /match removed 2026-10-16 — SEC-E-005)
 
 # Post Role
 echo "4. Post Role:"

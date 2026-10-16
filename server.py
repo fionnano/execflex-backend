@@ -21,7 +21,6 @@ from utils.rate_limiting import create_limiter
 # Routes
 from routes import (
     health_bp,
-    matching_bp,
     roles_bp,
     introductions_bp,
     voice_bp,
@@ -73,7 +72,6 @@ limiter = create_limiter(app)
 
 # Register blueprints
 app.register_blueprint(health_bp)
-app.register_blueprint(matching_bp)
 app.register_blueprint(roles_bp)
 app.register_blueprint(introductions_bp)
 app.register_blueprint(voice_bp)

@@ -111,6 +111,7 @@ def create_phone_screen():
             purpose="screening",
             user_id=ctx.user_id,
             role_id=opportunity_id,
+            organization_id=ctx.org_id,
         )
     except Exception as e:
         import traceback

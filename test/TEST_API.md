@@ -45,10 +45,6 @@ The test suite covers all major API endpoints:
 - ✅ `POST /post-role` - Validation (missing fields → 400)
 - **Note:** Role viewing is handled via direct Supabase connection (use `useRolePostings` hook in frontend)
 
-### Executive Matching
-- ✅ `POST /match` - Find best candidate match
-- ✅ `POST /match` - Validation (missing fields → 400)
-
 ### Introductions
 - ✅ `POST /request-intro` - Request introduction (recommended)
 - ✅ `POST /request-intro` - Validation (missing fields → 400)
@@ -93,20 +89,6 @@ If you prefer to test endpoints manually, here are example curl commands:
 ### Health Check
 ```bash
 curl https://api.execflex.ai/
-```
-
-### Find Match
-```bash
-curl -X POST https://api.execflex.ai/match \
-  -H "Content-Type: application/json" \
-  -d '{
-    "industry": "Fintech",
-    "expertise": "CFO",
-    "availability": "fractional",
-    "min_experience": "10",
-    "max_salary": "150000",
-    "location": "Ireland"
-  }'
 ```
 
 ### Post Role

@@ -5,10 +5,12 @@ Rate limited: max 10 screening calls per hour per authenticated user.
 """
 import time
 import threading
+import uuid
 from flask import request, jsonify
 from routes import screening_bp
 from services.screening_service import create_screening_job
 from utils.auth_helpers import require_auth
+from utils.org_scope import is_service_identity, is_uuid, resolve_caller_org_id, resolve_job_org_id
 
 # ── Per-user rate limiting for screening calls ────────────────────────────────
 # Tracks {user_id: [timestamp, ...]} — sliding window, 10 per hour.
@@ -80,6 +82,11 @@ def screen_candidate():
     if not isinstance(questions, list) or not questions:
         return jsonify({"error": "questions must be a non-empty array"}), 400
 
+    # Stamp the caller's organisation on the job so later reads (status,
+    # retry-extraction, bias audit) can be scoped to it. Service callers
+    # (ainm's backend) have no ExecFlex organisation.
+    organization_id = None if is_service else resolve_caller_org_id(user_id)
+
     try:
         result = create_screening_job(
             candidate_phone=data["candidate_phone"],
@@ -92,12 +99,55 @@ def screen_candidate():
             purpose=data.get("purpose"),
             user_id=user_id if user_id not in ("unknown", None) and not user_id.startswith("service:") else None,
             role_id=data.get("role_id"),
+            organization_id=organization_id,
         )
         return jsonify(result), 201
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+def _load_job_for_caller(job_id: str):
+    """
+    Load an outbound_call_jobs row only if the authenticated caller may see it.
+
+    Returns (job, None) on success, else (None, (response, status)).
+
+    The Supabase service-role key bypasses RLS, so ownership is enforced here
+    (SEC-E-004): a JWT user must have created the job or belong to the
+    organisation that owns it (utils.org_scope.resolve_job_org_id). The
+    service identity (ainm's backend, which creates these jobs for its own
+    tenants) may read any job. Unknown and foreign jobs both answer 404 so
+    the route does not reveal which ids exist.
+    """
+    from config.clients import supabase_client
+    if not supabase_client:
+        return None, (jsonify({"error": "Database not available"}), 503)
+    if not is_uuid(job_id):
+        return None, (jsonify({"error": "Job not found"}), 404)
+
+    job_resp = (
+        supabase_client.table("outbound_call_jobs")
+        .select("id, user_id, interaction_id, artifacts")
+        .eq("id", job_id)
+        .limit(1)
+        .execute()
+    )
+    if not job_resp.data:
+        return None, (jsonify({"error": "Job not found"}), 404)
+    job = job_resp.data[0]
+
+    caller = request.environ.get("authenticated_user_id")
+    if is_service_identity(caller):
+        return job, None
+    if job.get("user_id") and job.get("user_id") == caller:
+        return job, None
+    caller_org = resolve_caller_org_id(caller)
+    job_org = resolve_job_org_id(job)
+    if caller_org and job_org and caller_org == job_org:
+        return job, None
+    return None, (jsonify({"error": "Job not found"}), 404)
 
 
 @screening_bp.route("/<job_id>/retry-extraction", methods=["POST"])
@@ -107,24 +157,14 @@ def retry_extraction(job_id: str):
     POST /screening/<job_id>/retry-extraction
 
     Manually retry extraction for a completed call. Use when the automatic
-    post-call extraction failed due to connection errors.
+    post-call extraction failed due to connection errors. The caller must
+    own the job (see _load_job_for_caller).
     """
     try:
-        from config.clients import supabase_client
-        if not supabase_client:
-            return jsonify({"error": "Database not available"}), 503
+        job, denied = _load_job_for_caller(job_id)
+        if denied:
+            return denied
 
-        job_resp = (
-            supabase_client.table("outbound_call_jobs")
-            .select("id, interaction_id, artifacts")
-            .eq("id", job_id)
-            .limit(1)
-            .execute()
-        )
-        if not job_resp.data:
-            return jsonify({"error": "Job not found"}), 404
-
-        job = job_resp.data[0]
         interaction_id = job.get("interaction_id")
         if not interaction_id:
             return jsonify({"error": "No interaction found for this job"}), 404
@@ -164,11 +204,14 @@ def screening_status(job_id: str):
         }
 
     Status values: queued | ringing | in_progress | completed | failed | no_answer
+
+    The caller must own the job (see _load_job_for_caller); other
+    organisations' jobs answer 404.
     """
     try:
-        from config.clients import supabase_client
-        if not supabase_client:
-            return jsonify({"error": "Database not available"}), 503
+        _, denied = _load_job_for_caller(job_id)
+        if denied:
+            return denied
 
         from services.screening_service import get_screening_status
         response = get_screening_status(job_id)
@@ -191,20 +234,36 @@ def bias_audit(role_id: str):
     """
     GET /screening/bias-audit/<role_id>
 
-    Returns bias audit summary and records for a given role.
+    Returns bias audit summary and records for one of the caller's roles.
+
+    role_id must be the opportunity UUID. Records are filtered to the
+    caller's organisation with parameterised .eq() filters; the path value
+    is never interpolated into a PostgREST filter string (SEC-E-003).
     """
+    if not is_uuid(role_id):
+        return jsonify({"error": "role_id must be a UUID"}), 400
+    role_id = str(uuid.UUID(role_id))
+
+    org_id = resolve_caller_org_id(request.environ.get("authenticated_user_id"))
+    if not org_id:
+        return jsonify({"error": "Organization context required"}), 403
+
     try:
         from config.clients import supabase_client
         if not supabase_client:
             return jsonify({"error": "Database not available"}), 503
 
-        limit = min(int(request.args.get("limit", 50)), 200)
-        offset = int(request.args.get("offset", 0))
+        try:
+            limit = max(1, min(int(request.args.get("limit", 50)), 200))
+            offset = max(0, int(request.args.get("offset", 0)))
+        except (TypeError, ValueError):
+            return jsonify({"error": "limit and offset must be integers"}), 400
 
         resp = (
             supabase_client.table("screening_bias_audit")
             .select("*", count="exact")
-            .or_(f"role_id.eq.{role_id},role_title.eq.{role_id}")
+            .eq("organization_id", org_id)
+            .eq("role_id", role_id)
             .order("created_at", desc=True)
             .range(offset, offset + limit - 1)
             .execute()

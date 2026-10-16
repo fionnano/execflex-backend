@@ -32,8 +32,6 @@ servers:
 tags:
   - name: Health
     description: Health check endpoints
-  - name: Matching
-    description: Executive candidate matching
   - name: Roles
     description: Role posting and management
   - name: Introductions
@@ -54,96 +52,6 @@ paths:
       responses:
         '200':
           description: Service is healthy
-
-  /match:
-    post:
-      tags:
-        - Matching
-      summary: Find best candidate match
-      description: |
-        Finds the best matching executive candidate based on role requirements.
-        Uses a scoring algorithm considering industry, expertise, availability, location, and salary.
-        
-        **Requires authentication** - JWT token in Authorization header.
-      operationId: findMatch
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/MatchRequest'
-            example:
-              industry: "Fintech"
-              expertise: "CFO"
-              availability: "fractional"
-              min_experience: 10
-              max_salary: 150000
-              location: "Ireland"
-      responses:
-        '200':
-          description: Match found or not found
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                  message:
-                    type: string
-                  match:
-                    $ref: '#/components/schemas/Match'
-                    nullable: true
-                    description: Match details (best candidate) or null if no match
-                  matches:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Match'
-                    description: List of all matches (up to 5), sorted by score
-              examples:
-                match_found:
-                  value:
-                    ok: true
-                    message: "We recommend John Smith: Experienced CFO with 15 years in Fintech"
-                    match:
-                      id: "cand-001"
-                      name: "John Smith"
-                      role: "CFO"
-                      summary: "Experienced CFO with 15 years in Fintech"
-                      location: "Ireland"
-                      industries: ["Fintech", "SaaS"]
-                      expertise: ["CFO", "Finance"]
-                      availability: "fractional"
-                      experience_years: 15
-                      comp_expectation: 120000
-                      highlights: ["Led Series B fundraising", "Built finance team from scratch"]
-                      email: "john@example.com"
-                no_match:
-                  value:
-                    ok: true
-                    message: "No match found yet. We'll follow up with suggestions soon."
-                    match: null
-                    matches: []
-        '401':
-          description: Authentication required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '400':
-          description: Invalid request
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
 
   /post-role:
     post:
@@ -1250,67 +1158,6 @@ components:
         Include in header: `Authorization: Bearer <token>`
 
   schemas:
-    Match:
-      type: object
-      description: Executive candidate match result
-      properties:
-        id:
-          type: string
-          description: Candidate ID
-          example: "cand-001"
-        name:
-          type: string
-          description: Full name of candidate
-          example: "John Smith"
-        role:
-          type: string
-          description: Role/title
-          example: "CFO"
-        summary:
-          type: string
-          description: Brief summary/bio
-          example: "Experienced CFO with 15 years in Fintech"
-        location:
-          type: string
-          description: Location preference
-          example: "Ireland"
-        industries:
-          type: array
-          items:
-            type: string
-          description: List of industries
-          example: ["Fintech", "SaaS"]
-        expertise:
-          type: array
-          items:
-            type: string
-          description: List of expertise areas
-          example: ["CFO", "Finance"]
-        availability:
-          type: string
-          description: Availability type
-          enum: [fractional, full_time]
-          example: "fractional"
-        experience_years:
-          type: integer
-          description: Years of experience
-          example: 15
-        comp_expectation:
-          type: integer
-          description: Compensation expectation
-          example: 120000
-        highlights:
-          type: array
-          items:
-            type: string
-          description: Key achievements/highlights
-          example: ["Led Series B fundraising", "Built finance team from scratch"]
-        email:
-          type: string
-          format: email
-          description: Contact email
-          example: "john@example.com"
-
     ErrorResponse:
       type: object
       required:
@@ -1324,40 +1171,6 @@ components:
           type: string
           description: Error message
           example: "Missing required fields: email, name"
-
-    MatchRequest:
-      type: object
-      description: |
-        All fields are optional. The matching algorithm will score candidates based on provided criteria.
-        If no criteria are provided, returns all available candidates.
-      properties:
-        industry:
-          type: string
-          description: Industry focus (e.g., Fintech, SaaS, Insurance)
-          example: "Fintech"
-        expertise:
-          type: string
-          description: Desired role/expertise (e.g., CFO, CEO, CTO)
-          example: "CFO"
-        availability:
-          type: string
-          description: Availability type (fractional or full_time)
-          enum: [fractional, full_time]
-          example: "fractional"
-        min_experience:
-          type: integer
-          description: Minimum years of experience required
-          minimum: 0
-          example: 10
-        max_salary:
-          type: integer
-          description: Maximum salary budget
-          minimum: 0
-          example: 150000
-        location:
-          type: string
-          description: Location preference (e.g., Ireland, UK, Remote)
-          example: "Ireland"
 
     RolePostingRequest:
       type: object
