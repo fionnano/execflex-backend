@@ -1994,23 +1994,17 @@ def _handle_openai_responses(
     import os
     from datetime import datetime
 
-    # Create a log file for this call
-    log_dir = "/tmp"
-    log_file = f"{log_dir}/openai_handler_{call_sid}.log"
-
     def log(msg):
-        """Log to file, stdout, and stderr for reliability."""
+        """Log to stdout and stderr.
+
+        Per-call files under /tmp are no longer written (SEC-E-002): they held
+        transcript fragments and were served by unauthenticated debug routes.
+        """
         timestamp = datetime.utcnow().strftime("%H:%M:%S.%f")[:-3]
         full_msg = f"[{timestamp}] {msg}"
         print(full_msg, flush=True)
         sys.stderr.write(f"{full_msg}\n")
         sys.stderr.flush()
-        try:
-            with open(log_file, "a") as f:
-                f.write(f"{full_msg}\n")
-                f.flush()
-        except Exception:
-            pass
 
     def debug_event(event_name: str, metadata: Optional[dict] = None):
         _append_job_debug_event(job_id, event_name, metadata or {})

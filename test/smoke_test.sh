@@ -136,18 +136,7 @@ test_endpoint() {
 # ========================================
 test_endpoint "Health Check" "GET" "/" "" "200"
 
-# ========================================
-# Matching Endpoints (auth required)
-# ========================================
-test_endpoint "Find Match" "POST" "/match" \
-    '{
-        "industry": "Fintech",
-        "expertise": "CFO",
-        "availability": "fractional",
-        "min_experience": 10,
-        "max_salary": 150000,
-        "location": "Ireland"
-    }' "200" "auth"
+# (Legacy POST /match removed 2026-10-16 — SEC-E-005)
 
 # ========================================
 # Roles Endpoints (auth required)

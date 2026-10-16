@@ -138,22 +138,7 @@ run_test() {
 # Test 1: Health Check
 run_test "Health Check (GET /)" "GET" "/" "" "200"
 
-# Test 2: Match - Valid request
-run_test "Find Match - Valid Request" "POST" "/match" \
-    '{
-        "industry": "Fintech",
-        "expertise": "CFO",
-        "availability": "fractional",
-        "min_experience": "10",
-        "max_salary": "150000",
-        "location": "Ireland"
-    }' "200"
-
-# Test 3: Match - Missing required fields (should return 400)
-run_test "Find Match - Missing Fields (400)" "POST" "/match" \
-    '{
-        "industry": "Fintech"
-    }' "400"
+# Tests 2-3 (POST /match) removed 2026-10-16: legacy route deleted (SEC-E-005)
 
 # Test 4: Post Role - Valid request
 run_test "Post Role - Valid Request" "POST" "/post-role" \

@@ -476,53 +476,10 @@ def voice_status():
         return Response("OK", status=200), 200
 
 
-@voice_bp.route("/debug/handler-log/<call_sid>", methods=["GET"])
-def get_handler_log(call_sid):
-    """
-    Debug endpoint to read the OpenAI handler log for a specific call.
-    """
-    import os
-    log_file = f"/tmp/openai_handler_{call_sid}.log"
-
-    if not os.path.exists(log_file):
-        # Try to find any recent log file
-        import glob
-        log_files = sorted(glob.glob("/tmp/openai_handler_*.log"), key=os.path.getmtime, reverse=True)
-        if log_files:
-            # Return list of available log files
-            return Response(
-                f"Log not found for {call_sid}.\n\nAvailable logs:\n" + "\n".join(log_files[-10:]),
-                mimetype="text/plain"
-            )
-        return Response(f"No log files found", mimetype="text/plain"), 404
-
-    try:
-        with open(log_file, "r") as f:
-            content = f.read()
-        return Response(content, mimetype="text/plain")
-    except Exception as e:
-        return Response(f"Error reading log: {e}", mimetype="text/plain"), 500
-
-
-@voice_bp.route("/debug/latest-log", methods=["GET"])
-def get_latest_handler_log():
-    """
-    Debug endpoint to read the most recent OpenAI handler log.
-    """
-    import os
-    import glob
-
-    log_files = sorted(glob.glob("/tmp/openai_handler_*.log"), key=os.path.getmtime, reverse=True)
-    if not log_files:
-        return Response("No log files found", mimetype="text/plain"), 404
-
-    latest = log_files[0]
-    try:
-        with open(latest, "r") as f:
-            content = f.read()
-        return Response(f"=== {latest} ===\n\n{content}", mimetype="text/plain")
-    except Exception as e:
-        return Response(f"Error reading log: {e}", mimetype="text/plain"), 500
+# The unauthenticated GET /voice/debug/handler-log/<call_sid> and
+# GET /voice/debug/latest-log routes were removed (SEC-E-002): they streamed
+# per-call handler logs holding candidate transcript fragments from /tmp.
+# routes/voice_websocket.py no longer writes those files.
 
 
 

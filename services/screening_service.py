@@ -30,6 +30,7 @@ def create_screening_job(
     purpose: Optional[str] = None,
     user_id: Optional[str] = None,
     role_id: Optional[str] = None,
+    organization_id: Optional[str] = None,
     sign_callback: bool = False,
     candidate_email: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -46,6 +47,9 @@ def create_screening_job(
     the requester types in).
 
     The job is picked up automatically by the existing call_dispatcher worker.
+
+    organization_id is the caller's tenant; it is stamped on the job's
+    artifacts so status, retry and bias-audit reads can be scoped to it.
 
     Returns dict with job_id, thread_id, interaction_id, status.
     """
@@ -101,6 +105,8 @@ def create_screening_job(
     }
     if user_id:
         job_payload["user_id"] = user_id
+    if organization_id:
+        job_payload["artifacts"]["organization_id"] = organization_id
     job_resp = supabase_client.table("outbound_call_jobs").insert(job_payload).execute()
     job_id = job_resp.data[0]["id"] if job_resp.data else None
 
@@ -400,10 +406,13 @@ Respond ONLY with valid JSON:
         except Exception as e:
             print(f"[Analytics] screening_completed failed: {e}", flush=True)
 
-        # Log bias audit record + capture inferred consent
+        # Log bias audit record + capture inferred consent. The row carries
+        # the owning organisation so bias-audit reads can be tenant-scoped.
+        from utils.org_scope import resolve_job_org_id
         consented = _log_bias_audit(
             interaction_id=interaction_id,
             job_id=job_id,
+            organization_id=resolve_job_org_id(job),
             role_id=ctx.get("role_id"),
             role_title=role_title,
             company_name=company_name,
@@ -531,9 +540,13 @@ def _log_bias_audit(
     bias_flags: list,
     transcript: str,
     call_duration_seconds: int,
+    organization_id: Optional[str] = None,
 ) -> Optional[bool]:
     """
     Log bias audit record for EU AI Act compliance.
+
+    organization_id is the tenant that owns the screening (SEC-E-003); the
+    bias-audit route only serves rows whose organization_id matches the caller.
 
     Returns the inferred `candidate_consented` value (True / False / None)
     so the caller can propagate consent to people_profiles.
@@ -586,6 +599,7 @@ def _log_bias_audit(
         supabase_client.table("screening_bias_audit").insert({
             "interaction_id": interaction_id,
             "job_id": job_id,
+            "organization_id": organization_id,
             "role_id": role_id,
             "role_title": role_title,
             "company_name": company_name,

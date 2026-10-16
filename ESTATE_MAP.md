@@ -68,7 +68,7 @@ Produced 2026-07-05. Owner review required before any decommission action.
 | Voice screening (Cara/OpenAI Realtime) | execflex-backend `routes/cara_voice.py`, `routes/voice_websocket.py` | Twilio↔OpenAI bridge | **KEEP** | Core product |
 | Voice monitor (uptime) | execflex-backend `routes/voice_monitor.py` | Health check loop | **KEEP** | Prod reliability |
 | Matching engine (7-dimension) | execflex-backend `services/matching/engine.py` | `MatchingEngine` class | **KEEP** | 42 tests |
-| Old match finder (token overlap) | execflex-backend `modules/match_finder.py` | Legacy `/match` endpoint | **DEAD** | Superseded by `services/matching/` |
+| Old match finder (token overlap) | execflex-backend `modules/match_finder.py` | Legacy `/match` endpoint | **ROUTE REMOVED** 2026-10-16 (SEC-E-005: cross-tenant profile dump) | Module kept: `services/auto_match_service.py` still imports `find_best_match` |
 | Screening state machine | execflex-backend `services/screening/state_machine.py` | CONSENT→INTAKE→SCORING | **KEEP** | 73 tests |
 | Syndication engine | execflex-backend `services/syndication/engine.py` | LinkedIn/Indeed/IrishJobs/Google | **KEEP** | 52 tests |
 | Compliance layer | execflex-backend `services/compliance/` | Decision log, data rights, human review | **KEEP** | 17 tests |
