@@ -115,28 +115,20 @@ def stripe_webhook():
     Handles: checkout.session.completed, customer.subscription.updated,
              customer.subscription.deleted
     """
-    stripe = _get_stripe()
-    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
-
-    payload = request.get_data(as_text=True)
+    payload = request.get_data()
     sig_header = request.headers.get("Stripe-Signature")
-
+    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
     if not webhook_secret:
-        print("WARNING: STRIPE_WEBHOOK_SECRET not set, skipping signature verification")
-        try:
-            import json
-            event = json.loads(payload)
-            # Wrap in a stripe-like object
-            event = type("Event", (), {"type": event.get("type"), "data": type("Data", (), {"object": event.get("data", {}).get("object", {})})()})()
-        except Exception as e:
-            return bad(f"Invalid payload: {e}", 400)
-    else:
-        try:
-            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-        except ValueError:
-            return bad("Invalid payload", 400)
-        except stripe.error.SignatureVerificationError:
-            return bad("Invalid signature", 400)
+        print("ERROR: STRIPE_WEBHOOK_SECRET not set — refusing unsigned webhook", flush=True)
+        return bad("Webhook verification is not configured", 503)
+
+    stripe = _get_stripe()
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except ValueError:
+        return bad("Invalid payload", 400)
+    except stripe.error.SignatureVerificationError:
+        return bad("Invalid signature", 400)
 
     event_type = event.type
     obj = event.data.object

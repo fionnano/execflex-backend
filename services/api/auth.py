@@ -27,28 +27,24 @@ def extract_org_context() -> Optional[OrgContext]:
     if not auth_header.startswith("Bearer "):
         return None
 
-    token = auth_header[7:]
+    token = auth_header[7:].strip()
+    if not token:
+        return None
     try:
-        import jwt
-        from config.app_config import SUPABASE_JWT_SECRET
-        if SUPABASE_JWT_SECRET:
-            payload = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"],
-                                 audience="authenticated")
-        else:
-            payload = jwt.decode(token, options={"verify_signature": False})
-
-        user_id = payload.get("sub")
-        app_metadata = payload.get("app_metadata", {})
-        org_id = app_metadata.get("org_id")
-        role = app_metadata.get("role", "recruiter")
-
-        if not user_id:
-            return None
-
-        ctx = OrgContext(user_id=user_id, org_id=org_id or "", role=role)
+        from utils.jwt_verify import (
+            TokenVerificationError,
+            org_claims_from_payload,
+            verify_supabase_access_token,
+        )
+        payload = verify_supabase_access_token(token)
+        org_id, role = org_claims_from_payload(payload)
+        ctx = OrgContext(user_id=payload["sub"], org_id=org_id, role=role)
         g.org_context = ctx
         return ctx
-    except Exception:
+    except TokenVerificationError:
+        return None
+    except Exception as exc:
+        print(f"Org context verification failed: {type(exc).__name__}", flush=True)
         return None
 
 

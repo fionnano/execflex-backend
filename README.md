@@ -75,6 +75,22 @@ All environment variables are documented in `.env.example`. For Render deploymen
 
 Environment variable loading is handled in `config/app_config.py`.
 
+### Authentication
+
+Login tokens are issued by **Supabase Auth**, not by this service. Clients send the user access token from `supabase.auth.getSession()` as `Authorization: Bearer`. The API verifies:
+
+- signature, against `SUPABASE_JWT_SECRET` for HS256 or the project JWKS for ES256/RS256
+- `exp`, `aud` (default `authenticated`), and `iss` (default `{SUPABASE_URL}/auth/v1`)
+- a fixed algorithm allow-list (`HS256`, `ES256`, `RS256`). `none` and every other algorithm are rejected
+
+If the key for that algorithm is missing, or the secret is shorter than 32 characters, the token is rejected. In production (`APP_ENV` or `FLASK_ENV` of `production` or `prod`) the process refuses to start until `SUPABASE_JWT_SECRET` is set, or `SUPABASE_JWT_JWKS=1` when the project uses asymmetric signing keys only.
+
+`POST /onboarding/process-jobs` places outbound calls. It requires `X-Cron-Key: $PROCESS_JOBS_SECRET` or `X-Service-Key: $AINM_SERVICE_KEY`, and returns 503 when neither secret is configured.
+
+Stripe webhooks require `STRIPE_WEBHOOK_SECRET`. Twilio voice webhooks require `TWILIO_AUTH_TOKEN`. Neither path accepts an unsigned body because its secret is unset. `TWILIO_ALLOW_UNSIGNED_WEBHOOKS=1` skips Twilio signature checks only outside production.
+
+See `.env.example` for every variable and the failure mode of each.
+
 ## API Documentation
 
 Complete API documentation is available in the OpenAPI 3.0 specification:

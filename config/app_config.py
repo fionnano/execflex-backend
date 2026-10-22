@@ -61,11 +61,23 @@ VOICE_MONITOR_ENABLED = os.getenv("VOICE_MONITOR_ENABLED", "true").lower() == "t
 
 
 def validate_config():
-    """Validate required configuration."""
+    """Validate required configuration.
+
+    In production, refuse to boot unless user JWTs can be verified. A missing
+    secret must not leave the process up and accepting unverified tokens.
+    """
     if not SUPABASE_URL:
         raise ValueError("SUPABASE_URL environment variable is required")
     if not SUPABASE_KEY:
         raise ValueError("SUPABASE_SERVICE_KEY environment variable is required")
+    from utils.jwt_verify import auth_configuration_errors, warn_if_unconfigured
+    from utils.security_env import is_production
+    errors = auth_configuration_errors()
+    if is_production() and errors:
+        raise RuntimeError(
+            "Refusing to start in production: " + "; ".join(errors)
+        )
+    warn_if_unconfigured()
     return True
 
 
@@ -80,7 +92,10 @@ def print_config_status():
     print(f"  OpenAI configured? {bool(OPENAI_API_KEY)}")
     print(f"  LinkedIn OAuth configured? {bool(LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET)}")
     print(f"  Ainm Service Key configured? {bool(AINM_SERVICE_KEY)}")
-    print(f"  JWT signature verification? {bool(SUPABASE_JWT_SECRET)}")
+    from utils.jwt_verify import expected_audience, expected_issuer, jwt_hmac_secret
+    print(f"  JWT HS256 secret configured? {bool(jwt_hmac_secret())}")
+    print(f"  JWT issuer={expected_issuer() or '(not configured)'}")
+    print(f"  JWT audience={expected_audience()}")
     print(f"  Stripe configured? {bool(STRIPE_SECRET_KEY)}")
     print(f"  Apollo configured? {bool(APOLLO_API_KEY)}")
     print(f"  PDL configured? {bool(PDL_API_KEY)}")

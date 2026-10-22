@@ -6,17 +6,14 @@ import uuid
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pytest
-import jwt as pyjwt
 
 ORG_A = str(uuid.uuid4())
 USER_A = str(uuid.uuid4())
 
 
 def token(org_id=ORG_A, user_id=USER_A, role="owner"):
-    from config.app_config import SUPABASE_JWT_SECRET
-    payload = {"sub": user_id, "aud": "authenticated",
-               "app_metadata": {"org_id": org_id, "role": role}}
-    return pyjwt.encode(payload, SUPABASE_JWT_SECRET or "test-secret", algorithm="HS256")
+    from jwt_tokens import encode_user_token
+    return encode_user_token(user_id=user_id, org_id=org_id, app_role=role)
 
 
 def auth(org_id=ORG_A):

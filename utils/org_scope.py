@@ -25,6 +25,33 @@ def is_service_identity(user_id: Optional[str]) -> bool:
     return bool(user_id) and str(user_id).startswith("service:")
 
 
+def caller_can_access_opportunity(user_id: Optional[str], opportunity: Dict[str, Any]) -> bool:
+    """
+    True when the caller may read or act on this opportunity.
+
+    Allowed: the service identity, the user who created the row, a member of
+    the opportunity's organisation, or a platform admin. Everyone else is
+    refused, including another authenticated user who only knows the id.
+    """
+    if is_service_identity(user_id):
+        return True
+    if not user_id or not opportunity:
+        return False
+    owner = opportunity.get("created_by_user_id")
+    if owner and owner == user_id:
+        return True
+    org_id = opportunity.get("organization_id")
+    if org_id and resolve_caller_org_id(user_id) == org_id:
+        return True
+    try:
+        from utils.auth_helpers import is_user_admin
+        if is_user_admin(user_id):
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def resolve_caller_org_id(user_id: Optional[str]) -> Optional[str]:
     """
     Organisation of the authenticated caller, or None.

@@ -63,7 +63,7 @@ Automatically runs after every `INSERT` into `auth.users`.
 - `POST /voice/enqueue` - Admin-only manual trigger
 - `GET/POST /voice/onboarding/intro` - TwiML endpoint (personalized based on signup_mode)
 - `POST /voice/onboarding/status` - Twilio status callback
-- `POST /voice/process-jobs` - Manual job processing trigger
+- `POST /onboarding/process-jobs` - Manual job processing trigger (`X-Cron-Key` or `X-Service-Key` required)
 
 ### Worker: `workers/call_dispatcher.py`
 

@@ -73,6 +73,10 @@ def create_shortlist(opportunity_id: str):
         return bad("Opportunity not found", 404)
     opp = opp_resp.data[0]
 
+    from utils.org_scope import caller_can_access_opportunity
+    if not caller_can_access_opportunity(user_id, opp):
+        return bad("Opportunity not found", 404)
+
     role_title = opp.get("title") or "Executive Search"
     company_name = opp.get("company_name")
 

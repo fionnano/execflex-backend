@@ -271,6 +271,18 @@ def init_voice_websocket(sock: Sock):
                     call_sid = start_data.get("callSid")
                     custom_params = start_data.get("customParameters", {})
                     job_id = custom_params.get("job_id")
+                    stream_token = custom_params.get("token") or request.args.get("token")
+                    from utils.voice_stream_auth import verify_stream_token
+                    if not verify_stream_token(str(job_id or ""), stream_token):
+                        print(
+                            f"Rejecting voice stream: missing or invalid token job_id={job_id}",
+                            flush=True,
+                        )
+                        try:
+                            ws.close()
+                        except Exception:
+                            pass
+                        return
                     prompt_vars = {}
 
                     stream_sid_ref["sid"] = stream_sid
