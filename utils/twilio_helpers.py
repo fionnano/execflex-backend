@@ -15,23 +15,35 @@ except ImportError:
     print("⚠️ Twilio RequestValidator not available. Install: pip install twilio")
 
 
+def _twilio_auth_token() -> Optional[str]:
+    """Runtime token so tests and deploys can set it after import."""
+    return (os.getenv("TWILIO_AUTH_TOKEN") or TWILIO_AUTH_TOKEN or "").strip() or None
+
+
 def verify_twilio_signature(url: Optional[str] = None) -> bool:
     """
     Verify that a Twilio webhook request is authentic.
-    
+
     Uses Twilio's RequestValidator if available, otherwise falls back to manual verification.
-    
+
+    A missing auth token or a failed signature returns False. Unsigned webhooks
+    are accepted only when TWILIO_ALLOW_UNSIGNED_WEBHOOKS is set outside production.
+
     Args:
         url: Optional full URL of the webhook endpoint (defaults to request.url)
-        
+
     Returns:
         True if signature is valid, False otherwise
     """
-    # Allow in development if token not set (for local testing with ngrok)
-    app_env = os.getenv("APP_ENV", "prod").lower()
-    if not TWILIO_AUTH_TOKEN or app_env == "dev":
-        print(f"⚠️ TWILIO_AUTH_TOKEN not configured or in dev mode (APP_ENV={app_env}). Skipping signature verification.")
-        return True  # Allow in development if token not set
+    from utils.security_env import unsigned_twilio_webhooks_allowed
+
+    token = _twilio_auth_token()
+    if unsigned_twilio_webhooks_allowed():
+        print("⚠️ TWILIO_ALLOW_UNSIGNED_WEBHOOKS is set — skipping signature verification (not production).")
+        return True
+    if not token:
+        print("⚠️ TWILIO_AUTH_TOKEN is not configured — refusing unsigned Twilio webhook.")
+        return False
     
     # Get signature from header
     signature = request.headers.get("X-Twilio-Signature")
@@ -42,7 +54,7 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
     # Use Twilio's RequestValidator if available (recommended)
     if TWILIO_VALIDATOR_AVAILABLE:
         try:
-            validator = RequestValidator(TWILIO_AUTH_TOKEN)
+            validator = RequestValidator(token)
             
             # RequestValidator can use request.url directly (handles proxy headers automatically)
             # If explicit URL provided, use it; otherwise let RequestValidator use request.url
@@ -59,8 +71,8 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
                 print(f"   Request URL: {request.url}")
                 print(f"   X-Forwarded-Proto: {request.headers.get('X-Forwarded-Proto')}")
                 print(f"   X-Forwarded-Host: {request.headers.get('X-Forwarded-Host')}")
-                print(f"   Auth Token configured: {'Yes' if TWILIO_AUTH_TOKEN else 'No'}")
-                print(f"   Auth Token length: {len(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else 0}")
+                print("   Auth Token configured: Yes")
+                print(f"   Auth Token length: {len(token)}")
                 print(f"   Signature header: {signature[:20]}..." if signature and len(signature) > 20 else f"   Signature header: {signature}")
                 # Log first few POST params for debugging (don't log sensitive data)
                 if request.form:
@@ -98,7 +110,7 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
     
     # Compute HMAC
     computed_signature = hmac.new(
-        TWILIO_AUTH_TOKEN.encode('utf-8'),
+        token.encode('utf-8'),
         data.encode('utf-8'),
         hashlib.sha1
     ).digest()
@@ -115,6 +127,27 @@ def verify_twilio_signature(url: Optional[str] = None) -> bool:
         print(f"   Params: {sorted_params[:3]}...")  # Only show first 3 params
     
     return is_valid
+
+
+def twilio_request_is_authentic(canonical_path: str) -> bool:
+    """
+    True when the current request carries a valid Twilio signature.
+
+    Render's proxy can make request.url differ from the URL Twilio signed.
+    On failure, retry against the public base URL plus canonical_path
+    (for example ``/voice/status``).
+    """
+    if verify_twilio_signature():
+        return True
+    base_url = (
+        os.getenv("API_BASE_URL")
+        or os.getenv("RENDER_EXTERNAL_URL")
+        or "https://execflex-backend-1.onrender.com"
+    ).rstrip("/")
+    canonical = f"{base_url}{canonical_path}"
+    if request.query_string:
+        canonical += f"?{request.query_string.decode()}"
+    return verify_twilio_signature(url=canonical)
 
 
 def require_twilio_signature(f):

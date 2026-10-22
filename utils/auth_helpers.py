@@ -4,7 +4,6 @@ service-to-service keys, and admin roles.
 """
 from flask import request
 from typing import Optional, Tuple
-import jwt  # PyJWT (already in requirements.txt)
 from config.clients import supabase_client
 
 
@@ -28,7 +27,12 @@ def _check_service_key() -> Tuple[Optional[str], bool]:
 
     # Constant-time comparison to prevent timing attacks
     import hmac
-    if hmac.compare_digest(header_value, service_key):
+    try:
+        header_bytes = header_value.encode("utf-8")
+        key_bytes = service_key.encode("utf-8")
+    except Exception:
+        return None, False
+    if hmac.compare_digest(header_bytes, key_bytes):
         return "service:ainm", True
 
     return None, False
@@ -44,9 +48,10 @@ def get_authenticated_user_id() -> Tuple[Optional[str], Optional[str]]:
     3. Authorization: Bearer <JWT> (Supabase user tokens)
 
     JWT verification:
-    - If SUPABASE_JWT_SECRET is set, tokens are verified against it.
-    - If not set (dev mode), tokens are decoded without signature verification
-      and a warning is logged.
+    - Supabase Auth access tokens are verified by utils.jwt_verify: signature
+      (HS256 secret or JWKS), exp, aud, iss, and a fixed algorithm allow-list.
+    - If the key for the token's algorithm is not configured, the token is
+      rejected. Signature verification is never skipped.
 
     Returns:
         Tuple[user_id, error_message]
@@ -83,45 +88,12 @@ def get_authenticated_user_id() -> Tuple[Optional[str], Optional[str]]:
         return None, "Missing token in Authorization header"
 
     try:
-        jwt_secret = os.getenv("SUPABASE_JWT_SECRET")
+        from utils.jwt_verify import TokenVerificationError, verify_supabase_access_token
 
-        if jwt_secret:
-            # Production: verify signature against Supabase JWT secret
-            decoded = jwt.decode(
-                token,
-                jwt_secret,
-                algorithms=["HS256"],
-                options={"verify_exp": True, "verify_aud": False},
-            )
-        else:
-            # Dev mode: decode without verification (log warning once)
-            if not getattr(get_authenticated_user_id, "_warned_no_secret", False):
-                print("WARNING: SUPABASE_JWT_SECRET not set — JWT signature verification disabled (dev mode)")
-                get_authenticated_user_id._warned_no_secret = True
-            decoded = jwt.decode(token, options={"verify_signature": False})
-
-            # Manual expiration check for unverified tokens
-            if "exp" in decoded:
-                import time
-                if decoded["exp"] < time.time():
-                    return None, "Token has expired"
-
-        user_id = decoded.get("sub")
-        if not user_id:
-            return None, "Token does not contain user ID (sub claim)"
-
-        return user_id, None
-
-    except jwt.ExpiredSignatureError:
-        return None, "Token has expired"
-    except jwt.InvalidSignatureError:
-        return None, "Invalid token signature"
-    except jwt.DecodeError as e:
-        print(f"JWT decode error: {e}")
-        return None, f"Invalid token format: {str(e)}"
-    except Exception as e:
-        print(f"Token verification failed: {e}")
-        return None, f"Token verification failed: {str(e)}"
+        decoded = verify_supabase_access_token(token)
+        return decoded.get("sub"), None
+    except TokenVerificationError as exc:
+        return None, exc.message
 
 
 def require_auth(f):

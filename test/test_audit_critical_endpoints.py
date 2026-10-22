@@ -23,13 +23,12 @@ import uuid
 from urllib.parse import parse_qs, quote, urlparse
 
 import pytest
-import jwt as pyjwt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 ROUTES_DIR = os.path.join(os.path.dirname(__file__), "..", "routes")
 
-JWT_SECRET = "audit-test-jwt-secret"
+JWT_SECRET = "audit-test-jwt-secret-0123456789abcd"
 SERVICE_KEY = "audit-test-service-key"
 WS_SIGNING_SECRET = "audit-test-ws-signing-secret"
 
@@ -206,10 +205,10 @@ def client(env, fake_db):
 
 
 def token(user_id=USER_A, org_id=ORG_A, role="recruiter"):
-    payload = {"sub": user_id, "aud": "authenticated", "exp": int(time.time()) + 600}
-    if org_id:
-        payload["app_metadata"] = {"org_id": org_id, "role": role}
-    return pyjwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    from jwt_tokens import encode_user_token
+    return encode_user_token(
+        user_id=user_id, org_id=org_id, app_role=role, secret=JWT_SECRET,
+    )
 
 
 def bearer(**kw):

@@ -1610,8 +1610,13 @@ def onboarding_status():
     DEPRECATED: Twilio status callback webhook for onboarding calls.
     Use /voice/status instead.
     
-    Kept for backward compatibility only.
+    Kept for backward compatibility only. Twilio's signature is required;
+    an unsigned request cannot change call state.
     """
+    from utils.twilio_helpers import twilio_request_is_authentic
+    if not twilio_request_is_authentic("/onboarding/status"):
+        return Response("Invalid signature", status=403), 403
+
     call_sid = request.form.get("CallSid")
     call_status = request.form.get("CallStatus")  # queued, ringing, in-progress, completed, failed, busy, no-answer, canceled
     call_duration = request.form.get("CallDuration")  # seconds, only for completed
@@ -1713,10 +1718,34 @@ def process_jobs_endpoint():
     **Note:** This endpoint is optional. If using Render Background Workers,
     you can run `python -m workers.call_dispatcher` directly instead.
 
-    Optional query param: limit (default 10)
+    Auth: header ``X-Cron-Key: $PROCESS_JOBS_SECRET`` or
+    ``X-Service-Key: $AINM_SERVICE_KEY``. If neither secret is configured
+    the endpoint refuses the request.
+
+    Optional query param: limit (default 10, maximum 100)
     """
-    # Optional: Add service secret protection here if needed
-    limit = int(request.args.get("limit", 10))
+    import hmac
+    cron_secret = os.getenv("PROCESS_JOBS_SECRET") or ""
+    service_key = os.getenv("AINM_SERVICE_KEY") or ""
+    cron_header = request.headers.get("X-Cron-Key") or ""
+    service_header = request.headers.get("X-Service-Key") or ""
+    def _matches(provided: str, secret: str) -> bool:
+        if not provided or not secret:
+            return False
+        return hmac.compare_digest(provided.encode("utf-8"), secret.encode("utf-8"))
+
+    cron_ok = _matches(cron_header, cron_secret)
+    service_ok = _matches(service_header, service_key)
+    if not cron_secret and not service_key:
+        return bad("Job processing auth is not configured", 503)
+    if not (cron_ok or service_ok):
+        return bad("Authentication required", 401)
+
+    try:
+        limit = int(request.args.get("limit", 10))
+    except (TypeError, ValueError):
+        return bad("limit must be an integer", 400)
+    limit = max(1, min(limit, 100))
 
     try:
         processed = process_queued_jobs(limit=limit)

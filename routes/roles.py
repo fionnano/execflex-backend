@@ -44,9 +44,12 @@ def post_role():
         if not user_id:
             return bad("Authentication required", 401)
 
-        # Create or get organization first (if company info provided)
-        organization_id = None
-        if data.get("company_name"):
+        # Bind the role to the caller's organisation. A name lookup is only
+        # used for legacy accounts that have no org claim and no membership;
+        # otherwise a caller could attach a role to another company by name.
+        from utils.org_scope import resolve_caller_org_id
+        organization_id = resolve_caller_org_id(user_id)
+        if not organization_id and data.get("company_name"):
             try:
                 # Try to find existing organization
                 org_response = supabase_client.table("organizations").select("id").eq("name", data["company_name"]).execute()
@@ -206,6 +209,25 @@ def sourced_candidates(opportunity_id: str):
     try:
         if not supabase_client:
             return bad("Database not available", 503)
+
+        from utils.org_scope import caller_can_access_opportunity, is_uuid
+        if not is_uuid(opportunity_id):
+            return bad("Opportunity not found", 404)
+        try:
+            opp_resp = (
+                supabase_client.table("opportunities")
+                .select("id, created_by_user_id, organization_id")
+                .eq("id", opportunity_id)
+                .limit(1)
+                .execute()
+            )
+        except Exception as e:
+            return bad(f"Failed to fetch opportunity: {e}", 500)
+        if not opp_resp.data:
+            return bad("Opportunity not found", 404)
+        user_id = request.environ.get("authenticated_user_id")
+        if not caller_can_access_opportunity(user_id, opp_resp.data[0]):
+            return bad("Opportunity not found", 404)
 
         resp = (
             supabase_client.table("people_profiles")

@@ -1063,7 +1063,14 @@ paths:
         you can run `python -m workers.call_dispatcher` directly instead.
         
         Processes queued outbound call jobs and initiates Twilio calls.
+
+        Requires header `X-Cron-Key` (value of `PROCESS_JOBS_SECRET`) or
+        `X-Service-Key` (value of `AINM_SERVICE_KEY`). Returns 503 when neither
+        secret is configured, and 401 when the header does not match.
       operationId: processJobs
+      security:
+        - cronKey: []
+        - serviceKey: []
       parameters:
         - name: limit
           in: query
@@ -1092,6 +1099,18 @@ paths:
                 ok: true
                 processed: 3
                 message: "Processed 3 jobs"
+        '401':
+          description: Missing or incorrect cron or service key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: PROCESS_JOBS_SECRET and AINM_SERVICE_KEY are both unset
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Server error
           content:
@@ -1110,6 +1129,7 @@ paths:
         
         Twilio status callback webhook for onboarding calls.
         Updates job and interaction records with call status.
+        Requests without a valid `X-Twilio-Signature` are rejected.
       operationId: onboardingStatus
       deprecated: true
       requestBody:
@@ -1153,9 +1173,20 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        Supabase JWT token from authenticated user session.
+        Supabase Auth user access token (not the anon or service-role key).
         Get the token from `supabase.auth.getSession()` in the frontend.
-        Include in header: `Authorization: Bearer <token>`
+        Include in header: `Authorization: Bearer <token>`.
+        The API verifies the signature (HS256 secret or JWKS), exp, aud, and iss.
+    cronKey:
+      type: apiKey
+      in: header
+      name: X-Cron-Key
+      description: Shared secret `PROCESS_JOBS_SECRET` for the job-processing cron.
+    serviceKey:
+      type: apiKey
+      in: header
+      name: X-Service-Key
+      description: Shared secret `AINM_SERVICE_KEY` for the Ainm backend.
 
   schemas:
     ErrorResponse:

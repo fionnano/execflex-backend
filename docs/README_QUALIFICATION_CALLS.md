@@ -98,11 +98,13 @@ Set up a Supabase webhook or database trigger that calls the endpoint after `aut
 ```
 
 **Option B: Render Cron Job**
-- Create a scheduled task that calls `POST /voice/process-jobs` every minute
+- Create a scheduled task that calls `POST /onboarding/process-jobs` every minute
+- Send header `X-Cron-Key` set to the `PROCESS_JOBS_SECRET` environment variable. The route rejects the call when that secret is not configured.
 
 **Option C: Manual Trigger**
 ```bash
-curl -X POST https://api.execflex.ai/voice/process-jobs
+curl -X POST https://api.execflex.ai/onboarding/process-jobs \
+  -H "X-Cron-Key: $PROCESS_JOBS_SECRET"
 ```
 
 ### 3. Monitor Jobs
@@ -178,7 +180,8 @@ curl -X POST https://api.execflex.ai/voice/enqueue \
 
 2. Process jobs:
 ```bash
-curl -X POST https://api.execflex.ai/voice/process-jobs
+curl -X POST https://api.execflex.ai/onboarding/process-jobs \
+  -H "X-Cron-Key: $PROCESS_JOBS_SECRET"
 ```
 
 3. Check job status:

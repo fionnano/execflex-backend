@@ -113,30 +113,11 @@ def voice_stream():
         print("[voice/stream] FAILED: VoiceResponse not available", flush=True)
         return Response("Voice features not available", mimetype="text/plain"), 503
 
-    # Verify Twilio signature
-    from utils.twilio_helpers import verify_twilio_signature
-    app_env = os.getenv("APP_ENV", "prod").lower()
+    from utils.twilio_helpers import twilio_request_is_authentic
 
-    sig_valid = verify_twilio_signature()
-    print(f"[voice/stream] Signature check: valid={sig_valid}, env={app_env}", flush=True)
-    if not sig_valid:
-        if app_env != "dev":
-            # Use the canonical HTTPS URL for signature verification (Render proxy strips https)
-            base_url = (
-                os.getenv("API_BASE_URL") or
-                os.getenv("RENDER_EXTERNAL_URL") or
-                "https://execflex-backend-1.onrender.com"
-            )
-            canonical_url = f"{base_url}/voice/stream"
-            if request.query_string:
-                canonical_url += f"?{request.query_string.decode()}"
-            sig_valid_retry = verify_twilio_signature(url=canonical_url)
-            print(f"[voice/stream] Signature retry with canonical URL: valid={sig_valid_retry}, url={canonical_url}", flush=True)
-            if not sig_valid_retry:
-                print("[voice/stream] REJECTED: Invalid Twilio signature", flush=True)
-                return Response("Invalid signature", status=403), 403
-        else:
-            print("[voice/stream] Signature failed but continuing (dev mode)", flush=True)
+    if not twilio_request_is_authentic("/voice/stream"):
+        print("[voice/stream] REJECTED: Invalid Twilio signature", flush=True)
+        return Response("Invalid signature", status=403), 403
 
     call_sid = request.values.get("CallSid") or request.args.get("CallSid") or "unknown"
     job_id = request.values.get("job_id") or request.args.get("job_id")
@@ -158,10 +139,21 @@ def voice_stream():
             os.getenv("RENDER_EXTERNAL_URL") or
             "https://execflex-backend-1.onrender.com"
         )
-        # Convert http(s) to wss
+        # Convert http(s) to wss. The token authorises this job's media stream.
+        from utils.voice_stream_auth import make_stream_token
+        try:
+            stream_token = make_stream_token(str(job_id))
+        except RuntimeError as exc:
+            print(f"[voice/stream] REJECTED: {exc}", flush=True)
+            resp = VoiceResponse()
+            resp.say("Sorry, voice is temporarily unavailable. Goodbye.", voice="alice", language="en-GB")
+            resp.hangup()
+            return Response(str(resp), mimetype="text/xml")
         ws_base = base_url.replace("https://", "wss://").replace("http://", "ws://")
         ws_url = f"{ws_base}/voice/ws?job_id={job_id}"
-        _append_stream_debug_event(job_id, "voice_stream_ws_url_built", {"ws_url": ws_url})
+        if stream_token:
+            ws_url += f"&token={stream_token}"
+        _append_stream_debug_event(job_id, "voice_stream_ws_url_built", {"ws_url": ws_url.split("token=")[0]})
 
         # Create TwiML response with Media Streams
         resp = VoiceResponse()
@@ -172,8 +164,10 @@ def voice_stream():
         # Pass job_id as a custom parameter
         stream.parameter(name="job_id", value=str(job_id))
         stream.parameter(name="call_sid", value=str(call_sid))
+        if stream_token:
+            stream.parameter(name="token", value=stream_token)
 
-        print(f"Returning stream TwiML: ws_url={ws_url}")
+        print(f"Returning stream TwiML: job_id={job_id} signed={bool(stream_token)}")
         _append_stream_debug_event(job_id, "voice_stream_twiml_returned")
         return Response(str(resp), mimetype="text/xml")
 
@@ -200,7 +194,11 @@ def voice_inbound():
     """
     if not VoiceResponse:
         return Response("Voice features not available", mimetype="text/plain"), 503
-    
+
+    from utils.twilio_helpers import twilio_request_is_authentic
+    if not twilio_request_is_authentic("/voice/inbound"):
+        return Response("Invalid signature", status=403), 403
+
     # TODO: Implement inbound call handling when needed
     resp = VoiceResponse()
     resp.say("Inbound calls are not yet implemented. Please use the web interface.", voice="alice", language="en-GB")
@@ -237,17 +235,11 @@ def voice_status():
         From: Caller phone number
         To: Called phone number
     """
-    # Verify Twilio signature (RequestValidator handles request.url automatically)
-    from utils.twilio_helpers import verify_twilio_signature
-    import os
-    app_env = os.getenv("APP_ENV", "prod").lower()
-    
-    if not verify_twilio_signature():
-        if app_env != "dev":
-            print("❌ Invalid Twilio signature in production mode")
-            return Response("Invalid signature", status=403), 403
-        else:
-            print("⚠️ Twilio signature verification failed, but continuing (dev mode)")
+    from utils.twilio_helpers import twilio_request_is_authentic
+
+    if not twilio_request_is_authentic("/voice/status"):
+        print("❌ Invalid Twilio signature")
+        return Response("Invalid signature", status=403), 403
     
     call_sid = request.form.get("CallSid") or request.values.get("CallSid")
     call_status = request.form.get("CallStatus") or request.values.get("CallStatus")  # queued, ringing, in-progress, completed, failed, busy, no-answer, canceled
