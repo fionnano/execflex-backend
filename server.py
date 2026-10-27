@@ -60,7 +60,13 @@ CORS(app, resources={
             "http://localhost:3000",
         ],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With", "X-Service-Key"],
+        "allow_headers": [
+            "Content-Type",
+            "Authorization",
+            "X-Requested-With",
+            "X-Service-Key",
+            "X-Process-Jobs-Secret",
+        ],
         "expose_headers": ["Content-Type"],
         "supports_credentials": True,
         "max_age": 3600

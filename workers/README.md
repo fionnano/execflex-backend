@@ -26,9 +26,11 @@ Render supports **Background Workers** that run continuously:
    - Create a new **Background Worker** service
    - Connect to your repository
    - Set:
-     - **Build Command:** `pip install -r requirements.txt`
-     - **Start Command:** `python -m workers.call_dispatcher`
-     - **Environment Variables:** Same as your web service (Supabase, Twilio, etc.)
+     - **Build Command:** `bash scripts/render_build.sh`
+     - **Start Command:** `python -m workers.call_dispatcher --continuous`
+     - **Environment Variables:** Same as your web service (Supabase, Twilio, etc.), plus `GITHUB_TOKEN` available during the build so pip can clone the private `agentic-core` pin. The worker process does not read `GITHUB_TOKEN`.
+
+   The live Render service `execflex-call-dispatcher` already starts with `--continuous`. Keep that start command. Without `--continuous` the process handles one batch and exits. There is no `render.yaml`; the dashboard build command has to be changed to the script or the private-repo clone keeps failing. `scripts/render_build.sh` is not applied on its own.
 
 2. **The worker will:**
    - Run continuously
