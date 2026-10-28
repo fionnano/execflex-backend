@@ -57,11 +57,11 @@ def test_signed_callback_verifies_with_ainm_algorithm(captured):
     assert "X-Service-Key" not in headers
 
 
-def test_unsigned_callback_has_no_signature_headers(captured):
-    voice_call_service._fire_callback("https://example.com/cb", {"a": 1}, "j1")
-    _, kwargs = captured[0]
-    assert "X-Execflex-Signature" not in kwargs["headers"]
-    assert "X-Execflex-Timestamp" not in kwargs["headers"]
+def test_unsigned_or_off_list_callback_is_not_delivered(captured):
+    # GDPR-E-005: unsigned callbacks and non-allow-listed hosts are never posted.
+    voice_call_service._fire_callback("https://ainm.ai/cb", {"a": 1}, "j1")
+    voice_call_service._fire_callback("https://example.com/cb", {"a": 1}, "j1", sign=True)
+    assert captured == []
 
 
 class _Table:

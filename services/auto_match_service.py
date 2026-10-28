@@ -343,6 +343,13 @@ def auto_match_and_outreach(
             )
             continue
 
+        # Global do-not-contact list (GDPR-E-004).
+        from services.compliance.suppression import is_suppressed
+        if is_suppressed(email=email):
+            summary["skipped_ineligible"] += 1
+            print(f"[AUTO-MATCH] candidate={pid} skipped=suppressed", flush=True)
+            continue
+
         # Build outreach
         first = (row.get("first_name") or "").strip()
         last = (row.get("last_name") or "").strip()

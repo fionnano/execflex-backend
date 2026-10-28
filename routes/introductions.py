@@ -6,6 +6,7 @@ from flask import request, Response
 from routes import introductions_bp
 from utils.response_helpers import ok, bad
 from utils.auth_helpers import require_auth
+from utils.log_redaction import mask_phone
 from config.clients import supabase_client
 from modules.email_sender import send_intro_email
 
@@ -428,6 +429,47 @@ _PHONE_CAPTURE_PAGE = """<!DOCTYPE html>
 </html>"""
 
 
+def _suppress_thread_contact(thread_id: str, thread: dict) -> None:
+    """Suppress the e-mail/phone behind an outreach thread. Never raises."""
+    try:
+        from services.compliance.suppression import suppress
+        emails, phones, profile_id = set(), set(), None
+        user_id = (thread or {}).get("primary_user_id")
+        if user_id:
+            ci_resp = (
+                supabase_client.table("channel_identities")
+                .select("channel, value")
+                .eq("user_id", user_id)
+                .execute()
+            )
+            for ci in (ci_resp.data or []):
+                if ci.get("channel") == "email" and ci.get("value"):
+                    emails.add(ci["value"])
+                elif ci.get("channel") == "phone" and ci.get("value"):
+                    phones.add(ci["value"])
+        # PDL-sourced candidates have no user: the outreach interaction
+        # recorded the address it was sent to.
+        ix_resp = (
+            supabase_client.table("interactions")
+            .select("artifacts")
+            .eq("thread_id", thread_id)
+            .execute()
+        )
+        for ix in (ix_resp.data or []):
+            arts = ix.get("artifacts") or {}
+            if arts.get("candidate_email"):
+                emails.add(arts["candidate_email"])
+            profile_id = profile_id or arts.get("candidate_profile_id")
+        for email in emails:
+            suppress(email=email, reason="not_interested", source=f"intro_respond:{thread_id}", profile_id=profile_id)
+        for phone in phones:
+            suppress(phone=phone, reason="not_interested", source=f"intro_respond:{thread_id}", profile_id=profile_id)
+        if not emails and not phones:
+            print(f"[INTRO RESPOND] no contact values found to suppress for thread={thread_id}", flush=True)
+    except Exception as e:
+        print(f"[INTRO RESPOND] suppression failed for thread={thread_id}: {e}", flush=True)
+
+
 @introductions_bp.route("/intro/respond", methods=["GET"])
 def intro_respond():
     """
@@ -492,6 +534,10 @@ def intro_respond():
                 print(f"[INTRO RESPOND] analytics candidate_interested failed: {e}", flush=True)
 
         if action == "notinterested":
+            # Art. 21 objection: put every contact value we hold for this
+            # person on the global do-not-contact list so no later role
+            # sources, enriches or e-mails them again (GDPR-E-004).
+            _suppress_thread_contact(thread_id, thread)
             return Response(_RESPONSE_PAGE_NOT_INTERESTED, mimetype="text/html"), 200
 
         # Action = interested → look up candidate phone + enqueue screening call
@@ -617,7 +663,7 @@ def intro_respond():
                     )
                     print(
                         f"[INTRO RESPOND] screening enqueued: thread={thread_id} "
-                        f"phone={phone} role={role_title!r}",
+                        f"phone={mask_phone(phone)} role={role_title!r}",
                         flush=True,
                     )
                 except Exception as e:
@@ -803,7 +849,7 @@ def intro_phone_capture():
             )
             print(
                 f"[PHONE-CAPTURE] screening enqueued: thread={thread_id} "
-                f"phone={phone} role={role_title!r}",
+                f"phone={mask_phone(phone)} role={role_title!r}",
                 flush=True,
             )
         except Exception as e:

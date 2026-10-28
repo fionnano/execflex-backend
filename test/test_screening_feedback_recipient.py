@@ -81,6 +81,7 @@ def sent(monkeypatch):
         return True
 
     monkeypatch.setattr(modules.email_sender, "send_screening_feedback_email", fake_send)
+    monkeypatch.setattr(routes.screening, "_feedback_requests_seen", {})
     return calls
 
 
@@ -104,7 +105,7 @@ def test_phone_lookup_never_sends_to_supplied_email(monkeypatch, sent):
     client, _ = _client(monkeypatch, _rows(_job(candidate_email="victim@example.com")))
     resp = client.post("/screening/feedback-request",
                        json={"phone": "+353861111111", "email": "attacker@evil.test"})
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     assert [c["candidate_email"] for c in sent] == ["victim@example.com"]
     # The response must not disclose the address on record either.
     assert "victim@example.com" not in resp.get_data(as_text=True)
@@ -114,8 +115,9 @@ def test_no_email_on_record_sends_nothing(monkeypatch, sent):
     client, fake = _client(monkeypatch, _rows(_job()))
     resp = client.post("/screening/feedback-request",
                        json={"phone": "+353861111111", "email": "attacker@evil.test"})
-    assert resp.status_code == 422
-    assert resp.get_json()["status"] == "no_email_on_record"
+    # Uniform response (SEC-E-006): the caller learns nothing about the record.
+    assert resp.status_code == 202
+    assert resp.get_json()["status"] == "accepted"
     assert sent == []
     assert fake.inserts["screening_feedback_requests"][0]["status"] == "failed"
 
@@ -127,7 +129,7 @@ def test_email_on_record_from_platform_user_identity(monkeypatch, sent):
     client, _ = _client(monkeypatch, _rows(job, identities))
     resp = client.post("/screening/feedback-request",
                        json={"phone": "+353861111111", "email": "attacker@evil.test"})
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     assert [c["candidate_email"] for c in sent] == ["cand@example.com"]
 
 
@@ -138,12 +140,13 @@ def test_email_lookup_sends_to_that_registered_email(monkeypatch, sent):
     identities = [{"channel": "email", "user_id": "user-1", "value": "cand@example.com"}]
     client, _ = _client(monkeypatch, _rows(job, identities))
     resp = client.post("/screening/feedback-request", json={"email": "cand@example.com"})
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     assert [c["candidate_email"] for c in sent] == ["cand@example.com"]
 
 
-def test_unknown_candidate_404_and_nothing_sent(monkeypatch, sent):
+def test_unknown_candidate_same_response_and_nothing_sent(monkeypatch, sent):
     client, _ = _client(monkeypatch, _rows(_job(candidate_email="victim@example.com")))
     resp = client.post("/screening/feedback-request", json={"phone": "+353860000000"})
-    assert resp.status_code == 404
+    assert resp.status_code == 202
+    assert resp.get_json()["status"] == "accepted"
     assert sent == []

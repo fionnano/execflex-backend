@@ -323,6 +323,13 @@ def source_and_upsert(
             print("[SOURCING] Upsert skipped — supabase_client unavailable", flush=True)
             return 0
 
+        # Pulling people who never applied needs a documented legal basis
+        # (GDPR-E-004); without one nothing is fetched from PDL.
+        from services.compliance.legal_basis import sourcing_allowed, sourcing_block_reason, stamp_legal_basis
+        if not sourcing_allowed():
+            print(f"[SOURCING] Skipped — {sourcing_block_reason()}", flush=True)
+            return 0
+
         candidates = search_candidates(
             role_title=role_title,
             opportunity_id=opportunity_id,
@@ -398,6 +405,7 @@ def source_and_upsert(
                 first_name = parts[0] if parts else None
                 last_name = parts[1] if len(parts) > 1 else None
 
+                from datetime import datetime, timezone
                 row_payload = {
                     "first_name": first_name,
                     "last_name": last_name,
@@ -407,7 +415,12 @@ def source_and_upsert(
                     "linkedin_url": cand.get("linkedin_url"),
                     "approved": False,
                     "source": "apollo",
-                    "source_metadata": cand.get("source_metadata") or {},
+                    # Why we hold this row, for Art. 5(2) accountability and
+                    # a future purge of unapproved rows by sourced_at.
+                    "source_metadata": stamp_legal_basis(
+                        cand.get("source_metadata") or {},
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
                 }
                 supabase_client.table("people_profiles").insert(row_payload).execute()
                 inserted += 1

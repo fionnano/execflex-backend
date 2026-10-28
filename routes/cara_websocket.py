@@ -87,8 +87,6 @@ def cara_ws_handler(ws: SimpleWebSocket, session_id: str):
     )
     system_prompt = _CARA_PREAMBLE + system_prompt
     _log(session_id, "PROMPT_LOADED", prompt_len=len(system_prompt))
-    _log(session_id, "PROMPT_HEAD", text=repr(system_prompt[:500]))
-    _log(session_id, "PROMPT_TAIL", text=repr(system_prompt[-500:]))
 
     if not OPENAI_API_KEY:
         _log(session_id, "NO_OPENAI_KEY")

@@ -114,29 +114,28 @@ def stripe_webhook():
     Stripe sends events here. Verified via webhook signature.
     Handles: checkout.session.completed, customer.subscription.updated,
              customer.subscription.deleted
+
+    SEC-E-009: without STRIPE_WEBHOOK_SECRET nothing is parsed or dispatched.
+    An unsigned payload could otherwise activate or cancel any organisation's
+    subscription by stripe_customer_id.
     """
-    stripe = _get_stripe()
     webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
+    if not webhook_secret:
+        print("SECURITY: STRIPE_WEBHOOK_SECRET not set — webhook rejected", flush=True)
+        return bad("Webhook signature verification is not configured", 503)
 
     payload = request.get_data(as_text=True)
     sig_header = request.headers.get("Stripe-Signature")
+    if not sig_header:
+        return bad("Missing Stripe-Signature header", 400)
 
-    if not webhook_secret:
-        print("WARNING: STRIPE_WEBHOOK_SECRET not set, skipping signature verification")
-        try:
-            import json
-            event = json.loads(payload)
-            # Wrap in a stripe-like object
-            event = type("Event", (), {"type": event.get("type"), "data": type("Data", (), {"object": event.get("data", {}).get("object", {})})()})()
-        except Exception as e:
-            return bad(f"Invalid payload: {e}", 400)
-    else:
-        try:
-            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-        except ValueError:
-            return bad("Invalid payload", 400)
-        except stripe.error.SignatureVerificationError:
-            return bad("Invalid signature", 400)
+    stripe = _get_stripe()
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except ValueError:
+        return bad("Invalid payload", 400)
+    except stripe.error.SignatureVerificationError:
+        return bad("Invalid signature", 400)
 
     event_type = event.type
     obj = event.data.object
@@ -1500,6 +1499,12 @@ def enrich_candidates(opportunity_id: str):
     if not supabase_client:
         return bad("Database not available", 503)
 
+    # Buying personal contact details for people who never applied needs a
+    # documented legal basis first (GDPR-E-004).
+    from services.compliance.legal_basis import sourcing_allowed, sourcing_block_reason, sourcing_legal_basis
+    if not sourcing_allowed():
+        return bad(sourcing_block_reason(), 403, error_code="legal_basis_required")
+
     api_key = os.environ.get("PDL_API_KEY")
     if not api_key:
         return bad("PDL_API_KEY not configured", 503)
@@ -1618,10 +1623,17 @@ def enrich_candidates(opportunity_id: str):
                         phone = p
                         break
 
+        # Never keep contact details for someone on the do-not-contact list.
+        from services.compliance.suppression import is_suppressed
+        if is_suppressed(email=email, phone=phone):
+            skipped.append({"id": cid, "reason": "suppressed"})
+            continue
+
         # Merge into source_metadata
         updated_sm = dict(sm)
         updated_sm["enriched"] = True
         updated_sm["enrich_date"] = datetime.now(timezone.utc).isoformat()
+        updated_sm.update(sourcing_legal_basis() or {})
         if email:
             updated_sm["enriched_email"] = email
             updated_sm["has_email"] = True
@@ -1680,6 +1692,13 @@ def send_outreach_bulk(opportunity_id: str):
     """
     if not supabase_client:
         return bad("Database not available", 503)
+
+    # Unsolicited outreach needs a documented legal basis and carries the
+    # Art. 14 notice; suppressed contacts are skipped (GDPR-E-004).
+    from services.compliance.legal_basis import sourcing_allowed, sourcing_block_reason, art14_notice
+    from services.compliance.suppression import is_suppressed
+    if not sourcing_allowed():
+        return bad(sourcing_block_reason(), 403, error_code="legal_basis_required")
 
     data = request.get_json(force=True, silent=True) or {}
     candidate_ids = data.get("candidate_ids")
@@ -1778,6 +1797,9 @@ def send_outreach_bulk(opportunity_id: str):
         if not email or "@" not in (email or ""):
             skipped.append({"id": cid, "reason": "no_email"})
             continue
+        if is_suppressed(email=email):
+            skipped.append({"id": cid, "reason": "suppressed"})
+            continue
 
         # Build outreach email
         candidate_profile = {
@@ -1817,6 +1839,10 @@ def send_outreach_bulk(opportunity_id: str):
             continue
 
         body_with_links = append_response_links(outreach_body, thread_id) if thread_id else outreach_body
+        # Art. 14: tell people whose data we did not collect from them where
+        # it came from and how to object, on first contact.
+        if not row.get("user_id"):
+            body_with_links = body_with_links + art14_notice(opportunity_record.get("company_name"))
 
         # Send the email
         try:

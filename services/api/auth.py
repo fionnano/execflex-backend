@@ -31,16 +31,17 @@ def extract_org_context() -> Optional[OrgContext]:
     try:
         import jwt
         from config.app_config import SUPABASE_JWT_SECRET
-        if SUPABASE_JWT_SECRET:
-            payload = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"],
-                                 audience="authenticated")
-        else:
-            payload = jwt.decode(token, options={"verify_signature": False})
+        if not SUPABASE_JWT_SECRET:
+            # Fail closed (SEC-E-008): an unverifiable token is no token.
+            return None
+        payload = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"],
+                             audience="authenticated")
 
         user_id = payload.get("sub")
-        app_metadata = payload.get("app_metadata", {})
+        app_metadata = payload.get("app_metadata") or {}
         org_id = app_metadata.get("org_id")
-        role = app_metadata.get("role", "recruiter")
+        # A token without a role claim gets the least privilege (SEC-E-008).
+        role = app_metadata.get("role") or "viewer"
 
         if not user_id:
             return None

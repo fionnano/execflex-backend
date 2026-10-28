@@ -64,12 +64,54 @@ POSTHOG_HOST = os.getenv("POSTHOG_HOST", "https://eu.i.posthog.com")
 VOICE_MONITOR_ENABLED = os.getenv("VOICE_MONITOR_ENABLED", "true").lower() == "true"
 
 
+_DEV_ENVS = {"dev", "development", "local", "test"}
+
+
+def is_production_env() -> bool:
+    """True outside local development.
+
+    APP_ENV says so explicitly, or the process runs on Render (which sets
+    RENDER=true) with no APP_ENV at all — a missing APP_ENV in production
+    must not downgrade the startup checks.
+    """
+    app_env = (os.getenv("APP_ENV") or "").strip().lower()
+    if app_env:
+        return app_env not in _DEV_ENVS
+    return bool(os.getenv("RENDER"))
+
+
 def validate_config():
     """Validate required configuration."""
     if not SUPABASE_URL:
         raise ValueError("SUPABASE_URL environment variable is required")
     if not SUPABASE_KEY:
         raise ValueError("SUPABASE_SERVICE_KEY environment variable is required")
+    return True
+
+
+def validate_auth_config():
+    """Refuse to serve HTTP without the secrets the auth paths fail closed on.
+
+    SEC-E-008 / SEC-E-009: the JWT decoders and the Stripe webhook now reject
+    everything when their secret is unset, so a production process without
+    them would be a dead service rather than an insecure one. Fail at startup
+    instead so the misconfiguration is visible in the deploy, not in 401s.
+    Local development without the secrets is allowed (bearer auth then
+    always fails; use X-Service-Key or the smoke-test bypass).
+    """
+    if not is_production_env():
+        return True
+    missing = [
+        name for name, value in (
+            ("SUPABASE_JWT_SECRET", os.getenv("SUPABASE_JWT_SECRET")),
+            ("STRIPE_WEBHOOK_SECRET", os.getenv("STRIPE_WEBHOOK_SECRET")),
+        )
+        if not value
+    ]
+    if missing:
+        raise ValueError(
+            "Refusing to start in production without: " + ", ".join(missing)
+        )
     return True
 
 

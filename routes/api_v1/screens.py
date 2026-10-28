@@ -131,8 +131,9 @@ def create_phone_screen():
         "candidate_id": candidate_id,
         "opportunity_id": opportunity_id,
         "state": "in_progress",
-        # Aidan asks for verbal consent at the start of the call; recorded
-        # in the bias-audit trail, not here.
+        # Aidan asks for verbal consent at the start of the call; the
+        # explicit answer (record_consent tool) is copied here by the phone
+        # sync once the call completes (GDPR-E-001).
         "consent_given": False,
         "questions": session_questions,
         "metadata": {
@@ -258,9 +259,15 @@ def _apply_phone_sync(org_id, session_data, status):
         metadata["transcript"] = status["transcript"]
     if profile:
         metadata["candidate_extraction"] = profile
+    consent_event = status.get("consent") or {}
+    if consent_event:
+        metadata["consent_event"] = consent_event
 
     updates = {
         "state": "complete",
+        # Explicit consent recorded during the call (GDPR-E-001); False
+        # when no record_consent event exists.
+        "consent_given": bool(consent_event.get("consented")),
         "answers": answers,
         "outcome": {
             "recommendation": recommendation,

@@ -64,6 +64,46 @@ def resolve_job_org_id(job: Dict[str, Any]) -> Optional[str]:
     return _org_from_user_roles(job.get("user_id"))
 
 
+def load_opportunity_for_owner(user_id: Optional[str], opportunity_id: Optional[str],
+                               columns: str = "id, organization_id, created_by_user_id") -> Optional[Dict[str, Any]]:
+    """
+    The opportunities row if the caller may act on it, else None.
+
+    A caller owns an opportunity when it belongs to their organisation or
+    they created it. Service identities own nothing here; malformed ids
+    never reach the database (SEC-E-007, SEC-E-010).
+    """
+    from config.clients import supabase_client
+    if not supabase_client or not user_id or is_service_identity(user_id) or not is_uuid(opportunity_id):
+        return None
+    wanted = set(c.strip() for c in columns.split(","))
+    wanted.update({"id", "organization_id", "created_by_user_id"})
+    try:
+        resp = (
+            supabase_client.table("opportunities")
+            .select(", ".join(sorted(wanted)))
+            .eq("id", str(opportunity_id))
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        return None
+    rows = resp.data or []
+    if not rows:
+        return None
+    opp = rows[0] or {}
+    if opp.get("created_by_user_id") == user_id:
+        return opp
+    caller_org = resolve_caller_org_id(user_id)
+    if caller_org and opp.get("organization_id") == caller_org:
+        return opp
+    return None
+
+
+def caller_owns_opportunity(user_id: Optional[str], opportunity_id: Optional[str]) -> bool:
+    return load_opportunity_for_owner(user_id, opportunity_id) is not None
+
+
 def _org_from_user_roles(user_id: Optional[str]) -> Optional[str]:
     from config.clients import supabase_client
     if not supabase_client or not is_uuid(user_id):

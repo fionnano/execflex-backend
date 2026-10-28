@@ -822,8 +822,32 @@ def _connect_openai_sync(
             call_type=call_type,
             screening_context=screening_context,
         )
-        print(f"[PROMPT DEBUG] Full system prompt being sent to OpenAI ({len(system_prompt)} chars): {system_prompt[:500]}", flush=True)
+        # The prompt names the candidate, role and company: log size only (GDPR-E-003).
+        print(f"[PROMPT DEBUG] System prompt built ({len(system_prompt)} chars, call_type={call_type!r})", flush=True)
         print(f"[VOICE DEBUG] Voice: {realtime_voice}, Model: {realtime_model}", flush=True)
+        tools = [
+            {
+                "type": "function",
+                "name": "end_call",
+                "description": (
+                    "Signal that this phone conversation is complete and should be terminated now. "
+                    "Call this exactly once after your final goodbye."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "enum": ["completed", "user_requested_end", "no_interest", "voicemail", "other"],
+                        },
+                        "summary": {"type": "string"},
+                    },
+                    "required": ["reason"],
+                },
+            }
+        ]
+        if call_type == "screening":
+            tools.append(RECORD_CONSENT_TOOL)
         session_config = {
             "type": "session.update",
             "session": {
@@ -831,27 +855,7 @@ def _connect_openai_sync(
                 "model": realtime_model,
                 "instructions": system_prompt,
                 "output_modalities": ["text"] if output_text_only else ["audio"],
-                "tools": [
-                    {
-                        "type": "function",
-                        "name": "end_call",
-                        "description": (
-                            "Signal that this phone conversation is complete and should be terminated now. "
-                            "Call this exactly once after your final goodbye."
-                        ),
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "reason": {
-                                    "type": "string",
-                                    "enum": ["completed", "user_requested_end", "no_interest", "voicemail", "other"],
-                                },
-                                "summary": {"type": "string"},
-                            },
-                            "required": ["reason"],
-                        },
-                    }
-                ],
+                "tools": tools,
                 "tool_choice": "auto",
                 "audio": {
                     "input": {
@@ -1275,12 +1279,16 @@ STEP 3 — COMPLIANCE GATE (after they respond):
 STOP and WAIT.
 
 STEP 4a (if they CONSENT — clear yes / happy to proceed):
+FIRST call the record_consent tool with consented=true (and their words in candidate_words). Then say:
 "Wonderful, thank you. I'm going to ask you {len(questions)} standard questions — these are the exact same questions we ask every candidate for this role, so it's a level playing field. Take your time with each answer, and if you need me to repeat anything or take a pause, just let me know."
 Then ask the FIRST screening question naturally.
 
-STEP 4b (if they DECLINE):
+STEP 4b (if they DECLINE, hesitate, or do not clearly agree):
+FIRST call the record_consent tool with consented=false. Then say:
 "Absolutely no problem at all. I'll make a note that you'd prefer to speak with a human colleague instead, and Fionnán will be in touch directly. Thanks so much for your time, {first_name}. Take care!"
 Then call end_call. Do NOT ask any questions.
+
+Never ask a screening question before record_consent has been called with consented=true.
 
 STEP 4c (if unsure or asking questions):
 Answer honestly and reassuringly, keeping it brief, then: "So, would you like to go ahead?"
@@ -1675,6 +1683,87 @@ def _send_twilio_playback_mark(
         return None
 
 
+# Explicit consent capture at the screening compliance gate (GDPR-E-001).
+# Aidan calls this right after the candidate answers STEP 3; the bridge
+# stores the answer on the job as artifacts.consent_event. Nothing about
+# consent is inferred from transcript text any more.
+RECORD_CONSENT_TOOL = {
+    "type": "function",
+    "name": "record_consent",
+    "description": (
+        "Record the candidate's answer to the compliance gate (recording, AI screening, "
+        "GDPR notice). Call this exactly once, immediately after the candidate clearly "
+        "agrees or declines, before asking any screening question. consented=true only "
+        "for a clear yes; a hesitant, unclear or negative answer is consented=false."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "consented": {"type": "boolean"},
+            "candidate_words": {
+                "type": "string",
+                "description": "The candidate's own short answer, e.g. 'yes that's fine'.",
+            },
+        },
+        "required": ["consented"],
+    },
+}
+
+
+def _handle_consent_signal(
+    item: dict,
+    job_id: Optional[str],
+    call_sid: Optional[str],
+    bridge_state,
+    state_lock,
+    log_fn,
+    openai_ws=None,
+) -> bool:
+    """Persist a record_consent tool call and let the model continue."""
+    if (item or {}).get("type") != "function_call" or (item or {}).get("name") != "record_consent":
+        return False
+
+    args_raw = item.get("arguments") or "{}"
+    try:
+        args = json.loads(args_raw) if isinstance(args_raw, str) else (args_raw or {})
+    except Exception:
+        args = {}
+    consented = bool(args.get("consented")) if isinstance(args, dict) else False
+
+    with state_lock:
+        already = bridge_state.get("consent_recorded")
+        turn_count = int(bridge_state.get("next_transcript_turn_sequence", 1))
+        if not already:
+            bridge_state["consent_recorded"] = True
+            bridge_state["consent_given"] = consented
+
+    if not already:
+        from services.screening_service import record_consent_event
+        record_consent_event(
+            job_id=job_id,
+            consented=consented,
+            turn_sequence=turn_count,
+            call_sid=call_sid,
+        )
+        log_fn(f"record_consent tool invoked: consented={consented}")
+
+    # The Realtime API waits for a tool result before speaking again.
+    if openai_ws is not None and item.get("call_id"):
+        try:
+            openai_ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": item.get("call_id"),
+                    "output": json.dumps({"recorded": True, "consented": consented}),
+                },
+            }))
+            openai_ws.send(json.dumps({"type": "response.create"}))
+        except Exception as exc:
+            log_fn(f"record_consent tool output send failed: {type(exc).__name__}: {exc}")
+    return True
+
+
 def _handle_end_call_signal(
     item: dict,
     call_sid: str,
@@ -1935,7 +2024,7 @@ def _persist_transcript_turn(interaction_id: Optional[str], speaker: str, text: 
     if not interaction_id or not text:
         print(f"[Turn] SKIPPED: interaction_id={interaction_id}, text empty={not text}", flush=True)
         return
-    print(f"[Turn] SAVING: speaker={speaker}, seq={turn_sequence}, text={text[:80]!r}", flush=True)
+    print(f"[Turn] SAVING: speaker={speaker}, seq={turn_sequence}, chars={len(text)}", flush=True)
     try:
         from config.clients import supabase_client
         resp = supabase_client.table("interaction_turns").insert({
@@ -2206,6 +2295,7 @@ def _handle_openai_responses(
 
                 elif event_type == "response.output_item.done":
                     item = data.get("item", {}) or {}
+                    _handle_consent_signal(item, job_id, call_sid, bridge_state, state_lock, log, openai_ws)
                     _handle_end_call_signal(item, call_sid, bridge_state, state_lock, log)
 
                 elif event_type == "conversation.item.input_audio_transcription.completed":
@@ -2367,6 +2457,7 @@ def _handle_openai_responses(
                     response = data.get("response", {}) or {}
                     fallback_assistant_text = ""
                     for output_item in response.get("output", []) or []:
+                        _handle_consent_signal(output_item, job_id, call_sid, bridge_state, state_lock, log, openai_ws)
                         _handle_end_call_signal(output_item, call_sid, bridge_state, state_lock, log)
                         # Fallback transcript extraction from response payload.
                         content_items = output_item.get("content", []) if isinstance(output_item, dict) else []

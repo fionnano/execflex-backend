@@ -297,7 +297,7 @@ def talent_network_submit():
     # Per-phone rate limit — prevents someone repeatedly submitting the
     # same phone to rack up Twilio cost against one victim.
     if not _check_phone_rate(phone):
-        print(f"[TALENT-NET-OPTIN] phone rate-limited phone={phone}", flush=True)
+        print("[TALENT-NET-OPTIN] phone rate-limited", flush=True)
         return jsonify({"error": "This phone number already has a pending call. Please wait."}), 429
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -378,7 +378,7 @@ def talent_network_submit():
                 "id", existing_row["id"]
             ).execute()
             profile_id = existing_row["id"]
-            print(f"[TALENT-NET-OPTIN] Updated existing profile id={profile_id} email={email}", flush=True)
+            print(f"[TALENT-NET-OPTIN] Updated existing profile id={profile_id}", flush=True)
         else:
             insert_payload = {
                 "first_name": first_name,
@@ -392,9 +392,9 @@ def talent_network_submit():
             ins = supabase_client.table("people_profiles").insert(insert_payload).execute()
             if ins.data:
                 profile_id = ins.data[0].get("id")
-                print(f"[TALENT-NET-OPTIN] Created profile id={profile_id} email={email}", flush=True)
+                print(f"[TALENT-NET-OPTIN] Created profile id={profile_id}", flush=True)
             else:
-                print(f"[TALENT-NET-OPTIN] insert returned no data for email={email}", flush=True)
+                print("[TALENT-NET-OPTIN] insert returned no data", flush=True)
     except Exception as e:
         print(f"[TALENT-NET-OPTIN] profile upsert failed: {e}\n{traceback.format_exc()}", flush=True)
         return jsonify({"error": "Could not save your details. Please try again."}), 500
@@ -455,9 +455,10 @@ def talent_network_submit():
     except Exception as e:
         print(f"[TALENT-NET-OPTIN] analytics failed: {e}", flush=True)
 
+    from utils.log_redaction import mask_email, mask_phone
     print(
-        f"[TALENT-NET-OPTIN] SUCCESS profile_id={profile_id} email={email} "
-        f"phone={phone} ref={ref!r} ip={ip}",
+        f"[TALENT-NET-OPTIN] SUCCESS profile_id={profile_id} email={mask_email(email)} "
+        f"phone={mask_phone(phone)} ref={ref!r}",
         flush=True,
     )
 
