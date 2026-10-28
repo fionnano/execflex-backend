@@ -33,7 +33,7 @@ Asynchronous outbound qualification calls triggered after user signup. Uses a jo
 - `POST /voice/enqueue` - Enqueue job (called after signup)
 - `GET/POST /voice/qualification/intro` - TwiML for call opening
 - `POST /voice/qualification/status` - Twilio status callback
-- `POST /voice/process-jobs` - Manual trigger for job processing
+- `POST /onboarding/process-jobs` - Manual trigger. Requires `X-Process-Jobs-Secret`. The worker does not call this route.
 
 ### Worker: `workers/call_dispatcher.py`
 
@@ -97,12 +97,13 @@ Set up a Supabase webhook or database trigger that calls the endpoint after `aut
 */1 * * * * cd /path/to/backend && python -m workers.call_dispatcher
 ```
 
-**Option B: Render Cron Job**
-- Create a scheduled task that calls `POST /voice/process-jobs` every minute
+**Option B: HTTP trigger**
+There is no Render cron calling this today. The live worker calls `process_queued_jobs()` in-process. If you do call the HTTP route, it is `POST /onboarding/process-jobs` and it requires `X-Process-Jobs-Secret`.
 
 **Option C: Manual Trigger**
 ```bash
-curl -X POST https://api.execflex.ai/voice/process-jobs
+curl -X POST https://execflex-backend-1.onrender.com/onboarding/process-jobs \
+  -H "X-Process-Jobs-Secret: $PROCESS_JOBS_SECRET"
 ```
 
 ### 3. Monitor Jobs
@@ -178,7 +179,8 @@ curl -X POST https://api.execflex.ai/voice/enqueue \
 
 2. Process jobs:
 ```bash
-curl -X POST https://api.execflex.ai/voice/process-jobs
+curl -X POST https://execflex-backend-1.onrender.com/onboarding/process-jobs \
+  -H "X-Process-Jobs-Secret: $PROCESS_JOBS_SECRET"
 ```
 
 3. Check job status:

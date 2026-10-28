@@ -79,4 +79,7 @@ anthropic>=0.43
 # key added in the Render dashboard (then switch this line to
 # git+ssh://git@github.com/fionnano/agentic-core.git@v0.18.1). Without one of
 # those configured in Render, `pip install` fails with an auth error at deploy.
+# scripts/render_build.sh applies the same GITHUB_TOKEN git rewrite the
+# execflex-backend-1 dashboard build command already uses. Point both Render
+# services' build commands at that script; the file is not applied by itself.
 agentic-core @ git+https://github.com/fionnano/agentic-core.git@v0.18.1

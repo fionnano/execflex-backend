@@ -8,6 +8,51 @@ import jwt  # PyJWT (already in requirements.txt)
 from config.clients import supabase_client
 
 
+# Header for POST /onboarding/process-jobs. Distinct from X-Service-Key so a
+# leaked Ainm key cannot place outbound Twilio calls.
+PROCESS_JOBS_HEADER = "X-Process-Jobs-Secret"
+
+
+def authorize_process_jobs():
+    """
+    Authorize POST /onboarding/process-jobs.
+
+    The call dispatcher does not use this route; it calls
+    process_queued_jobs() in-process. This check is only for the HTTP trigger.
+
+    Fails closed:
+      - 503 when PROCESS_JOBS_SECRET is unset or blank
+      - 401 when X-Process-Jobs-Secret is missing
+      - 403 when the header does not match
+
+    Returns None when authorized, otherwise a Flask (response, status) tuple.
+    The secret is compared with hmac.compare_digest and is never echoed.
+    """
+    import hmac
+    import os
+    from utils.response_helpers import bad
+
+    secret = (os.getenv("PROCESS_JOBS_SECRET") or "").strip()
+    if not secret:
+        return bad("Job processing is not configured", 503)
+
+    provided = request.headers.get(PROCESS_JOBS_HEADER)
+    if not provided:
+        return bad("Authentication required", 401)
+
+    try:
+        matches = hmac.compare_digest(
+            provided.encode("utf-8"),
+            secret.encode("utf-8"),
+        )
+    except (TypeError, ValueError):
+        matches = False
+
+    if not matches:
+        return bad("Forbidden", 403)
+    return None
+
+
 def _check_service_key() -> Tuple[Optional[str], bool]:
     """
     Check for a valid X-Service-Key header (service-to-service auth).

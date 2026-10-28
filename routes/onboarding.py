@@ -7,7 +7,11 @@ import requests
 from flask import request, Response, jsonify
 from routes import onboarding_bp
 from utils.response_helpers import ok, bad
-from utils.auth_helpers import require_admin, get_authenticated_user_id
+from utils.auth_helpers import (
+    require_admin,
+    get_authenticated_user_id,
+    authorize_process_jobs,
+)
 from services.onboarding_service import initialize_user_onboarding, process_queued_jobs
 from services.platform_config_service import (
     get_bool_config,
@@ -1708,15 +1712,25 @@ def onboarding_status():
 @onboarding_bp.route("/process-jobs", methods=["POST"])
 def process_jobs_endpoint():
     """
-    Endpoint to trigger job processing (for HTTP-based cron/scheduled tasks).
+    HTTP trigger for queued outbound-call processing.
 
-    **Note:** This endpoint is optional. If using Render Background Workers,
-    you can run `python -m workers.call_dispatcher` directly instead.
+    workers/call_dispatcher.py does not call this route. It invokes
+    process_queued_jobs() in-process. Nothing else in this repo calls it
+    either. It stays for an operator or cron that cannot run the worker,
+    and it requires X-Process-Jobs-Secret to match PROCESS_JOBS_SECRET.
 
-    Optional query param: limit (default 10)
+    Optional query param: limit (default 10, max 100)
     """
-    # Optional: Add service secret protection here if needed
-    limit = int(request.args.get("limit", 10))
+    denied = authorize_process_jobs()
+    if denied is not None:
+        return denied
+
+    try:
+        limit = int(request.args.get("limit", 10))
+    except (TypeError, ValueError):
+        return bad("limit must be an integer", 400)
+    if limit < 1 or limit > 100:
+        return bad("limit must be between 1 and 100", 400)
 
     try:
         processed = process_queued_jobs(limit=limit)
